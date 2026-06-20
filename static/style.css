@@ -57,9 +57,9 @@ body {
 }
 
 .app-container {
-    max-width: 1600px;
+    max-width: 98%;
     margin: 0 auto;
-    padding: 20px;
+    padding: 15px 10px;
 }
 
 /* HEADER */
@@ -385,6 +385,27 @@ input:focus, select:focus {
 
 .text-center {
     text-align: center;
+}
+
+#schedule-table td:first-child,
+#schedule-table td:nth-child(4) {
+    white-space: nowrap;
+}
+
+#targets-table td:nth-child(2),
+#schedule-table td:nth-child(2) {
+    max-width: 150px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+#schedule-table th:nth-child(5),
+#schedule-table td:nth-child(5),
+#schedule-table th:nth-child(6),
+#schedule-table td:nth-child(6) {
+    width: 110px;
+    max-width: 110px;
 }
 
 /* OBSERVATORY & MOON DETAILS */

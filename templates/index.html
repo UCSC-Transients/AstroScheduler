@@ -35,7 +35,7 @@
                 <!-- OBSERVATORY SETTINGS CARD -->
                 <div class="card glass-card animate-fade-in">
                     <div class="card-header-toggle">
-                        <h2>Observatory & Date Config</h2>
+                        <h2>Observing Run</h2>
                         <button class="btn-collapse" onclick="toggleCollapse(this)">−</button>
                     </div>
                     <div class="card-body-collapse">
@@ -78,6 +78,31 @@
                                 <label>Instrument</label>
                                 <select id="inst-select" disabled>
                                     <option value="kast">Kast Spectrograph</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="form-row" style="margin-top: 15px;">
+                            <div class="form-group" style="flex: 1;">
+                                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                                    <input type="checkbox" id="manual-night-limits-toggle" onchange="toggleManualNightLimits(this.checked)">
+                                    <span>Manual Night Limits</span>
+                                </label>
+                            </div>
+                        </div>
+                        <div class="form-row" id="manual-night-limits-container" style="display: none; margin-top: 10px; gap: 10px;">
+                            <div class="form-group" style="flex: 1;">
+                                <label for="manual-night-start">Night Start</label>
+                                <input type="text" id="manual-night-start" placeholder="HH:MM" value="20:00" style="width: 100%; text-align: center; font-family: monospace;" onchange="triggerScheduling()">
+                            </div>
+                            <div class="form-group" style="flex: 1;">
+                                <label for="manual-night-end">Night End</label>
+                                <input type="text" id="manual-night-end" placeholder="HH:MM" value="05:00" style="width: 100%; text-align: center; font-family: monospace;" onchange="triggerScheduling()">
+                            </div>
+                            <div class="form-group" style="flex: 1;">
+                                <label for="manual-night-tz">Timezone</label>
+                                <select id="manual-night-tz" style="width: 100%;" onchange="triggerScheduling()">
+                                    <option value="UTC" selected>UTC</option>
+                                    <option value="obs">Local (Shane)</option>
                                 </select>
                             </div>
                         </div>
@@ -168,7 +193,7 @@
                 <!-- SKY ALT/AZ POLAR MAP CARD -->
                 <div class="card glass-card animate-fade-in delay-2">
                     <div class="card-header-toggle">
-                        <h2>Sky Alt/Az Map (Polar)</h2>
+                        <h2>Sky Alt/Az Map</h2>
                         <button class="btn-collapse" onclick="toggleCollapse(this)">−</button>
                     </div>
                     <div class="card-body-collapse">
@@ -224,7 +249,7 @@
                 <!-- AIRMASS GRAPH CARD -->
                 <div class="card glass-card animate-fade-in delay-3">
                     <div class="card-header-toggle">
-                        <h2>Night Airmass Profile (Zenith at Top)</h2>
+                        <h2>Airmass</h2>
                         <button class="btn-collapse" onclick="toggleCollapse(this)">−</button>
                     </div>
                     <div class="card-body-collapse">
@@ -278,11 +303,11 @@
                                 <thead>
                                     <tr>
                                         <th style="width: 30px;"></th>
-                                        <th>Name</th>
-                                        <th>RA</th>
-                                        <th>Dec</th>
-                                        <th>Mag</th>
-                                        <th>Prio</th>
+                                         <th onclick="setTargetSort('name')" style="cursor: pointer; user-select: none;">Name <span id="sort-icon-name"></span></th>
+                                                                                 <th onclick="setTargetSort('ra')" style="cursor: pointer; user-select: none;">RA <span id="sort-icon-ra"></span></th>
+                                                                                 <th onclick="setTargetSort('dec')" style="cursor: pointer; user-select: none;">Dec <span id="sort-icon-dec"></span></th>
+                                                                                 <th onclick="setTargetSort('magnitude')" style="cursor: pointer; user-select: none;">Mag <span id="sort-icon-magnitude"></span></th>
+                                                                                 <th onclick="setTargetSort('priority')" style="cursor: pointer; user-select: none;">Prio <span id="sort-icon-priority"></span></th>
                                         <th>S/N</th>
                                         <th>Flags</th>
                                         <th>Manual Start</th>
