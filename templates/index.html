@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Astronomical Observation Scheduler</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../static/style.css">
+    <!-- Chart.js CDN for interactive airmass graphing -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <div class="glass-bg"></div>
+    <div class="app-container">
+        <!-- HEADER -->
+        <header class="app-header">
+            <div class="header-logo">
+                <span class="pulse-dot"></span>
+                <h1>AstroScheduler</h1>
+            </div>
+            <div class="mode-selector">
+                <button id="mode-planning-btn" class="btn btn-mode active" onclick="setMode('planning')">Planning Mode</button>
+                <button id="mode-realtime-btn" class="btn btn-mode" onclick="setMode('realtime')">Real-Time Mode</button>
+            </div>
+            <div class="telescope-status">
+                <span class="badge">Lick Shane 3m Telescope (Equatorial)</span>
+            </div>
+        </header>
+
+        <!-- MAIN LAYOUT -->
+        <div class="main-grid">
+            
+            <!-- LEFT COLUMN: SETTINGS & TARGET FORM -->
+            <div class="left-col">
+                <!-- OBSERVATORY SETTINGS CARD -->
+                <div class="card glass-card animate-fade-in">
+                    <div class="card-header-toggle">
+                        <h2>Observatory & Date Config</h2>
+                        <button class="btn-collapse" onclick="toggleCollapse(this)">−</button>
+                    </div>
+                    <div class="card-body-collapse">
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="obs-select">Observatory</label>
+                                <select id="obs-select">
+                                    <option value="lick">Lick Observatory (Mt. Hamilton, CA)</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="obs-date">Observation Date (Local)</label>
+                                <input type="date" id="obs-date" value="2026-06-18">
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="tz-select">Timezone (Local Time)</label>
+                                <select id="tz-select" onchange="changeTimezone(this.value)">
+                                    <option value="browser">Browser Default</option>
+                                    <option value="obs">Observatory Local (Pacific Time)</option>
+                                    <option value="UTC">UTC</option>
+                                    <option value="UTC-10">UTC-10 (HST)</option>
+                                    <option value="UTC-9">UTC-9 (AKST)</option>
+                                    <option value="UTC-8">UTC-8 (PST)</option>
+                                    <option value="UTC-7">UTC-7 (MST / PDT)</option>
+                                    <option value="UTC-6">UTC-6 (CST / MDT)</option>
+                                    <option value="UTC-5">UTC-5 (EST / CDT)</option>
+                                    <option value="UTC-4">UTC-4 (EDT)</option>
+                                    <option value="UTC+0">UTC+00</option>
+                                    <option value="UTC+1">UTC+01 (CET)</option>
+                                    <option value="UTC+2">UTC+02 (EET)</option>
+                                    <option value="UTC+3">UTC+03 (MSK)</option>
+                                    <option value="UTC+8">UTC+08 (SGT)</option>
+                                    <option value="UTC+9">UTC+09 (JST)</option>
+                                    <option value="UTC+10">UTC+10 (AEST)</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>Instrument</label>
+                                <select id="inst-select" disabled>
+                                    <option value="kast">Kast Spectrograph</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="obs-details">
+                            <p><strong>Latitude:</strong> +37.3414° | <strong>Longitude:</strong> -121.6429° | <strong>Elevation:</strong> 1283m</p>
+                            <p><strong>Shane Limits:</strong> Dec [-35°, +72°] | HA [-5h40m, +3h45m]</p>
+                        </div>
+                        <div class="moon-card" id="moon-status">
+                            <div class="moon-icon-wrapper">
+                                <div class="moon-phase-pic" id="moon-phase-pic"></div>
+                            </div>
+                            <div class="moon-text">
+                                <h3>Moon Phase: <span id="moon-phase-val">N/A</span></h3>
+                                <p>RA: <span id="moon-ra-val">N/A</span>h | Dec: <span id="moon-dec-val">N/A</span>°</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ADD TARGET CARD -->
+                <div class="card glass-card animate-fade-in delay-1">
+                    <div class="card-header-toggle">
+                        <h2>Add Target</h2>
+                        <button class="btn-collapse" onclick="toggleCollapse(this)">−</button>
+                    </div>
+                    <div class="card-body-collapse">
+                        <form id="target-form">
+                            <div class="form-group">
+                                <label for="t-name">Target Name</label>
+                                <input type="text" id="t-name" placeholder="e.g. SN2026abc" required>
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label for="t-ra">Right Ascension (Sexagesimal or Deg)</label>
+                                    <input type="text" id="t-ra" placeholder="e.g. 18:30:00 or 277.5" required>
+                                </div>
+                                <div class="form-group">
+                                    <label for="t-dec">Declination (Sexagesimal or Deg)</label>
+                                    <input type="text" id="t-dec" placeholder="e.g. +38:40:00 or -35.2" required>
+                                </div>
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label for="t-mag">Magnitude (V/r)</label>
+                                    <input type="number" id="t-mag" step="any" placeholder="e.g. 16.5" required>
+                                </div>
+                                <div class="form-group">
+                                    <label for="t-prio">Priority</label>
+                                    <select id="t-prio">
+                                        <option value="1">Priority 1 (Highest)</option>
+                                        <option value="2">Priority 2</option>
+                                        <option value="3">Priority 3</option>
+                                        <option value="4">Priority 4 (Lowest)</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label for="t-sn">S/N Mode</label>
+                                    <select id="t-sn">
+                                        <option value="normal">Normal</option>
+                                        <option value="classification">Classification (Short)</option>
+                                        <option value="high_sn">High S/N (Long)</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="checkbox-group">
+                                <label class="checkbox-container">
+                                    <input type="checkbox" id="t-twilight">
+                                    <span class="checkmark"></span>
+                                    Allow Twilight Observations
+                                </label>
+                                <label class="checkbox-container">
+                                    <input type="checkbox" id="t-airmass">
+                                    <span class="checkmark"></span>
+                                    Allow High Airmass (up to 2.2)
+                                </label>
+                            </div>
+                            <div class="form-group">
+                                <label for="t-comment">Comment</label>
+                                <input type="text" id="t-comment" placeholder="Optional notes...">
+                            </div>
+                            <button type="submit" class="btn btn-primary">Add Target</button>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- SKY ALT/AZ POLAR MAP CARD -->
+                <div class="card glass-card animate-fade-in delay-2">
+                    <div class="card-header-toggle">
+                        <h2>Sky Alt/Az Map (Polar)</h2>
+                        <button class="btn-collapse" onclick="toggleCollapse(this)">−</button>
+                    </div>
+                    <div class="card-body-collapse">
+                        <div style="position: relative; width: 100%; aspect-ratio: 1; display: flex; justify-content: center; align-items: center; padding: 10px 0;">
+                            <canvas id="polarChart" style="max-width: 100%; max-height: 100%;"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- RIGHT COLUMN: TARGETS, SCHEDULE & GRAPH -->
+            <div class="right-col">
+                <!-- ALERTS CONSOLE -->
+                <div class="alerts-console" id="alerts-console" style="display: none;"></div>
+
+                <!-- SCHEDULE TIMELINE CARD -->
+                <div class="card glass-card animate-fade-in delay-2">
+                    <div class="card-header-toggle">
+                        <h2>Observation Schedule Timeline</h2>
+                        <button class="btn-collapse" onclick="toggleCollapse(this)">−</button>
+                    </div>
+                    <div class="card-body-collapse">
+                        <div class="form-row" style="margin-bottom: 10px; align-items: center; justify-content: flex-end;">
+                            <button id="run-schedule-btn" class="btn btn-accent">Recalculate Schedule</button>
+                        </div>
+                        <div class="timeline-visual" id="timeline-container">
+                            <div class="timeline-empty-message">No targets scheduled. Add targets and run schedule.</div>
+                        </div>
+                        <div class="schedule-table-wrapper">
+                            <table class="data-table" id="schedule-table">
+                                <thead>
+                                    <tr>
+                                        <th style="width: 140px;">Time (UTC / Loc)</th>
+                                        <th>Target</th>
+                                        <th>Prio</th>
+                                        <th style="width: 100px;">Duration (m)</th>
+                                        <th>Airmass Range</th>
+                                        <th>Median Airmass</th>
+                                        <th>Comment</th>
+                                        <th class="real-time-only" style="display: none; width: 140px;">Real-Time Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td colspan="7" class="text-center">No active schedule</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- AIRMASS GRAPH CARD -->
+                <div class="card glass-card animate-fade-in delay-3">
+                    <div class="card-header-toggle">
+                        <h2>Night Airmass Profile (Zenith at Top)</h2>
+                        <button class="btn-collapse" onclick="toggleCollapse(this)">−</button>
+                    </div>
+                    <div class="card-body-collapse">
+                        <div style="display: flex; gap: 8px; justify-content: flex-end; margin-bottom: 10px;">
+                            <button class="btn btn-outline" style="padding: 4px 8px; font-size: 0.75rem;" onclick="zoomChart(0.15)">Zoom In</button>
+                            <button class="btn btn-outline" style="padding: 4px 8px; font-size: 0.75rem;" onclick="zoomChart(-0.15)">Zoom Out</button>
+                            <button class="btn btn-outline" style="padding: 4px 8px; font-size: 0.75rem;" onclick="resetChartZoom()">Reset Zoom</button>
+                        </div>
+                        <div class="chart-container">
+                            <canvas id="airmassChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- POTENTIAL TARGETS LIST CARD -->
+                <div class="card glass-card animate-fade-in delay-4" id="target-list-card">
+                    <div class="card-header-toggle">
+                        <h2>Target List</h2>
+                        <button class="btn-collapse" onclick="toggleCollapse(this)">−</button>
+                    </div>
+                    <div class="card-body-collapse">
+                        <div class="table-actions" style="display: flex; flex-wrap: wrap; gap: 10px; align-items: center;">
+                            <button id="load-sample-btn" class="btn btn-outline">Load Samples</button>
+                            <button id="clear-overrides-btn" class="btn btn-outline" onclick="clearAllOverrides()">Clear Overrides</button>
+                            <button id="clear-targets-btn" class="btn btn-danger">Clear All</button>
+                            
+                            <div class="file-upload-wrapper" style="display: flex; align-items: center; gap: 8px;">
+                                <label for="target-file-input" style="font-size: 0.8rem; color: var(--text-secondary);">Upload Targets:</label>
+                                <input type="file" id="target-file-input" accept=".txt,.data" style="font-size: 0.75rem; color: var(--text-muted);" onchange="handleFileUpload(event)">
+                            </div>
+                            
+                            <div class="sort-wrapper" style="margin-left: auto; display: flex; align-items: center; gap: 6px;">
+                                <label for="sort-select" style="font-size: 0.8rem; color: var(--text-secondary);">Sort By:</label>
+                                <select id="sort-select" onchange="changeTargetSorting(this.value)" style="padding: 4px 8px; font-size: 0.8rem; border-radius: 4px;">
+                                    <option value="input">Default (Input)</option>
+                                    <option value="name">Name</option>
+                                    <option value="ra">RA</option>
+                                    <option value="mag">Magnitude</option>
+                                    <option value="prio">Priority</option>
+                                    <option value="schedule">Schedule Order</option>
+                                </select>
+                            </div>
+                        </div>
+                        
+                        <div class="drag-drop-zone" id="target-drag-drop" style="border: 2px dashed rgba(255,255,255,0.1); border-radius: 6px; padding: 12px; text-align: center; color: var(--text-muted); font-size: 0.8rem; margin: 10px 0;">
+                            Or drag & drop targets .txt file here
+                        </div>
+                        
+                        <div class="table-wrapper">
+                            <table class="data-table" id="targets-table">
+                                <thead>
+                                    <tr>
+                                        <th style="width: 30px;"></th>
+                                        <th>Name</th>
+                                        <th>RA</th>
+                                        <th>Dec</th>
+                                        <th>Mag</th>
+                                        <th>Prio</th>
+                                        <th>S/N</th>
+                                        <th>Flags</th>
+                                        <th>Manual Start</th>
+                                        <th>Manual Dur (m)</th>
+                                        <th>Status</th>
+                                        <th>Comment</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td colspan="13" class="text-center">No targets in pool</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- STANDARD STARS CARD -->
+                <div class="card glass-card animate-fade-in delay-4">
+                    <div class="card-header-toggle">
+                        <h2>Standard Stars</h2>
+                        <button class="btn-collapse" onclick="toggleCollapse(this)">−</button>
+                    </div>
+                    <div class="card-body-collapse">
+                        <div class="table-wrapper">
+                            <table class="data-table" id="standards-table">
+                                <thead>
+                                    <tr>
+                                        <th style="width: 40px;">Use</th>
+                                        <th>Name</th>
+                                        <th>Color</th>
+                                        <th>Quality</th>
+                                        <th>Mag</th>
+                                        <th>RA</th>
+                                        <th>Dec</th>
+                                        <th>Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td colspan="8" class="text-center">Loading standard stars...</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- REAL-TIME OBSERVING DASHBOARD CARD -->
+                <div class="card glass-card animate-fade-in real-time-only" style="display: none;">
+                    <div class="card-header-toggle">
+                        <h2>Real-Time Log & Dashboard</h2>
+                        <button class="btn-collapse" onclick="toggleCollapse(this)">−</button>
+                    </div>
+                    <div class="card-body-collapse">
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="rt-extinction">Extinction (mag offset)</label>
+                                <input type="number" id="rt-extinction" step="0.05" value="0.0" style="width: 80px;" onchange="updateRealTimeParameters()">
+                            </div>
+                            <div class="form-group">
+                                <label for="rt-mag-limit">Pointing Mag Limit</label>
+                                <input type="number" id="rt-mag-limit" step="0.5" placeholder="None" style="width: 80px;" onchange="updateRealTimeParameters()">
+                            </div>
+                            <div class="form-group">
+                                <label for="rt-ha-limit">Max HA (hours)</label>
+                                <input type="number" id="rt-ha-limit" step="0.1" value="5.67" style="width: 80px;" onchange="updateRealTimeParameters()">
+                            </div>
+                            <div class="form-group">
+                                <label for="rt-alt-limit">Min Altitude (deg)</label>
+                                <input type="number" id="rt-alt-limit" step="1" value="20" style="width: 80px;" onchange="updateRealTimeParameters()">
+                            </div>
+                        </div>
+                        
+                        <div class="form-row" style="margin-top: 10px;">
+                            <div class="form-group" style="flex: 2;">
+                                <label for="rt-comment">Obs Log Comment</label>
+                                <input type="text" id="rt-comment" placeholder="Type a comment to log...">
+                            </div>
+                            <div class="form-group" style="flex: 1; align-items: flex-end;">
+                                <button class="btn btn-accent" style="width: 100%; margin-top: 18px;" onclick="logCommentFromInput()">Log Comment</button>
+                            </div>
+                        </div>
+                        
+                        <div style="margin-top: 15px;">
+                            <label>Electronic observing log:</label>
+                            <textarea id="rt-log-terminal" readonly style="width: 100%; height: 120px; font-family: monospace; font-size: 0.8rem; background: rgba(15, 23, 42, 0.6); color: #10b981; border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 6px; padding: 10px; margin-top: 5px; resize: none;"></textarea>
+                        </div>
+                        
+                        <div style="margin-top: 15px; display: flex; gap: 10px;">
+                            <button class="btn btn-accent" onclick="recalculateStartingNow()">Recalculate Schedule Starting "Now"</button>
+                            <button class="btn btn-danger" onclick="clearRealTimeLog()">Clear Log</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            </div>
+        </div>
+    </div>
+    
+    <script src="../static/app.js"></script>
+</body>
+</html>

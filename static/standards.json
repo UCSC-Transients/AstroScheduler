@@ -1,0 +1,146 @@
+[
+  {
+    "name": "BD+284211",
+    "ra": "21:51:11.07",
+    "dec": "+28:51:51.80",
+    "color": "blue",
+    "quality": "good",
+    "magnitude": 10.5,
+    "exposure_times": {
+      "Lick Shane 3m": 300,
+      "Keck I": 60
+    }
+  },
+  {
+    "name": "BD+174708",
+    "ra": "22:11:31.37",
+    "dec": "+18:05:34.20",
+    "color": "red",
+    "quality": "good",
+    "magnitude": 9.5,
+    "exposure_times": {
+      "Lick Shane 3m": 300,
+      "Keck I": 60
+    }
+  },
+  {
+    "name": "HD19445",
+    "ra": "03:08:25.86",
+    "dec": "+26:20:05.70",
+    "color": "red",
+    "quality": "good",
+    "magnitude": 8.0,
+    "exposure_times": {
+      "Lick Shane 3m": 300,
+      "Keck I": 60
+    }
+  },
+  {
+    "name": "G191B2B",
+    "ra": "05:05:30.60",
+    "dec": "+52:49:54.00",
+    "color": "blue",
+    "quality": "okay",
+    "magnitude": 11.8,
+    "exposure_times": {
+      "Lick Shane 3m": 300,
+      "Keck I": 60
+    }
+  },
+  {
+    "name": "HD84937",
+    "ra": "09:48:56.09",
+    "dec": "+13:44:39.30",
+    "color": "red",
+    "quality": "okay",
+    "magnitude": 8.3,
+    "exposure_times": {
+      "Lick Shane 3m": 300,
+      "Keck I": 60
+    }
+  },
+  {
+    "name": "Feige 34",
+    "ra": "10:39:36.74",
+    "dec": "+43:06:09.30",
+    "color": "blue",
+    "quality": "good",
+    "magnitude": 11.2,
+    "exposure_times": {
+      "Lick Shane 3m": 300,
+      "Keck I": 60
+    }
+  },
+  {
+    "name": "HZ 44",
+    "ra": "13:23:35.26",
+    "dec": "+36:07:59.50",
+    "color": "blue",
+    "quality": "okay",
+    "magnitude": 11.7,
+    "exposure_times": {
+      "Lick Shane 3m": 300,
+      "Keck I": 60
+    }
+  },
+  {
+    "name": "BD+262606",
+    "ra": "14:49:02.35",
+    "dec": "+25:42:09.10",
+    "color": "red",
+    "quality": "good",
+    "magnitude": 9.7,
+    "exposure_times": {
+      "Lick Shane 3m": 300,
+      "Keck I": 60
+    }
+  },
+  {
+    "name": "Feige 110",
+    "ra": "23:19:58.39",
+    "dec": "-05:09:55.80",
+    "color": "blue",
+    "quality": "good",
+    "magnitude": 11.8,
+    "exposure_times": {
+      "Lick Shane 3m": 300,
+      "Keck I": 60
+    }
+  },
+  {
+    "name": "LTT 377",
+    "ra": "00:41:46.82",
+    "dec": "-33:39:08.2",
+    "color": "blue",
+    "quality": "okay",
+    "magnitude": 11.2,
+    "exposure_times": {
+      "Lick Shane 3m": 300,
+      "Keck I": 60
+    }
+  },
+  {
+    "name": "LTT 1788",
+    "ra": "03:48:22.2",
+    "dec": "-39:08:35",
+    "color": "blue",
+    "quality": "okay",
+    "magnitude": 13.1,
+    "exposure_times": {
+      "Lick Shane 3m": 300,
+      "Keck I": 60
+    }
+  },
+  {
+    "name": "LTT 2415",
+    "ra": "05:56:24.2",
+    "dec": "-27:51:26",
+    "color": "blue",
+    "quality": "okay",
+    "magnitude": 12.2,
+    "exposure_times": {
+      "Lick Shane 3m": 300,
+      "Keck I": 60
+    }
+  }
+]
