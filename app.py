@@ -101,7 +101,7 @@ def run_schedule_logic(data: dict) -> dict:
 # ==============================================================================
 
 if HAS_FASTAPI:
-    app = FastAPI(title="Astronomical Observation Scheduler")
+    app = FastAPI(title="UCSC AstroScheduler")
     
     @app.post("/api/schedule")
     async def api_schedule(request: Request):
