@@ -47,8 +47,8 @@ class TestScheduler(unittest.TestCase):
         # Two conflicting targets at same position
         # Dec = -16.0 limits their observability window to a very short transit duration (airmass < 1.7)
         # Mag = 18.2 results in an exposure time requiring 35 mins (7 chunks) each, forcing them to conflict.
-        t1 = Target("Target1.2", lst_mid * 15.0, -16.0, 18.2, 1.2)
-        t2 = Target("Target1.8", lst_mid * 15.0, -16.0, 18.2, 1.8)
+        t1 = Target("Target1.2", lst_mid * 15.0, -16.0, 19.0, 1.2)
+        t2 = Target("Target1.8", lst_mid * 15.0, -16.0, 19.0, 1.8)
         
         targets = [t1, t2]
         res = scheduler.solve(targets)
@@ -204,6 +204,81 @@ class TestScheduler(unittest.TestCase):
         for b in standard_blocks_one:
             self.assertEqual(b['target_name'], "BD+284211")
 
+    def test_manual_start_time_override(self):
+        observatory = Observatory("Lick Observatory", 37.3414, -121.6429, 1283)
+        telescope = ShaneTelescope()
+        date_local = datetime.date(2026, 6, 18)
+        scheduler = Scheduler(observatory, telescope, date_local)
+
+        # Create a target with manual start time pinned at the middle of the night
+        mid_chunk = scheduler.num_chunks // 2
+        start_time_str = scheduler.chunk_times[mid_chunk].isoformat()
+        lst_mid = get_lst(scheduler.chunk_times[mid_chunk], observatory.longitude)
+
+        # Even with high magnitude and Dec that would normally restrict it or require twilight bypass,
+        # manually scheduling it should succeed because soft constraints are relaxed.
+        t1 = Target(
+            name="PinnedTarget",
+            ra=lst_mid * 15.0,
+            dec=37.3,
+            magnitude=15.0,
+            priority=1.0,
+            manual_start_time=start_time_str
+        )
+        res = scheduler.solve([t1])
+        print("DEBUG target.manual_start_time:", t1.manual_start_time)
+        print("DEBUG chunk_times[mid]:", scheduler.chunk_times[mid_chunk].isoformat())
+        print("DEBUG parsed idx:", scheduler.get_chunk_idx_from_time_str(t1.manual_start_time))
+        print("DEBUG is_chunk_valid:", scheduler.is_chunk_valid(t1, mid_chunk, is_manual=True))
+        print("DEBUG solve results:", res)
+        scheduled = [b for b in res['blocks'] if b['target_name'] == "PinnedTarget"]
+        self.assertEqual(len(scheduled), 1)
+        self.assertEqual(scheduled[0]['start_time'], start_time_str)
+
+    def test_multiple_manual_standards(self):
+        observatory = Observatory("Lick Observatory", 37.3414, -121.6429, 1283)
+        telescope = ShaneTelescope()
+        # Use September equinox for longer twilight/night and excellent visibility of these RAs
+        date_local = datetime.date(2026, 9, 21)
+        scheduler = Scheduler(observatory, telescope, date_local)
+
+        # Select 5 standards manually that are well-spaced and visible
+        selected = ["BD+284211", "BD+174708", "HD19445", "G191B2B", "BD+262606"]
+        res = scheduler.solve([], auto_standards=False, selected_standards=selected)
+        standard_blocks = [b for b in res['blocks'] if b['priority'] == 0.0]
+        
+        # Verify that all 5 standards are scheduled
+        scheduled_names = {b['target_name'] for b in standard_blocks}
+        self.assertEqual(len(scheduled_names), 5)
+        for name in selected:
+            self.assertIn(name, scheduled_names)
+
+    def test_manual_night_limits(self):
+        observatory = Observatory("Lick Observatory", 37.3414, -121.6429, 1283)
+        telescope = ShaneTelescope()
+        date_local = datetime.date(2026, 6, 18)
+        scheduler = Scheduler(observatory, telescope, date_local)
+        
+        # Set manual limits override (e.g. half night: night starts at 04:00 and ends at 08:00 UT)
+        realtime_constraints = {
+            'manual_limits_enabled': True,
+            'manual_limit_start': '04:00',
+            'manual_limit_end': '08:00',
+            'manual_limit_tz': 'UTC'
+        }
+        res = scheduler.solve([], realtime_constraints=realtime_constraints)
+        
+        # Check that scheduler.start_night and scheduler.end_night are overridden correctly
+        self.assertEqual(scheduler.start_night.hour, 4)
+        self.assertEqual(scheduler.start_night.minute, 0)
+        self.assertEqual(scheduler.end_night.hour, 8)
+        self.assertEqual(scheduler.end_night.minute, 0)
+        
+        # Check that chunk times are strictly within the manual limit
+        for t in scheduler.chunk_times:
+            self.assertTrue(scheduler.start_night <= t < scheduler.end_night)
+
 
 if __name__ == '__main__':
     unittest.main()
+

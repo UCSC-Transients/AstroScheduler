@@ -534,32 +534,32 @@ input:focus, select:focus {
 
 .timeline-axis {
     position: relative;
-    height: 35px;
-    border-bottom: 2px solid var(--border-color);
+    height: 45px;
+    border-top: 2px solid var(--border-color);
     margin-top: 15px;
-    display: flex;
-    justify-content: space-between;
+    display: block;
 }
 
 .timeline-tick {
-    position: relative;
+    position: absolute;
+    top: 6px;
+    transform: translateX(-50%);
     font-size: 0.75rem;
     color: var(--text-muted);
-    height: 100%;
+    text-align: center;
     display: flex;
     flex-direction: column;
     align-items: center;
-    justify-content: flex-end;
-    padding-bottom: 5px;
 }
 
 .timeline-tick::before {
     content: "";
     position: absolute;
-    top: 100%;
+    bottom: 100%;
     left: 50%;
+    transform: translateX(-50%);
     width: 2px;
-    height: 8px;
+    height: 6px;
     background: var(--border-color);
 }
 
@@ -770,22 +770,36 @@ input:focus, select:focus {
     border: 1px solid transparent;
 }
 
-.status-pill.status-scheduled {
+.status-pill.status-observed {
     background: rgba(16, 185, 129, 0.15);
     border-color: rgba(16, 185, 129, 0.3);
-    color: #6ee7b7;
+    color: #34d399; /* Green */
 }
 
-.status-pill.status-conflict {
+.status-pill.status-scheduled {
+    background: rgba(245, 158, 11, 0.15);
+    border-color: rgba(245, 158, 11, 0.3);
+    color: #fcd34d; /* Yellow */
+}
+
+.status-pill.status-not-scheduled {
+    background: rgba(249, 115, 22, 0.15);
+    border-color: rgba(249, 115, 22, 0.3);
+    color: #fdba74; /* Orange */
+}
+
+.status-pill.status-failed,
+.status-pill.status-punted,
+.status-pill.status-skipped {
     background: rgba(239, 68, 68, 0.15);
     border-color: rgba(239, 68, 68, 0.3);
-    color: #fca5a5;
+    color: #fca5a5; /* Red */
 }
 
 .status-pill.status-unobservable {
-    background: rgba(100, 116, 139, 0.15);
-    border-color: rgba(100, 116, 139, 0.3);
-    color: #cbd5e1;
+    background: rgba(15, 23, 42, 0.6);
+    border-color: rgba(255, 255, 255, 0.1);
+    color: #94a3b8; /* Dark/Gray representing black text/pill */
 }
 
 .action-links {
@@ -909,13 +923,32 @@ input:focus, select:focus {
     border-radius: 50%;
     vertical-align: middle;
 }
+.status-dot-observed {
+    background-color: #10b981; /* Green */
+    box-shadow: 0 0 6px rgba(16, 185, 129, 0.5);
+}
 .status-dot-scheduled {
-    background-color: var(--success);
-    box-shadow: 0 0 8px var(--success-glow);
+    background-color: #f59e0b; /* Yellow */
+    box-shadow: 0 0 6px rgba(245, 158, 11, 0.5);
+}
+.status-dot-not-scheduled {
+    background-color: #f97316; /* Orange */
+    box-shadow: 0 0 6px rgba(249, 115, 22, 0.5);
+}
+.status-dot-failed,
+.status-dot-punted,
+.status-dot-skipped {
+    background-color: #ef4444; /* Red */
+    box-shadow: 0 0 6px rgba(239, 68, 68, 0.5);
+}
+.status-dot-unobservable {
+    background-color: #000000; /* Black */
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    box-shadow: 0 0 4px rgba(0, 0, 0, 0.8);
 }
 .status-dot-standby {
-    background-color: var(--danger);
-    box-shadow: 0 0 8px var(--danger-glow);
+    background-color: #ef4444;
+    box-shadow: 0 0 6px rgba(239, 68, 68, 0.5);
 }
 
 /* STANDARD STARS ROW STYLE */
@@ -974,13 +1007,28 @@ input:focus, select:focus {
     margin-right: 6px;
     vertical-align: middle;
 }
-.status-dot-scheduled {
+.status-dot-observed {
     background-color: #10b981;
     box-shadow: 0 0 6px rgba(16, 185, 129, 0.5);
 }
-.status-dot-standby {
+.status-dot-scheduled {
+    background-color: #f59e0b;
+    box-shadow: 0 0 6px rgba(245, 158, 11, 0.5);
+}
+.status-dot-not-scheduled {
+    background-color: #f97316;
+    box-shadow: 0 0 6px rgba(249, 115, 22, 0.5);
+}
+.status-dot-failed,
+.status-dot-punted,
+.status-dot-skipped {
     background-color: #ef4444;
     box-shadow: 0 0 6px rgba(239, 68, 68, 0.5);
+}
+.status-dot-unobservable {
+    background-color: #000000;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    box-shadow: 0 0 4px rgba(0, 0, 0, 0.8);
 }
 
 /* Real-Time Highlight */

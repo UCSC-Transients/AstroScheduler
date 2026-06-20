@@ -81,20 +81,20 @@
                                 </select>
                             </div>
                         </div>
-                        <div class="form-row" id="manual-night-limits-container" style="margin-top: 15px; gap: 10px;">
-                            <div class="form-group" style="flex: 1;">
+                        <div class="form-row" id="manual-night-limits-container" style="margin-top: 15px; display: flex; align-items: flex-end; gap: 10px;">
+                            <div class="form-group" style="flex: 2;">
                                 <label for="manual-night-start">Night Start</label>
-                                <input type="text" id="manual-night-start" placeholder="Sunset" value="" style="width: 100%; text-align: center; font-family: monospace;" onchange="triggerScheduling()">
+                                <input type="text" id="manual-night-start" placeholder="" value="" style="width: 100%; text-align: center; font-family: monospace;" onchange="triggerScheduling()">
                             </div>
-                            <div class="form-group" style="flex: 1;">
+                            <div class="form-group" style="flex: 2;">
                                 <label for="manual-night-end">Night End</label>
-                                <input type="text" id="manual-night-end" placeholder="Sunrise" value="" style="width: 100%; text-align: center; font-family: monospace;" onchange="triggerScheduling()">
+                                <input type="text" id="manual-night-end" placeholder="" value="" style="width: 100%; text-align: center; font-family: monospace;" onchange="triggerScheduling()">
                             </div>
-                            <div class="form-group" style="flex: 1;">
+                            <div class="form-group" style="flex: 1.2;">
                                 <label for="manual-night-tz">Timezone</label>
-                                <select id="manual-night-tz" style="width: 100%;" onchange="triggerScheduling()">
-                                    <option value="UTC" selected>UTC</option>
-                                    <option value="obs">Local (Shane)</option>
+                                <select id="manual-night-tz" style="width: 100%;" onchange="updateNightOverridePlaceholders(); triggerScheduling();">
+                                    <option value="UTC" selected>UT</option>
+                                    <option value="obs">Local</option>
                                 </select>
                             </div>
                         </div>
@@ -200,6 +200,45 @@
             <div class="right-col">
                 <!-- ALERTS CONSOLE -->
                 <div class="alerts-console" id="alerts-console" style="display: none;"></div>
+
+                <!-- REAL-TIME OBSERVING LOG CARD -->
+                <div class="card glass-card animate-fade-in real-time-only" id="observing-log-card" style="display: none; margin-bottom: 20px;">
+                    <div class="card-header-toggle">
+                        <h2>Observing Log</h2>
+                        <button class="btn-collapse" onclick="toggleCollapse(this)">−</button>
+                    </div>
+                    <div class="card-body-collapse">
+                        <!-- Controls Row -->
+                        <div style="display: flex; flex-wrap: wrap; gap: 15px; align-items: flex-end; margin-bottom: 15px;">
+                            <div class="form-group" style="flex: 2; min-width: 200px; margin-bottom: 0;">
+                                <label for="rt-active-target" style="font-weight: 600; color: var(--accent-cyan);">Active Target</label>
+                                <select id="rt-active-target" style="width: 100%; padding: 6px 12px; font-size: 0.9rem; border-radius: 4px; background: rgba(255, 255, 255, 0.05); color: #fff; border: 1px solid var(--border-color);"></select>
+                            </div>
+                            <div style="display: flex; gap: 10px; margin-bottom: 0; align-items: flex-end; flex-wrap: wrap;">
+                                <button class="btn btn-success" style="background-color: #10b981; border-color: #059669; color: #fff; padding: 8px 16px; font-weight: 600;" onclick="startObservation()">Start Observation</button>
+                                <button class="btn btn-danger" style="background-color: #ef4444; border-color: #dc2626; color: #fff; padding: 8px 16px; font-weight: 600;" onclick="failObservation()">Failed</button>
+                                <button class="btn btn-danger" style="background-color: #f97316; border-color: #ea580c; color: #fff; padding: 8px 16px; font-weight: 600;" onclick="puntObservation()">Punted</button>
+                            </div>
+                        </div>
+
+                        <!-- Comment Row -->
+                        <div style="display: flex; flex-wrap: wrap; gap: 15px; margin-bottom: 15px; align-items: flex-end;">
+                            <div class="form-group" style="flex: 3; min-width: 250px; margin-bottom: 0;">
+                                <label for="rt-comment">Observation Log Comment</label>
+                                <input type="text" id="rt-comment" placeholder="Type a comment to log..." onkeydown="if(event.key === 'Enter') { logCommentFromInput(); event.preventDefault(); }" style="width: 100%;">
+                            </div>
+                            <div style="flex: 1; min-width: 120px;">
+                                <button class="btn btn-accent" style="width: 100%; padding: 8px 12px;" onclick="logCommentFromInput()">Log Comment</button>
+                            </div>
+                        </div>
+
+                        <!-- Terminal Log -->
+                        <div style="margin-top: 10px;">
+                            <label>Electronic Observation Log:</label>
+                            <textarea id="rt-log-terminal" readonly style="width: 100%; height: 150px; font-family: monospace; font-size: 0.85rem; background: rgba(15, 23, 42, 0.8); color: #10b981; border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 6px; padding: 10px; margin-top: 5px; resize: none;"></textarea>
+                        </div>
+                    </div>
+                </div>
 
                 <!-- SCHEDULE TIMELINE CARD -->
                 <div class="card glass-card animate-fade-in delay-2">
@@ -351,51 +390,55 @@
                             </table>
                         </div>
                     </div>
-                </div>
-
-                <!-- REAL-TIME OBSERVING DASHBOARD CARD -->
+                   <!-- REAL-TIME OBSERVING CONSTRAINTS CARD -->
                 <div class="card glass-card animate-fade-in real-time-only" style="display: none;">
                     <div class="card-header-toggle">
-                        <h2>Real-Time Observation Log & Dashboard</h2>
+                        <h2>Real-Time Observing Constraints</h2>
                         <button class="btn-collapse" onclick="toggleCollapse(this)">−</button>
                     </div>
                     <div class="card-body-collapse">
-                        <div class="form-row">
-                            <div class="form-group">
-                                <label for="rt-extinction">Extinction (mag offset)</label>
-                                <input type="number" id="rt-extinction" step="0.05" value="0.0" style="width: 80px;" onchange="updateRealTimeParameters()">
+                        <!-- Compact Flex Row for inputs -->
+                        <div style="display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 15px;">
+                            <div class="form-group" style="flex: 0 0 auto; width: 130px; margin-bottom: 10px;">
+                                <label for="rt-extinction">Extinction (mag/airmass)</label>
+                                <input type="number" id="rt-extinction" step="0.05" value="0.0" style="width: 100%;" onchange="updateRealTimeParameters()">
                             </div>
-                            <div class="form-group">
-                                <label for="rt-mag-limit">Pointing Magnitude Limit</label>
-                                <input type="number" id="rt-mag-limit" step="0.5" placeholder="None" style="width: 80px;" onchange="updateRealTimeParameters()">
+                            <div class="form-group" style="flex: 0 0 auto; width: 130px; margin-bottom: 10px;">
+                                <label for="rt-mag-limit">Magnitude Limit</label>
+                                <input type="number" id="rt-mag-limit" step="0.5" placeholder="None" style="width: 100%;" onchange="updateRealTimeParameters()">
                             </div>
-                            <div class="form-group">
-                                <label for="rt-ha-limit-east">Max HA East (hours)</label>
-                                <input type="number" id="rt-ha-limit-east" step="0.1" value="-5.67" style="width: 80px;" onchange="updateRealTimeParameters()">
-                            </div>
-                            <div class="form-group">
-                                <label for="rt-ha-limit-west">Max HA West (hours)</label>
-                                <input type="number" id="rt-ha-limit-west" step="0.1" value="3.75" style="width: 80px;" onchange="updateRealTimeParameters()">
-                            </div>
-                            <div class="form-group">
+                            <div class="form-group" style="flex: 0 0 auto; width: 130px; margin-bottom: 10px;">
                                 <label for="rt-alt-limit">Min Altitude (deg)</label>
-                                <input type="number" id="rt-alt-limit" step="1" value="20" style="width: 80px;" onchange="updateRealTimeParameters()">
+                                <input type="number" id="rt-alt-limit" step="1" value="20" style="width: 100%;" onchange="updateRealTimeParameters()">
                             </div>
-                        </div>
-                        
-                        <div class="form-row" style="margin-top: 10px;">
-                            <div class="form-group" style="flex: 2;">
-                                <label for="rt-comment">Observation Log Comment</label>
-                                <input type="text" id="rt-comment" placeholder="Type a comment to log..." onkeydown="if(event.key === 'Enter') { logCommentFromInput(); event.preventDefault(); }">
+                            <div class="form-group" style="flex: 0 0 auto; width: 130px; margin-bottom: 10px;">
+                                <label for="rt-alt-max">Max Altitude (deg)</label>
+                                <input type="number" id="rt-alt-max" step="1" value="90" style="width: 100%;" onchange="updateRealTimeParameters()">
                             </div>
-                            <div class="form-group" style="flex: 1; align-items: flex-end;">
-                                <button class="btn btn-accent" style="width: 100%; margin-top: 18px;" onclick="logCommentFromInput()">Log Comment</button>
+                            <div class="form-group" style="flex: 0 0 auto; width: 130px; margin-bottom: 10px;">
+                                <label for="rt-dec-min">Min Dec (deg)</label>
+                                <input type="number" id="rt-dec-min" step="1" value="-35" style="width: 100%;" onchange="updateRealTimeParameters()">
                             </div>
-                        </div>
-                        
-                        <div style="margin-top: 15px;">
-                            <label>Electronic Observation Log:</label>
-                            <textarea id="rt-log-terminal" readonly style="width: 100%; height: 120px; font-family: monospace; font-size: 0.8rem; background: rgba(15, 23, 42, 0.6); color: #10b981; border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 6px; padding: 10px; margin-top: 5px; resize: none;"></textarea>
+                            <div class="form-group" style="flex: 0 0 auto; width: 130px; margin-bottom: 10px;">
+                                <label for="rt-dec-max">Max Dec (deg)</label>
+                                <input type="number" id="rt-dec-max" step="1" value="72" style="width: 100%;" onchange="updateRealTimeParameters()">
+                            </div>
+                            <div class="form-group" style="flex: 0 0 auto; width: 130px; margin-bottom: 10px;">
+                                <label for="rt-az-min">Min Azimuth (deg)</label>
+                                <input type="number" id="rt-az-min" step="5" value="0" style="width: 100%;" onchange="updateRealTimeParameters()">
+                            </div>
+                            <div class="form-group" style="flex: 0 0 auto; width: 130px; margin-bottom: 10px;">
+                                <label for="rt-az-max">Max Azimuth (deg)</label>
+                                <input type="number" id="rt-az-max" step="5" value="360" style="width: 100%;" onchange="updateRealTimeParameters()">
+                            </div>
+                            <div class="form-group" style="flex: 0 0 auto; width: 130px; margin-bottom: 10px;">
+                                <label for="rt-ha-limit-east">Max HA East (h)</label>
+                                <input type="number" id="rt-ha-limit-east" step="0.1" value="-5.67" style="width: 100%;" onchange="updateRealTimeParameters()">
+                            </div>
+                            <div class="form-group" style="flex: 0 0 auto; width: 130px; margin-bottom: 10px;">
+                                <label for="rt-ha-limit-west">Max HA West (h)</label>
+                                <input type="number" id="rt-ha-limit-west" step="0.1" value="3.75" style="width: 100%;" onchange="updateRealTimeParameters()">
+                            </div>
                         </div>
                         
                         <div style="margin-top: 15px; display: flex; gap: 10px;">

@@ -72,13 +72,15 @@ def run_schedule_logic(data: dict) -> dict:
             manual_dur = None
             
         magnitude = float(t_data.get('magnitude'))
-        # Apply real-time extinction offset to magnitude
-        magnitude += extinction
         
-        # Filter by magnitude limit if specified
-        if mag_limit is not None and magnitude > mag_limit:
+        # Filter by magnitude limit if specified (compare raw magnitude + extinction for limit)
+        if mag_limit is not None and (magnitude + extinction) > mag_limit:
             continue
             
+        status = t_data.get('status')
+        if status in ["Skipped", "Unobservable", "Failed", "Punted"]:
+            continue
+
         targets.append(Target(
             name=t_data.get('name'),
             ra=t_data.get('ra'),
@@ -91,10 +93,46 @@ def run_schedule_logic(data: dict) -> dict:
             comment=t_data.get('comment', ''),
             manual_start_time=t_data.get('manual_start_time'),
             manual_duration=manual_dur,
-            schedule_before=t_data.get('schedule_before')
+            schedule_before=t_data.get('schedule_before'),
+            status=status
         ))
         
     scheduler = Scheduler(observatory, telescope, date_local)
+
+    night_start_override = data.get('night_start_override')
+    night_end_override = data.get('night_end_override')
+    if night_start_override:
+        try:
+            dt = datetime.datetime.fromisoformat(night_start_override.replace("Z", "+00:00"))
+            scheduler.start_night = dt
+            scheduler.solar_times['sunset'] = dt
+            if scheduler.solar_times['twilight_evening_18'] < dt:
+                scheduler.solar_times['twilight_evening_18'] = dt
+            if scheduler.solar_times['twilight_evening_12'] < dt:
+                scheduler.solar_times['twilight_evening_12'] = dt
+        except Exception:
+            pass
+    if night_end_override:
+        try:
+            dt = datetime.datetime.fromisoformat(night_end_override.replace("Z", "+00:00"))
+            scheduler.end_night = dt
+            scheduler.solar_times['sunrise'] = dt
+            if scheduler.solar_times['twilight_morning_18'] > dt:
+                scheduler.solar_times['twilight_morning_18'] = dt
+            if scheduler.solar_times['twilight_morning_12'] > dt:
+                scheduler.solar_times['twilight_morning_12'] = dt
+        except Exception:
+            pass
+
+    if night_start_override or night_end_override:
+        total_seconds = (scheduler.end_night - scheduler.start_night).total_seconds()
+        if total_seconds > 0:
+            scheduler.num_chunks = int(total_seconds // 60)
+            scheduler.chunk_times = [
+                scheduler.start_night + datetime.timedelta(minutes=i)
+                for i in range(scheduler.num_chunks)
+            ]
+
     return scheduler.solve(
         targets,
         disabled_standards=disabled_standards,
@@ -212,7 +250,7 @@ def run_fallback_server(port: int = 8000):
 # ==============================================================================
 
 if __name__ == "__main__":
-    port = 8000
+    port = int(os.environ.get("PORT", 8055))
     # Ensure static and templates folders exist
     os.makedirs("static", exist_ok=True)
     os.makedirs("templates", exist_ok=True)
