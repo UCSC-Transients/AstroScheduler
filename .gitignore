@@ -23,3 +23,5 @@ browser/
 *.webp
 *.png
 !assets/
+push_and_pr.sh
+
