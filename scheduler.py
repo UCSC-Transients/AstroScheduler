@@ -533,12 +533,18 @@ class Scheduler:
             
         # 4. Real-time Pointing Limits (HA, Altitude)
         rt = getattr(self, 'realtime_constraints', {})
-        ha_limit = rt.get('ha_limit')
-        if ha_limit is not None:
+        ha_limit_east = rt.get('ha_limit_east')
+        ha_limit_west = rt.get('ha_limit_west')
+        if ha_limit_east is not None or ha_limit_west is not None:
             lst = get_lst(t, self.observatory.longitude)
             ha = get_hour_angle(lst, target.ra)
-            if abs(ha) > ha_limit:
-                return False
+            try:
+                limit_east = float(ha_limit_east) if ha_limit_east is not None else self.telescope.ha_limit_east
+                limit_west = float(ha_limit_west) if ha_limit_west is not None else self.telescope.ha_limit_west
+                if not (limit_east <= ha <= limit_west):
+                    return False
+            except (ValueError, TypeError):
+                pass
                 
         alt_limit = rt.get('alt_limit')
         if alt_limit is not None and alt_limit != "":
@@ -570,7 +576,7 @@ class Scheduler:
                 
         return True
 
-    def solve(self, targets: List[Target], disabled_standards: Optional[Set[str]] = None, realtime_constraints: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def solve(self, targets: List[Target], disabled_standards: Optional[Set[str]] = None, selected_standards: Optional[List[str]] = None, auto_standards: bool = True, realtime_constraints: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Main entry point for scheduling. Schedules standard stars first, then science targets.
         """
@@ -699,7 +705,10 @@ class Scheduler:
                 {"name": "LTT 2415", "ra": "05:56:24.2", "dec": "-27:51:26", "color": "blue", "quality": "okay", "magnitude": 12.2, "exposure_times": {"Lick Shane 3m": 300}}
             ]
             
-        if disabled_standards:
+        if not auto_standards:
+            sel_set = set(selected_standards or [])
+            standards_data = [s for s in standards_data if s['name'] in sel_set]
+        elif disabled_standards:
             standards_data = [s for s in standards_data if s['name'] not in disabled_standards]
             
         # Parse standard stars into Target objects
@@ -1176,9 +1185,10 @@ class Scheduler:
                 parts = time_str.split(":")
                 hh = int(parts[0])
                 mm = int(parts[1])
-                # Find closest chunk by UTC hour/minute matching
+                # Find closest chunk by hour/minute matching with 30 minute tolerance
                 for idx, c_time in enumerate(self.chunk_times):
-                    if c_time.hour == hh and abs(c_time.minute - mm) < 5:
+                    diff_min = abs((c_time.hour - hh) * 60 + (c_time.minute - mm))
+                    if diff_min < 30 or diff_min > 1410:
                         return idx
                 return None
             except Exception:
@@ -1191,6 +1201,6 @@ class Scheduler:
             if diff < min_diff:
                 min_diff = diff
                 best_idx = idx
-        if min_diff < 300:
+        if min_diff < 1800:
             return best_idx
         return None

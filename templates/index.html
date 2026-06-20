@@ -81,22 +81,14 @@
                                 </select>
                             </div>
                         </div>
-                        <div class="form-row" style="margin-top: 15px;">
-                            <div class="form-group" style="flex: 1;">
-                                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
-                                    <input type="checkbox" id="manual-night-limits-toggle" onchange="toggleManualNightLimits(this.checked)">
-                                    <span>Manual Night Limits</span>
-                                </label>
-                            </div>
-                        </div>
-                        <div class="form-row" id="manual-night-limits-container" style="display: none; margin-top: 10px; gap: 10px;">
+                        <div class="form-row" id="manual-night-limits-container" style="margin-top: 15px; gap: 10px;">
                             <div class="form-group" style="flex: 1;">
                                 <label for="manual-night-start">Night Start</label>
-                                <input type="text" id="manual-night-start" placeholder="HH:MM" value="20:00" style="width: 100%; text-align: center; font-family: monospace;" onchange="triggerScheduling()">
+                                <input type="text" id="manual-night-start" placeholder="Sunset" value="" style="width: 100%; text-align: center; font-family: monospace;" onchange="triggerScheduling()">
                             </div>
                             <div class="form-group" style="flex: 1;">
                                 <label for="manual-night-end">Night End</label>
-                                <input type="text" id="manual-night-end" placeholder="HH:MM" value="05:00" style="width: 100%; text-align: center; font-family: monospace;" onchange="triggerScheduling()">
+                                <input type="text" id="manual-night-end" placeholder="Sunrise" value="" style="width: 100%; text-align: center; font-family: monospace;" onchange="triggerScheduling()">
                             </div>
                             <div class="form-group" style="flex: 1;">
                                 <label for="manual-night-tz">Timezone</label>
@@ -228,8 +220,8 @@
                                     <tr>
                                         <th style="width: 140px;">Time (UTC / Loc)</th>
                                         <th>Target</th>
-                                        <th>Prio</th>
-                                        <th style="width: 100px;">Duration (m)</th>
+                                        <th>Priority</th>
+                                        <th style="width: 110px;">Duration (min)</th>
                                         <th>Airmass Range</th>
                                         <th>Median Airmass</th>
                                         <th>Comment</th>
@@ -303,15 +295,15 @@
                                 <thead>
                                     <tr>
                                         <th style="width: 30px;"></th>
-                                         <th onclick="setTargetSort('name')" style="cursor: pointer; user-select: none;">Name <span id="sort-icon-name"></span></th>
-                                                                                 <th onclick="setTargetSort('ra')" style="cursor: pointer; user-select: none;">RA <span id="sort-icon-ra"></span></th>
-                                                                                 <th onclick="setTargetSort('dec')" style="cursor: pointer; user-select: none;">Dec <span id="sort-icon-dec"></span></th>
-                                                                                 <th onclick="setTargetSort('magnitude')" style="cursor: pointer; user-select: none;">Mag <span id="sort-icon-magnitude"></span></th>
-                                                                                 <th onclick="setTargetSort('priority')" style="cursor: pointer; user-select: none;">Prio <span id="sort-icon-priority"></span></th>
-                                        <th>S/N</th>
+                                        <th onclick="setTargetSort('name')" style="cursor: pointer; user-select: none;">Name <span id="sort-icon-name"></span></th>
+                                        <th onclick="setTargetSort('ra')" style="cursor: pointer; user-select: none;">Right Ascension <span id="sort-icon-ra"></span></th>
+                                        <th onclick="setTargetSort('dec')" style="cursor: pointer; user-select: none;">Declination <span id="sort-icon-dec"></span></th>
+                                        <th onclick="setTargetSort('magnitude')" style="cursor: pointer; user-select: none;">Magnitude <span id="sort-icon-magnitude"></span></th>
+                                        <th onclick="setTargetSort('priority')" style="cursor: pointer; user-select: none;">Priority <span id="sort-icon-priority"></span></th>
+                                        <th>Signal-to-Noise Ratio (S/N)</th>
                                         <th>Flags</th>
                                         <th>Manual Start</th>
-                                        <th>Manual Dur (m)</th>
+                                        <th>Manual Duration (min)</th>
                                         <th>Status</th>
                                         <th>Comment</th>
                                         <th>Actions</th>
@@ -329,8 +321,11 @@
 
                 <!-- STANDARD STARS CARD -->
                 <div class="card glass-card animate-fade-in delay-4">
-                    <div class="card-header-toggle">
-                        <h2>Standard Stars</h2>
+                    <div class="card-header-toggle" style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+                        <div style="display: flex; align-items: center; gap: 15px;">
+                            <h2 style="margin: 0;">Standard Stars</h2>
+                            <button id="reset-auto-standards-btn" class="btn" style="display: none; padding: 2px 8px; font-size: 0.75rem; background: transparent; border: 1px solid rgba(255,255,255,0.2); color: var(--text-secondary); border-radius: 4px; cursor: pointer; transition: all 0.2s;" onclick="resetToAutoStandards()">Reset to Auto Selection</button>
+                        </div>
                         <button class="btn-collapse" onclick="toggleCollapse(this)">−</button>
                     </div>
                     <div class="card-body-collapse">
@@ -342,9 +337,9 @@
                                         <th>Name</th>
                                         <th>Color</th>
                                         <th>Quality</th>
-                                        <th>Mag</th>
-                                        <th>RA</th>
-                                        <th>Dec</th>
+                                        <th>Magnitude</th>
+                                        <th>Right Ascension</th>
+                                        <th>Declination</th>
                                         <th>Status</th>
                                     </tr>
                                 </thead>
@@ -361,7 +356,7 @@
                 <!-- REAL-TIME OBSERVING DASHBOARD CARD -->
                 <div class="card glass-card animate-fade-in real-time-only" style="display: none;">
                     <div class="card-header-toggle">
-                        <h2>Real-Time Log & Dashboard</h2>
+                        <h2>Real-Time Observation Log & Dashboard</h2>
                         <button class="btn-collapse" onclick="toggleCollapse(this)">−</button>
                     </div>
                     <div class="card-body-collapse">
@@ -371,12 +366,16 @@
                                 <input type="number" id="rt-extinction" step="0.05" value="0.0" style="width: 80px;" onchange="updateRealTimeParameters()">
                             </div>
                             <div class="form-group">
-                                <label for="rt-mag-limit">Pointing Mag Limit</label>
+                                <label for="rt-mag-limit">Pointing Magnitude Limit</label>
                                 <input type="number" id="rt-mag-limit" step="0.5" placeholder="None" style="width: 80px;" onchange="updateRealTimeParameters()">
                             </div>
                             <div class="form-group">
-                                <label for="rt-ha-limit">Max HA (hours)</label>
-                                <input type="number" id="rt-ha-limit" step="0.1" value="5.67" style="width: 80px;" onchange="updateRealTimeParameters()">
+                                <label for="rt-ha-limit-east">Max HA East (hours)</label>
+                                <input type="number" id="rt-ha-limit-east" step="0.1" value="-5.67" style="width: 80px;" onchange="updateRealTimeParameters()">
+                            </div>
+                            <div class="form-group">
+                                <label for="rt-ha-limit-west">Max HA West (hours)</label>
+                                <input type="number" id="rt-ha-limit-west" step="0.1" value="3.75" style="width: 80px;" onchange="updateRealTimeParameters()">
                             </div>
                             <div class="form-group">
                                 <label for="rt-alt-limit">Min Altitude (deg)</label>
@@ -386,8 +385,8 @@
                         
                         <div class="form-row" style="margin-top: 10px;">
                             <div class="form-group" style="flex: 2;">
-                                <label for="rt-comment">Obs Log Comment</label>
-                                <input type="text" id="rt-comment" placeholder="Type a comment to log...">
+                                <label for="rt-comment">Observation Log Comment</label>
+                                <input type="text" id="rt-comment" placeholder="Type a comment to log..." onkeydown="if(event.key === 'Enter') { logCommentFromInput(); event.preventDefault(); }">
                             </div>
                             <div class="form-group" style="flex: 1; align-items: flex-end;">
                                 <button class="btn btn-accent" style="width: 100%; margin-top: 18px;" onclick="logCommentFromInput()">Log Comment</button>
@@ -395,13 +394,12 @@
                         </div>
                         
                         <div style="margin-top: 15px;">
-                            <label>Electronic observing log:</label>
+                            <label>Electronic Observation Log:</label>
                             <textarea id="rt-log-terminal" readonly style="width: 100%; height: 120px; font-family: monospace; font-size: 0.8rem; background: rgba(15, 23, 42, 0.6); color: #10b981; border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 6px; padding: 10px; margin-top: 5px; resize: none;"></textarea>
                         </div>
                         
                         <div style="margin-top: 15px; display: flex; gap: 10px;">
                             <button class="btn btn-accent" onclick="recalculateStartingNow()">Recalculate Schedule Starting "Now"</button>
-                            <button class="btn btn-danger" onclick="clearRealTimeLog()">Clear Log</button>
                         </div>
                     </div>
                 </div>
@@ -411,6 +409,7 @@
         </div>
     </div>
     
+    <div id="timeline-tooltip" class="timeline-tooltip"></div>
     <script src="../static/app.js"></script>
 </body>
 </html>

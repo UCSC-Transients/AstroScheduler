@@ -46,6 +46,8 @@ def run_schedule_logic(data: dict) -> dict:
     telescope = ShaneTelescope()
     
     disabled_standards = set(data.get('disabled_standards', []))
+    selected_standards = data.get('selected_standards', [])
+    auto_standards = bool(data.get('auto_standards', True))
     rt_constraints = data.get('realtime_constraints', {})
     extinction = float(rt_constraints.get('extinction', 0.0))
     
@@ -93,7 +95,13 @@ def run_schedule_logic(data: dict) -> dict:
         ))
         
     scheduler = Scheduler(observatory, telescope, date_local)
-    return scheduler.solve(targets, disabled_standards=disabled_standards, realtime_constraints=rt_constraints)
+    return scheduler.solve(
+        targets,
+        disabled_standards=disabled_standards,
+        selected_standards=selected_standards,
+        auto_standards=auto_standards,
+        realtime_constraints=rt_constraints
+    )
 
 
 # ==============================================================================

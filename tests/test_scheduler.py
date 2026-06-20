@@ -176,6 +176,34 @@ class TestScheduler(unittest.TestCase):
         self.assertIn("ImpossibleTarget", res['unobservable'])
         self.assertEqual(len(res['conflicts']), 0)
 
+    def test_standards_override(self):
+        observatory = Observatory("Lick Observatory", 37.3414, -121.6429, 1283)
+        telescope = ShaneTelescope()
+        date_local = datetime.date(2026, 6, 18)
+        scheduler = Scheduler(observatory, telescope, date_local)
+
+        # Target 1: Observable science target
+        lst_mid = get_lst(scheduler.chunk_times[scheduler.num_chunks // 2], observatory.longitude)
+        t1 = Target("Target1", lst_mid * 15.0, 37.3, 15.0, 1)
+        targets = [t1]
+
+        # Test 1: Auto standards enabled (default)
+        res_auto = scheduler.solve(targets, auto_standards=True)
+        # Some standard blocks should be scheduled
+        standard_blocks_auto = [b for b in res_auto['blocks'] if b['priority'] == 0.0]
+        self.assertTrue(len(standard_blocks_auto) > 0)
+
+        # Test 2: Auto standards disabled, selected_standards empty
+        res_none = scheduler.solve(targets, auto_standards=False, selected_standards=[])
+        standard_blocks_none = [b for b in res_none['blocks'] if b['priority'] == 0.0]
+        self.assertEqual(len(standard_blocks_none), 0)
+
+        # Test 3: Auto standards disabled, selected_standards contains BD+284211
+        res_one = scheduler.solve(targets, auto_standards=False, selected_standards=["BD+284211"])
+        standard_blocks_one = [b for b in res_one['blocks'] if b['priority'] == 0.0]
+        for b in standard_blocks_one:
+            self.assertEqual(b['target_name'], "BD+284211")
+
 
 if __name__ == '__main__':
     unittest.main()
