@@ -232,6 +232,29 @@
                             </div>
                         </div>
 
+                        <!-- Observing Log Table -->
+                        <div style="margin-top: 15px; margin-bottom: 15px; overflow-x: auto;">
+                            <label>Observation Log Table:</label>
+                            <table class="data-table" id="rt-log-table" style="width: 100%; border-collapse: collapse; margin-top: 5px;">
+                                <thead>
+                                    <tr>
+                                        <th style="width: 30px; text-align: center;"></th>
+                                        <th style="width: 160px;">Time (UT)</th>
+                                        <th style="width: 140px;">Target Name</th>
+                                        <th style="width: 80px; text-align: center;">Duration (m)</th>
+                                        <th style="width: 110px; text-align: center;">Airmass Range</th>
+                                        <th style="width: 80px; text-align: center;">Median Airmass</th>
+                                        <th>Comment</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td colspan="7" class="text-center" style="color: var(--text-muted); padding: 15px;">No log entries.</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+
                         <!-- Terminal Log -->
                         <div style="margin-top: 10px;">
                             <label>Electronic Observation Log:</label>
@@ -264,7 +287,7 @@
                                         <th>Airmass Range</th>
                                         <th>Median Airmass</th>
                                         <th>Comment</th>
-                                        <th class="real-time-only" style="display: none; width: 140px;">Real-Time Status</th>
+                                        <th class="real-time-only" style="display: none; width: 140px;">Status</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -305,6 +328,7 @@
                         <div class="table-actions" style="display: flex; flex-wrap: wrap; gap: 10px; align-items: center;">
                             <button id="load-sample-btn" class="btn btn-outline">Load Samples</button>
                             <button id="clear-overrides-btn" class="btn btn-outline" onclick="clearAllOverrides()">Clear Overrides</button>
+                            <button id="reset-constraints-btn" class="btn btn-outline" onclick="resetCustomConstraints()">Reset Reordering</button>
                             <button id="clear-targets-btn" class="btn btn-danger">Clear All</button>
                             
                             <div class="file-upload-wrapper" style="display: flex; align-items: center; gap: 8px;">

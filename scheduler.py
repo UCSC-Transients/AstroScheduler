@@ -550,8 +550,9 @@ class Scheduler:
                     return False
 
         # 2. Telescope pointing limits (Dec, Hour Angle)
-        if not self.telescope.is_visible(target.ra, target.dec, t, self.observatory):
-            return False
+        if not is_manual:
+            if not self.telescope.is_visible(target.ra, target.dec, t, self.observatory):
+                return False
 
         # 3. Airmass limit
         airmass = self.get_airmass_for_target(target, t)
@@ -741,15 +742,15 @@ class Scheduler:
                 
         # Determine evening/morning twilight boundaries for standard star scheduling
         if getattr(self, 'manual_start_override', False) or (self.realtime_constraints and self.realtime_constraints.get('manual_limits_enabled')):
-            eve_twil_start = self.start_night
+            eve_twil_start = self.start_night + datetime.timedelta(minutes=30)
             eve_twil_end = self.start_night + datetime.timedelta(hours=1.5)
             morn_twil_start = self.end_night - datetime.timedelta(hours=1.5)
-            morn_twil_end = self.end_night
+            morn_twil_end = self.end_night - datetime.timedelta(minutes=30)
         else:
-            eve_twil_start = self.solar_times['sunset']
+            eve_twil_start = self.solar_times['sunset'] + datetime.timedelta(minutes=30)
             eve_twil_end = self.solar_times['twilight_evening_18'] + datetime.timedelta(minutes=30)
             morn_twil_start = self.solar_times['twilight_morning_18'] - datetime.timedelta(minutes=30)
-            morn_twil_end = self.solar_times['sunrise']
+            morn_twil_end = self.solar_times['sunrise'] - datetime.timedelta(minutes=30)
 
         # Pre-schedule manual start science targets immediately and reserve their chunks
         reserved_chunks = set()
@@ -1161,9 +1162,12 @@ class Scheduler:
                 'alt': round(alt, 3)
             })
             
+        scheduled_names = {b.target.name for b in scheduled_blocks}
+        conflicts = [c for c in (final_solve['conflicts'] + prelim_solve['conflicts']) if c not in scheduled_names]
+
         return {
             'blocks': [b.to_dict() for b in scheduled_blocks],
-            'conflicts': final_solve['conflicts'] + prelim_solve['conflicts'],
+            'conflicts': conflicts,
             'unobservable': final_solve['unobservable'],
             'empty_blocks': empty_blocks,
             'moon_info': self.moon,
@@ -1180,12 +1184,13 @@ class Scheduler:
         """
         # Parse exposures and durations
         target_exposures: Dict[str, float] = {}
+        extinction = float(getattr(self, 'realtime_constraints', {}).get('extinction', 0.0))
         for t in targets:
             if t.manual_duration is not None:
                 target_exposures[t.name] = t.manual_duration * 60.0
             else:
                 sep = get_separation(t.ra, t.dec, self.moon['ra'], self.moon['dec'])
-                target_exposures[t.name] = t.calculate_exposure_time(self.moon['phase'], sep)
+                target_exposures[t.name] = t.calculate_exposure_time(self.moon['phase'], sep, extinction, self.observatory.latitude)
                 
         # Parse manual start chunk indices
         manual_start_chunks: Dict[str, Optional[int]] = {}
@@ -1336,8 +1341,8 @@ class Scheduler:
                                 precedence_ok = False
                                 break
                         # If p_name must be before target
-                        p_obj = next(tg for tg in targets if tg.name == p_name)
-                        if t_name in p_obj.schedule_before:
+                        p_obj = next((tg for tg in targets if tg.name == p_name), None)
+                        if p_obj is not None and t_name in p_obj.schedule_before:
                             if not (p_start + p_dur <= s):
                                 precedence_ok = False
                                 break
@@ -1374,8 +1379,8 @@ class Scheduler:
                                     if not (s + t_dur <= p_start):
                                         precedence_ok = False
                                         break
-                                p_obj = next(tg for tg in targets if tg.name == p_name)
-                                if t.name in p_obj.schedule_before:
+                                p_obj = next((tg for tg in targets if tg.name == p_name), None)
+                                if p_obj is not None and t.name in p_obj.schedule_before:
                                     if not (p_start + p_dur <= s):
                                         precedence_ok = False
                                         break

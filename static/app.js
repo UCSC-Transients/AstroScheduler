@@ -275,9 +275,11 @@ function loadSampleTargets() {
     saveAndRefresh();
 }
 
-function saveAndRefresh() {
+function saveAndRefresh(rebuildTable = true) {
     localStorage.setItem("targetPool", JSON.stringify(targetPool));
-    renderTargetsTable();
+    if (rebuildTable) {
+        renderTargetsTable();
+    }
     triggerScheduling();
 }
 
@@ -542,7 +544,7 @@ function updateTargetField(name, field, val) {
             target.dec = parsed;
         }
     }
-    saveAndRefresh();
+    saveAndRefresh(false);
 }
 
 function updateTargetCheckbox(name, field, checked) {
@@ -550,7 +552,7 @@ function updateTargetCheckbox(name, field, checked) {
     if (!target) return;
 
     target[field] = !!checked;
-    saveAndRefresh();
+    saveAndRefresh(false);
 }
 
 function clearAllOverrides() {
@@ -558,6 +560,9 @@ function clearAllOverrides() {
         t.manual_start_time = null;
         t.manual_duration = null;
         t.schedule_before = [];
+        if (t.status === "Observed") {
+            t.status = "";
+        }
     });
     saveAndRefresh();
 }
@@ -614,6 +619,15 @@ function stickyHighlightTarget(name) {
     const block = document.querySelector(`.timeline-block[data-target="${name}"]`);
     if (block) {
         block.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    // Sync with Real-Time Active Target Select
+    const activeTargetSelect = document.getElementById("rt-active-target");
+    if (activeTargetSelect) {
+        const hasOption = Array.from(activeTargetSelect.options).some(opt => opt.value === name);
+        if (hasOption) {
+            activeTargetSelect.value = name;
+        }
     }
 }
 
@@ -921,6 +935,9 @@ function updateTargetManualStart(name, val, timezone = currentTimezone) {
 
     if (!val.trim()) {
         target.manual_start_time = null;
+        if (target.status === "Observed") {
+            target.status = "";
+        }
     } else {
         const dateStr = document.getElementById("obs-date").value;
         const iso = parseTimeInputToISO(val, dateStr, timezone);
@@ -931,6 +948,13 @@ function updateTargetManualStart(name, val, timezone = currentTimezone) {
         }
     }
     saveAndRefresh();
+}
+
+function isTimesClose(t1, t2) {
+    if (!t1 || !t2) return false;
+    const d1 = new Date(t1).getTime();
+    const d2 = new Date(t2).getTime();
+    return Math.abs(d1 - d2) <= 60 * 1000;
 }
 
 function updateTargetManualDuration(name, val) {
@@ -949,7 +973,7 @@ function updateTargetManualDuration(name, val) {
         const result = runLocalJSSolver(requestPayload);
         
         const block = result.blocks.find(b => b.target_name === name);
-        const isScheduledCorrectly = block && (block.start_time === target.manual_start_time);
+        const isScheduledCorrectly = block && isTimesClose(block.start_time, target.manual_start_time);
         
         if (result.conflicts.includes(name) || !isScheduledCorrectly) {
             alert(`Cannot update duration: Changing duration of locked target "${name}" introduces a scheduling conflict.`);
@@ -1001,7 +1025,7 @@ function updateTargetManualEnd(name, val, timezone = currentTimezone) {
         const result = runLocalJSSolver(requestPayload);
         
         const block = result.blocks.find(b => b.target_name === name);
-        const isScheduledCorrectly = block && (block.start_time === target.manual_start_time);
+        const isScheduledCorrectly = block && isTimesClose(block.start_time, target.manual_start_time);
         
         if (result.conflicts.includes(name) || !isScheduledCorrectly) {
             alert(`Cannot update end time: Changing end time of locked target "${name}" introduces a scheduling conflict.`);
@@ -1641,7 +1665,7 @@ function updateScheduleUI(result) {
 
         let statusClass = "status-pill status-not-scheduled";
         let dotClass = "status-dot-not-scheduled";
-        let indicatorColor = "#f97316";
+        let indicatorColor = "#94a3b8";
 
         if (statusText === "Observed") {
             statusClass = "status-pill status-observed";
@@ -1650,11 +1674,11 @@ function updateScheduleUI(result) {
         } else if (statusText === "Scheduled") {
             statusClass = "status-pill status-scheduled";
             dotClass = "status-dot-scheduled";
-            indicatorColor = "#10b981";
+            indicatorColor = "#f59e0b";
         } else if (statusText === "Not Scheduled") {
             statusClass = "status-pill status-not-scheduled";
             dotClass = "status-dot-not-scheduled";
-            indicatorColor = "#f97316";
+            indicatorColor = "#94a3b8";
         } else if (statusText === "Failed") {
             statusClass = "status-pill status-failed";
             dotClass = "status-dot-failed";
@@ -1762,6 +1786,7 @@ function updateScheduleUI(result) {
     renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot);
     drawPolarSkyMap(blocks, targetPool, solar_times);
     renderStandardsTable();
+    renderObservingLogTable(blocks);
 }
 
 
@@ -1813,9 +1838,8 @@ function renderTimeline(blocks, solar_times, moon_plot) {
         return;
     }
 
-    const isManualLimits = !!(document.getElementById("manual-night-start")?.value.trim() && document.getElementById("manual-night-end")?.value.trim());
-    const nightStart = isManualLimits ? new Date(solar_times.sunset) : new Date(new Date(solar_times.sunset).getTime() + 30 * 60 * 1000);
-    const nightEnd = isManualLimits ? new Date(solar_times.sunrise) : new Date(new Date(solar_times.sunrise).getTime() - 30 * 60 * 1000);
+    const nightStart = new Date(solar_times.sunset);
+    const nightEnd = new Date(solar_times.sunrise);
     const nightDurationMs = nightEnd.getTime() - nightStart.getTime();
 
     // 1. Build LST axis (top)
@@ -2147,9 +2171,12 @@ function renderAlerts(conflicts, unobservable, empty_blocks, scheduled_count) {
     const consoleEl = document.getElementById("alerts-console");
     consoleEl.innerHTML = "";
 
+    const scheduledNames = currentBlocksList ? currentBlocksList.map(b => b.target_name) : [];
+    const filteredConflicts = conflicts.filter(name => !scheduledNames.includes(name));
+
     const items = [];
 
-    conflicts.forEach(name => {
+    filteredConflicts.forEach(name => {
         const t = targetPool.find(target => target.name === name);
         items.push(`
             <div class="alert-item alert-danger">
@@ -2205,9 +2232,8 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
 
-    if (airmassChart) {
-        airmassChart.destroy();
-    }
+    const sunsetMs = new Date(solar_times.sunset).getTime();
+    const sunriseMs = new Date(solar_times.sunrise).getTime();
 
     let maxObsAirmass = 0;
     blocks.forEach(b => {
@@ -2311,6 +2337,29 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
         }
     });
 
+    if (airmassChart) {
+        airmassChart.solar_times = solar_times;
+        airmassChart.data.datasets = datasets;
+        airmassChart.options.scales.y.max = dynamicMaxY;
+        
+        // update X axis bounds if not currently zoomed
+        const isCurrentlyZoomed = (originalXMin !== null && originalXMax !== null) && 
+                                  (airmassChart.options.scales.x.min !== originalXMin || airmassChart.options.scales.x.max !== originalXMax);
+        if (!isCurrentlyZoomed) {
+            airmassChart.options.scales.x.min = sunsetMs;
+            airmassChart.options.scales.x.max = sunriseMs;
+            if (airmassChart.options.scales.x2) {
+                airmassChart.options.scales.x2.min = sunsetMs;
+                airmassChart.options.scales.x2.max = sunriseMs;
+            }
+        }
+        originalXMin = sunsetMs;
+        originalXMax = sunriseMs;
+        
+        airmassChart.update('none');
+        return;
+    }
+
     // Twilight Plugin to draw gradients & vertical lines in Chart.js
     const twilightPlugin = {
         id: 'twilightPlugin',
@@ -2319,14 +2368,15 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
             const xAxis = chart.scales.x;
             const yAxis = chart.scales.y;
 
-            if (!xAxis || !yAxis || !solar_times) return;
+            const st = chart.solar_times || solar_times;
+            if (!xAxis || !yAxis || !st) return;
 
-            const sunsetMs = new Date(solar_times.sunset).getTime();
-            const sunriseMs = new Date(solar_times.sunrise).getTime();
-            const eve12Ms = new Date(solar_times.twilight_evening_12).getTime();
-            const morn12Ms = new Date(solar_times.twilight_morning_12).getTime();
-            const eve18Ms = new Date(solar_times.twilight_evening_18).getTime();
-            const morn18Ms = new Date(solar_times.twilight_morning_18).getTime();
+            const sunsetMs = new Date(st.sunset).getTime();
+            const sunriseMs = new Date(st.sunrise).getTime();
+            const eve12Ms = new Date(st.twilight_evening_12).getTime();
+            const morn12Ms = new Date(st.twilight_morning_12).getTime();
+            const eve18Ms = new Date(st.twilight_evening_18).getTime();
+            const morn18Ms = new Date(st.twilight_morning_18).getTime();
 
             const xSunset = xAxis.getPixelForValue(sunsetMs);
             const xSunrise = xAxis.getPixelForValue(sunriseMs);
@@ -2497,6 +2547,8 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
             scales: {
                 x: {
                     type: 'linear',
+                    min: sunsetMs,
+                    max: sunriseMs,
                     grid: { color: 'rgba(255, 255, 255, 0.05)' },
                     ticks: {
                         padding: 25,
@@ -2514,6 +2566,8 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
                 x2: {
                     type: 'linear',
                     position: 'top',
+                    min: sunsetMs,
+                    max: sunriseMs,
                     grid: { drawOnChartArea: false },
                     ticks: {
                         callback: function(value, index, ticks) {
@@ -2542,6 +2596,10 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
             }
         }
     });
+
+    originalXMin = sunsetMs;
+    originalXMax = sunriseMs;
+    airmassChart.solar_times = solar_times;
 }
 
 let originalXMin = null;
@@ -2950,7 +3008,7 @@ function runLocalJSSolver(payload) {
         }
 
         // Pointing check
-        if (!isShaneVisible(t, dt)) return false;
+        if (!isManual && !isShaneVisible(t, dt)) return false;
 
         // Airmass check
         const airmass = getAirmassForTarget(t, dt);
@@ -3989,4 +4047,239 @@ function toggleCollapse(btn) {
             btn.innerText = "−";
         }
     }
+}
+
+function renderObservingLogTable(blocks) {
+    const tbody = document.querySelector("#rt-log-table tbody");
+    if (!tbody) return;
+
+    const scheduledNames = blocks.map(b => b.target_name);
+    const entries = [];
+
+    // 1. Add all scheduled blocks (both science targets and standard stars)
+    blocks.forEach(b => {
+        const isStandard = (b.priority === 0.0);
+        const target = isStandard ? null : targetPool.find(t => t.name === b.target_name);
+        
+        entries.push({
+            isStandard: isStandard,
+            target: target,
+            name: b.target_name,
+            startTime: b.start_time,
+            endTime: b.end_time,
+            duration: b.duration_minutes,
+            airmassStart: b.airmass_start,
+            airmassEnd: b.airmass_end,
+            airmassMedian: b.airmass_median,
+            comment: isStandard ? b.comment : (target ? target.comment : b.comment),
+            status: isStandard ? "Scheduled" : (target ? getTargetStatus(target, lastScheduleResult) : "Scheduled"),
+            sortTime: new Date(b.start_time).getTime()
+        });
+    });
+
+    // 2. Add manually flagged targets that are not in blocks
+    targetPool.forEach(t => {
+        if (["Observed", "Failed", "Punted", "Skipped"].includes(t.status) && !scheduledNames.includes(t.name)) {
+            const timeMs = t.manual_start_time ? new Date(t.manual_start_time).getTime() : Infinity;
+            entries.push({
+                isStandard: false,
+                target: t,
+                name: t.name,
+                startTime: t.manual_start_time || null,
+                endTime: null,
+                duration: t.manual_duration || 0,
+                airmassStart: null,
+                airmassEnd: null,
+                airmassMedian: null,
+                comment: t.comment || "",
+                status: t.status,
+                sortTime: timeMs
+            });
+        }
+    });
+
+    // Sort chronologically by sortTime
+    entries.sort((a, b) => a.sortTime - b.sortTime);
+
+    if (entries.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="7" class="text-center" style="color: var(--text-muted); padding: 15px;">No log entries.</td></tr>`;
+        return;
+    }
+
+    tbody.innerHTML = entries.map(entry => {
+        let indicatorColor = "#94a3b8"; // Default Grey
+        if (entry.status === "Observed") indicatorColor = "#10b981"; // Green
+        else if (entry.status === "Scheduled") indicatorColor = "#f59e0b"; // Yellow
+        else if (entry.status === "Failed" || entry.status === "Punted" || entry.status === "Skipped") indicatorColor = "#ef4444"; // Red
+        else if (entry.status === "Unobservable") indicatorColor = "#000000"; // Black
+
+        const statusDot = `<span class="status-indicator-circle" style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; background-color: ${indicatorColor}; vertical-align: middle;"></span>`;
+
+        if (entry.isStandard) {
+            const startVal = formatTimeForTimezone(entry.startTime, 'UTC');
+            const endVal = formatTimeForTimezone(entry.endTime, 'UTC');
+            return `
+                <tr>
+                    <td style="text-align: center;">${statusDot}</td>
+                    <td style="font-family: monospace; font-size: 0.85rem; color: var(--text-muted);">${startVal} - ${endVal}</td>
+                    <td><strong>${entry.name}</strong></td>
+                    <td style="text-align: center; color: var(--text-muted);">${entry.duration}</td>
+                    <td style="text-align: center; color: var(--text-muted);">${entry.airmassStart.toFixed(2)} - ${entry.airmassEnd.toFixed(2)}</td>
+                    <td style="text-align: center; font-weight: 600; color: var(--text-muted);">${entry.airmassMedian.toFixed(2)}</td>
+                    <td style="color: var(--text-muted); font-style: italic;">${entry.comment}</td>
+                </tr>
+            `;
+        } else {
+            const t = entry.target;
+            const startVal = entry.startTime ? formatTimeForTimezone(entry.startTime, 'UTC') : '';
+            const endVal = entry.endTime ? formatTimeForTimezone(entry.endTime, 'UTC') : '';
+            
+            const isPinned = t.manual_start_time !== null && t.manual_start_time !== undefined && t.manual_start_time !== "";
+
+            const timeHtml = `
+                <div style="display: flex; align-items: center; gap: 4px;" onclick="event.stopPropagation();">
+                    ${isPinned ? `<span style="color: #f59e0b; font-size: 0.8rem; cursor: pointer;" title="Unpin start time" onclick="updateTargetManualStart('${t.name}', '')">🔒</span>` : ''}
+                    <input type="text" value="${startVal}"
+                           placeholder="HH:MM"
+                           onchange="updateTargetFieldByIndex(${t.inputIndex}, 'manual_start_time', this.value)"
+                           style="width: 55px; font-family: monospace; text-align: center; padding: 2px 4px; border-radius: 4px; border: 1px solid ${isPinned ? '#f59e0b' : 'var(--border-color)'}; background: ${isPinned ? 'rgba(245, 158, 11, 0.1)' : 'rgba(255, 255, 255, 0.05)'}; color: #fff;">
+                    <span>- </span>
+                    <input type="text" value="${endVal}"
+                           placeholder="HH:MM"
+                           onchange="updateTargetManualEndByIndex(${t.inputIndex}, this.value)"
+                           style="width: 55px; font-family: monospace; text-align: center; padding: 2px 4px; border-radius: 4px; border: 1px solid var(--border-color); background: rgba(255, 255, 255, 0.05); color: #fff;">
+                </div>
+            `;
+
+            const nameHtml = `
+                <input type="text" value="${t.name}"
+                       onchange="updateTargetFieldByIndex(${t.inputIndex}, 'name', this.value)"
+                       onclick="event.stopPropagation();"
+                       style="width: 100%; font-weight: bold; background: transparent; border: none; color: #fff; padding: 2px;">
+            `;
+
+            const durationHtml = `
+                <input type="number" min="1" step="1" value="${entry.duration || ''}"
+                       onchange="updateTargetFieldByIndex(${t.inputIndex}, 'manual_duration', this.value)"
+                       onclick="event.stopPropagation();"
+                       style="width: 55px; text-align: center; padding: 2px 4px; border-radius: 4px; border: 1px solid var(--border-color); background: rgba(255, 255, 255, 0.05); color: #fff;">
+            `;
+
+            const commentHtml = `
+                <input type="text" value="${t.comment || ''}"
+                       onchange="updateTargetFieldByIndex(${t.inputIndex}, 'comment', this.value)"
+                       onclick="event.stopPropagation();"
+                       style="width: 100%; background: transparent; border: none; color: #fff; padding: 2px;">
+            `;
+
+            const airmassRangeStr = (entry.airmassStart !== null && entry.airmassEnd !== null) ? `${entry.airmassStart.toFixed(2)} - ${entry.airmassEnd.toFixed(2)}` : '--';
+            const airmassMedianStr = entry.airmassMedian !== null ? entry.airmassMedian.toFixed(2) : '--';
+
+            return `
+                <tr id="rt-log-row-${t.name}" onmouseenter="highlightTarget('${t.name}')" onmouseleave="unhighlightTarget('${t.name}')" onclick="stickyHighlightTarget('${t.name}')" style="cursor: pointer;">
+                    <td style="text-align: center;">${statusDot}</td>
+                    <td>${timeHtml}</td>
+                    <td>${nameHtml}</td>
+                    <td style="text-align: center;">${durationHtml}</td>
+                    <td style="text-align: center; color: var(--text-secondary);">${airmassRangeStr}</td>
+                    <td style="text-align: center; font-weight: 600; color: var(--accent-cyan);">${airmassMedianStr}</td>
+                    <td>${commentHtml}</td>
+                </tr>
+            `;
+        }
+    }).join('');
+}
+
+function updateTargetFieldByIndex(index, field, val) {
+    const target = targetPool.find(t => t.inputIndex === index);
+    if (!target) return;
+
+    if (field === 'manual_start_time') {
+        if (!val.trim()) {
+            target.manual_start_time = null;
+            if (target.status === "Observed") {
+                target.status = "";
+            }
+        } else {
+            const dateStr = document.getElementById("obs-date").value;
+            const iso = parseTimeInputToISO(val, dateStr, currentTimezone);
+            if (iso) {
+                target.manual_start_time = iso;
+            } else {
+                target.manual_start_time = val.trim();
+            }
+        }
+    } else if (field === 'manual_duration') {
+        target.manual_duration = val.trim() ? parseFloat(val) : null;
+    } else if (field === 'name') {
+        target.name = val.trim();
+    } else if (field === 'comment') {
+        target.comment = val;
+    }
+
+    if (field === 'name') {
+        saveAndRefresh(true);
+    } else {
+        saveAndRefresh(false);
+    }
+}
+
+function updateTargetManualEndByIndex(index, val) {
+    const target = targetPool.find(t => t.inputIndex === index);
+    if (!target) return;
+
+    if (!val.trim()) {
+        target.manual_duration = null;
+        saveAndRefresh(false);
+        return;
+    }
+
+    const dateStr = document.getElementById("obs-date").value;
+    const endIso = parseTimeInputToISO(val, dateStr, currentTimezone);
+    if (!endIso) return;
+
+    let startIso = target.manual_start_time;
+    if (!startIso && lastScheduleResult) {
+        const block = lastScheduleResult.blocks.find(b => b.target_name === target.name);
+        if (block) {
+            startIso = block.start_time;
+        }
+    }
+
+    if (!startIso) return;
+
+    const durationMin = Math.round((new Date(endIso).getTime() - new Date(startIso).getTime()) / (60 * 1000));
+    if (durationMin <= 0) return;
+
+    const isPinned = target.manual_start_time !== null && target.manual_start_time !== undefined && target.manual_start_time !== "";
+    if (isPinned) {
+        const backupPool = JSON.parse(JSON.stringify(targetPool));
+        const tempTarget = backupPool.find(t => t.inputIndex === index);
+        tempTarget.manual_duration = durationMin;
+        
+        const requestPayload = getSchedulingPayloadWithTargets(backupPool);
+        const result = runLocalJSSolver(requestPayload);
+        
+        const block = result.blocks.find(b => b.target_name === target.name);
+        const isScheduledCorrectly = block && isTimesClose(block.start_time, target.manual_start_time);
+        
+        if (result.conflicts.includes(target.name) || !isScheduledCorrectly) {
+            alert(`Cannot update end time: Changing end time of locked target "${target.name}" introduces a scheduling conflict.`);
+            if (lastScheduleResult) {
+                updateScheduleUI(lastScheduleResult);
+            }
+            return;
+        }
+    }
+
+    target.manual_start_time = startIso;
+    target.manual_duration = durationMin;
+    saveAndRefresh(false);
+}
+
+function resetCustomConstraints() {
+    targetPool.forEach(t => {
+        t.schedule_before = [];
+    });
+    saveAndRefresh();
 }

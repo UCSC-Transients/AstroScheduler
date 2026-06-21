@@ -783,9 +783,9 @@ input:focus, select:focus {
 }
 
 .status-pill.status-not-scheduled {
-    background: rgba(249, 115, 22, 0.15);
-    border-color: rgba(249, 115, 22, 0.3);
-    color: #fdba74; /* Orange */
+    background: rgba(148, 163, 184, 0.15);
+    border-color: rgba(148, 163, 184, 0.3);
+    color: #94a3b8; /* Grey */
 }
 
 .status-pill.status-failed,
@@ -932,8 +932,8 @@ input:focus, select:focus {
     box-shadow: 0 0 6px rgba(245, 158, 11, 0.5);
 }
 .status-dot-not-scheduled {
-    background-color: #f97316; /* Orange */
-    box-shadow: 0 0 6px rgba(249, 115, 22, 0.5);
+    background-color: #94a3b8; /* Grey */
+    box-shadow: 0 0 6px rgba(148, 163, 184, 0.5);
 }
 .status-dot-failed,
 .status-dot-punted,
@@ -1016,8 +1016,8 @@ input:focus, select:focus {
     box-shadow: 0 0 6px rgba(245, 158, 11, 0.5);
 }
 .status-dot-not-scheduled {
-    background-color: #f97316;
-    box-shadow: 0 0 6px rgba(249, 115, 22, 0.5);
+    background-color: #94a3b8;
+    box-shadow: 0 0 6px rgba(148, 163, 184, 0.5);
 }
 .status-dot-failed,
 .status-dot-punted,
