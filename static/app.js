@@ -70,6 +70,10 @@ let currentTimezone = 'obs';
 let standardStars = [];
 let disabledStandards = new Set();
 
+// Target list sort state
+let targetSortField = 'priority';
+let targetSortAsc = true;
+
 // Initial Setup on Page Load
 document.addEventListener("DOMContentLoaded", () => {
     // Set default date to 2026-06-18 (user's target date)
@@ -278,21 +282,67 @@ function saveAndRefresh() {
 // UI RENDERING HELPERS
 // ==============================================================================
 
+// Issue #19: Collapsible card sections
+function toggleCollapse(btn) {
+    const body = btn.closest('.card-header-toggle').nextElementSibling;
+    if (!body || !body.classList.contains('card-body-collapse')) return;
+    const collapsed = body.classList.toggle('collapsed');
+    btn.textContent = collapsed ? '+' : '−';
+}
+
+// Issue #11: Target list column sorting
+function setTargetSort(field) {
+    if (targetSortField === field) {
+        targetSortAsc = !targetSortAsc;
+    } else {
+        targetSortField = field;
+        targetSortAsc = true;
+    }
+    // Update sort icons
+    ['name', 'ra', 'dec', 'magnitude', 'priority', 'sn_mode'].forEach(f => {
+        const el = document.getElementById('sort-icon-' + f);
+        if (el) el.textContent = '';
+    });
+    const activeIcon = document.getElementById('sort-icon-' + field);
+    if (activeIcon) activeIcon.textContent = targetSortAsc ? ' ▲' : ' ▼';
+    renderTargetsTable();
+}
+
 function renderTargetsTable() {
     const tbody = document.querySelector("#targets-table tbody");
     if (targetPool.length === 0) {
         tbody.innerHTML = `<tr><td colspan="12" class="text-center">No targets in pool</td></tr>`;
         return;
     }
-    
-    tbody.innerHTML = targetPool.map(t => {
+
+    // Issue #5: Determine which targets are currently scheduled
+    const scheduledNames = new Set(currentBlocksList.map(b => b.target_name));
+
+    // Issue #11: Sort targetPool copy
+    const sorted = [...targetPool].sort((a, b) => {
+        let va = a[targetSortField];
+        let vb = b[targetSortField];
+        if (typeof va === 'string') va = va.toLowerCase();
+        if (typeof vb === 'string') vb = vb.toLowerCase();
+        if (va < vb) return targetSortAsc ? -1 : 1;
+        if (va > vb) return targetSortAsc ? 1 : -1;
+        return 0;
+    });
+
+    tbody.innerHTML = sorted.map(t => {
+        // Issue #5: Status circle indicator
+        const isScheduled = scheduledNames.has(t.name);
+        const circleColor = isScheduled ? '#22c55e' : '#ef4444';
+        const circleTitle = isScheduled ? 'Scheduled' : 'Not scheduled';
+        const statusCircle = `<span title="${circleTitle}" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${circleColor};margin-right:6px;flex-shrink:0;"></span>`;
+
         return `
             <tr id="target-row-${t.name}" data-target="${t.name}" 
                 onmouseenter="highlightTarget('${t.name}')" 
                 onmouseleave="unhighlightTarget('${t.name}')" 
                 onclick="stickyHighlightTarget('${t.name}')"
                 style="cursor: pointer;">
-                <td><strong>${t.name}</strong></td>
+                <td style="display:flex;align-items:center;">${statusCircle}<strong>${t.name}</strong></td>
                 <td style="font-family: monospace; font-size: 0.85rem; color: var(--text-primary);">${formatRA(t.ra)}</td>
                 <td style="font-family: monospace; font-size: 0.85rem; color: var(--text-primary);">${formatDec(t.dec)}</td>
                 <td>
@@ -605,10 +655,18 @@ function renderStandardsTable() {
     }
     
     const obs = { lat: 37.3414, lon: -121.6429, elevation: 1283 };
-    const scheduledNames = currentBlocksList.map(b => b.target_name);
-    
-    tbody.innerHTML = standardStars.map(s => {
-        const isScheduled = scheduledNames.includes(s.name);
+    // Issue #13: Only check stars that are actually scheduled in the current plan
+    const scheduledNames = new Set(currentBlocksList.map(b => b.target_name));
+
+    // Issue #15: Sort standard stars by RA before rendering
+    const sortedStars = [...standardStars].sort((a, b) => {
+        const raA = parseCoordinate(a.ra, true);
+        const raB = parseCoordinate(b.ra, true);
+        return raA - raB;
+    });
+
+    tbody.innerHTML = sortedStars.map(s => {
+        const isScheduled = scheduledNames.has(s.name);
         const isDisabled = disabledStandards.has(s.name);
         const raDecParsed = {
             ra: parseCoordinate(s.ra, true),
@@ -637,11 +695,13 @@ function renderStandardsTable() {
         }
         
         const badgeColor = s.color === "blue" ? "badge-color-blue" : "badge-color-red";
+        // Issue #13: checkbox is checked only if the star is actually scheduled (not just enabled)
+        const isChecked = isScheduled && !isDisabled && isObs;
         
         return `
             <tr class="${rowClass}">
                 <td>
-                    <input type="checkbox" ${isDisabled || !isObs ? "" : "checked"} ${checkDisabledAttr} 
+                    <input type="checkbox" ${isChecked ? "checked" : ""} ${checkDisabledAttr} 
                            onchange="toggleStandardUse('${s.name}', this.checked)">
                 </td>
                 <td><strong>${s.name}</strong></td>
@@ -1475,11 +1535,12 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
                 };
             });
             
+            // Issue #21: Observation window lines are twice as thick (width 8)
             datasets.push({
-                label: `${tName} (Obs Window)`,
+                label: tName,
                 data: scheduledPoints,
                 borderColor: color,
-                borderWidth: 4,
+                borderWidth: 8,
                 fill: false,
                 tension: 0.1,
                 pointRadius: 0,
@@ -1566,7 +1627,7 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
         }
     };
     
-    // Box Zoom Overlay Drawer Plugin
+    // Issue #4: Box Zoom Overlay Drawer Plugin — 2D rectangle (X and Y axes)
     const boxZoomPlugin = {
         id: 'boxZoomPlugin',
         afterDraw: (chart) => {
@@ -1579,13 +1640,13 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
                 chartCtx.strokeStyle = '#06b6d4';
                 chartCtx.lineWidth = 1;
                 
-                const top = chartArea.top;
-                const height = chartArea.bottom - chartArea.top;
-                const startX = dragStart.x;
-                const endX = dragEnd.x;
+                const startX = Math.max(chartArea.left, Math.min(dragStart.x, chartArea.right));
+                const endX = Math.max(chartArea.left, Math.min(dragEnd.x, chartArea.right));
+                const startY = Math.max(chartArea.top, Math.min(dragStart.y, chartArea.bottom));
+                const endY = Math.max(chartArea.top, Math.min(dragEnd.y, chartArea.bottom));
                 
-                chartCtx.fillRect(startX, top, endX - startX, height);
-                chartCtx.strokeRect(startX, top, endX - startX, height);
+                chartCtx.fillRect(startX, startY, endX - startX, endY - startY);
+                chartCtx.strokeRect(startX, startY, endX - startX, endY - startY);
                 chartCtx.restore();
             }
         }
@@ -1610,15 +1671,32 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
             },
             plugins: {
                 legend: {
+                    // Issue #20: Only show scheduled-observation series; use horizontal line icons
                     labels: {
                         color: '#94a3b8',
                         font: { family: 'Inter', size: 11 },
-                        filter: function(item, chart) {
-                            return !item.text.includes("(Night Profile)");
+                        filter: function(item) {
+                            // Exclude night-profile dotted series and Moon series
+                            return !item.text.includes('(Night Profile)') && item.text !== 'Moon (Airmass)';
+                        },
+                        generateLabels: function(chart) {
+                            const original = Chart.defaults.plugins.legend.labels.generateLabels(chart);
+                            return original
+                                .filter(item => !item.text.includes('(Night Profile)') && item.text !== 'Moon (Airmass)')
+                                .map(item => {
+                                    // Issue #20: Use a horizontal line dash style instead of rectangle
+                                    item.pointStyle = 'line';
+                                    item.lineWidth = 3;
+                                    return item;
+                                });
                         }
                     }
                 },
                 tooltip: {
+                    // Issue #22: Position tooltip above data points to avoid overlapping thick lines
+                    position: 'nearest',
+                    yAlign: 'bottom',
+                    caretPadding: 12,
                     callbacks: {
                         title: function(tooltipItems) {
                             if (tooltipItems.length > 0) {
@@ -1633,9 +1711,6 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
                         },
                         label: function(context) {
                             let label = context.dataset.label || '';
-                            if (label) {
-                                label = label.replace(" (Obs Window)", "");
-                            }
                             if (context.parsed.y !== null && context.parsed.y !== undefined && !isNaN(context.parsed.y)) {
                                 label += `: Airmass ${context.parsed.y.toFixed(2)}`;
                             }
@@ -1680,7 +1755,16 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
                 y: {
                     reverse: true,
                     min: 1.0,
-                    max: 2.5,
+                    // Issue #6: Dynamic Y-axis max = max(1.7, highest scheduled airmass + 0.1)
+                    max: (() => {
+                        let maxAirmass = 1.7;
+                        blocks.forEach(b => {
+                            if (b.airmass_median && b.airmass_median > maxAirmass) maxAirmass = b.airmass_median;
+                            if (b.airmass_start && b.airmass_start > maxAirmass) maxAirmass = b.airmass_start;
+                            if (b.airmass_end && b.airmass_end > maxAirmass) maxAirmass = b.airmass_end;
+                        });
+                        return Math.max(1.7, maxAirmass + 0.1);
+                    })(),
                     title: {
                         display: true,
                         text: 'Airmass (sec z)',
@@ -1727,8 +1811,11 @@ function initAirmassChartDragZoom() {
     canvas.addEventListener('mousemove', (e) => {
         if (!isDragging || !airmassChart) return;
         const rect = canvas.getBoundingClientRect();
+        // Issue #4: Track both X and Y for 2D box zoom
         const x = Math.max(airmassChart.chartArea.left, Math.min(e.clientX - rect.left, airmassChart.chartArea.right));
+        const y = Math.max(airmassChart.chartArea.top, Math.min(e.clientY - rect.top, airmassChart.chartArea.bottom));
         dragEnd.x = x;
+        dragEnd.y = y;
         
         airmassChart.draw();
     });
