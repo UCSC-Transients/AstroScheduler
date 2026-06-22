@@ -69,6 +69,8 @@ let lastScheduleResult = null;
 let currentTimezone = 'obs';
 let standardStars = [];
 let disabledStandards = new Set();
+// Stars auto-disabled after scheduling because they were not picked by the scheduler
+let autoDisabledStandards = new Set();
 
 // Target list sort state
 let targetSortField = 'priority';
@@ -330,11 +332,11 @@ function renderTargetsTable() {
     });
 
     tbody.innerHTML = sorted.map(t => {
-        // Issue #5: Status circle indicator
+        // Issue #5: Status circle indicator — in its own <td> matching the empty <th>
         const isScheduled = scheduledNames.has(t.name);
         const circleColor = isScheduled ? '#22c55e' : '#ef4444';
         const circleTitle = isScheduled ? 'Scheduled' : 'Not scheduled';
-        const statusCircle = `<span title="${circleTitle}" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${circleColor};margin-right:6px;flex-shrink:0;"></span>`;
+        const statusCircle = `<span title="${circleTitle}" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${circleColor};"></span>`;
 
         return `
             <tr id="target-row-${t.name}" data-target="${t.name}" 
@@ -342,7 +344,8 @@ function renderTargetsTable() {
                 onmouseleave="unhighlightTarget('${t.name}')" 
                 onclick="stickyHighlightTarget('${t.name}')"
                 style="cursor: pointer;">
-                <td style="display:flex;align-items:center;">${statusCircle}<strong>${t.name}</strong></td>
+                <td style="text-align:center;">${statusCircle}</td>
+                <td><strong>${t.name}</strong></td>
                 <td style="font-family: monospace; font-size: 0.85rem; color: var(--text-primary);">${formatRA(t.ra)}</td>
                 <td style="font-family: monospace; font-size: 0.85rem; color: var(--text-primary);">${formatDec(t.dec)}</td>
                 <td>
@@ -695,8 +698,9 @@ function renderStandardsTable() {
         }
         
         const badgeColor = s.color === "blue" ? "badge-color-blue" : "badge-color-red";
-        // Issue #13: checkbox is checked only if the star is actually scheduled (not just enabled)
-        const isChecked = isScheduled && !isDisabled && isObs;
+        // Issue #13: checked = observable, not user-disabled, and not auto-disabled (meaning it was scheduled)
+        const isAutoDisabled = autoDisabledStandards.has(s.name);
+        const isChecked = isObs && !isDisabled && !isAutoDisabled;
         
         return `
             <tr class="${rowClass}">
@@ -723,8 +727,11 @@ function renderStandardsTable() {
 function toggleStandardUse(name, enabled) {
     if (enabled) {
         disabledStandards.delete(name);
+        // User explicitly wants this star — clear auto-disabled so it is tried in next schedule run
+        autoDisabledStandards.delete(name);
     } else {
         disabledStandards.add(name);
+        autoDisabledStandards.delete(name);
     }
     renderStandardsTable();
     triggerScheduling();
@@ -1128,7 +1135,24 @@ function updateScheduleUI(result) {
     renderAlerts(conflicts, unobservable, empty_blocks, blocks.length);
     renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot);
     drawPolarSkyMap(blocks, targetPool, solar_times);
+
+    // Issue #13: After renderTimeline sets currentBlocksList, sync autoDisabledStandards
+    // so checkboxes reflect which stars actually got scheduled.
+    const _obs13 = { lat: 37.3414, lon: -121.6429, elevation: 1283 };
+    const _scheduledStarNames = new Set(blocks.map(b => b.target_name));
+    autoDisabledStandards.clear();
+    standardStars.forEach(s => {
+        const raDec = { ra: parseCoordinate(s.ra, true), dec: parseCoordinate(s.dec, false) };
+        if (isStandardStarObservable(raDec, null, _obs13) && !disabledStandards.has(s.name)) {
+            if (!_scheduledStarNames.has(s.name)) {
+                autoDisabledStandards.add(s.name);
+            }
+        }
+    });
+
     renderStandardsTable();
+    // Issue #5: Re-render target table now that currentBlocksList is populated with scheduled blocks
+    renderTargetsTable();
 }
 
 
@@ -1334,7 +1358,7 @@ function renderTimeline(blocks, solar_times, moon_plot) {
         const obsLon = -121.6429;
         const bStartLST = formatLST(getLst(bStart, obsLon));
         const bEndLST = formatLST(getLst(bEnd, obsLon));
-        blockEl.title = `${b.target_name}\nUT: ${formatTimeForTimezone(b.start_time, 'UTC')} - ${formatTimeForTimezone(b.end_time, 'UTC')}\nLoc: ${formatTimeForTimezone(b.start_time, 'obs')} - ${formatTimeForTimezone(b.end_time, 'obs')}\nLST: ${bStartLST} - ${bEndLST}\nMedian Airmass: ${b.airmass_median}`;
+        blockEl.title = `${b.target_name}\nUT: ${formatTimeForTimezone(b.start_time, 'UTC')} - ${formatTimeForTimezone(b.end_time, 'UTC')}\nLoc: ${formatTimeForTimezone(b.start_time, 'obs')} - ${formatTimeForTimezone(b.end_time, 'obs')}\nLST: ${bStartLST} - ${bEndLST}\nMedian Airmass: ${b.airmass_median.toFixed(2)}`;
         
         // Enable drag & drop for manual scheduling
         if (b.priority > 0) {
@@ -1462,6 +1486,21 @@ function getRgba(hex, alpha) {
 
 function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
     const ctx = document.getElementById("airmassChart").getContext("2d");
+
+    // Issue #22: Register custom positioner to keep tooltip above the thick observation lines
+    if (!Chart.Tooltip.positioners.aboveLine) {
+        Chart.Tooltip.positioners.aboveLine = function(items, eventPosition) {
+            const pos = Chart.Tooltip.positioners.nearest.call(this, items, eventPosition);
+            if (!pos) return false;
+            const chartArea = this.chart.chartArea;
+            return {
+                x: Math.max(chartArea.left + 5, Math.min(pos.x, chartArea.right - 5)),
+                y: Math.max(chartArea.top + 10, pos.y - 70),
+                xAlign: 'center',
+                yAlign: 'bottom'
+            };
+        };
+    }
     
     if (airmassChart) {
         airmassChart.destroy();
@@ -1675,6 +1714,7 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
                     labels: {
                         color: '#94a3b8',
                         font: { family: 'Inter', size: 11 },
+                        usePointStyle: true,
                         filter: function(item) {
                             // Exclude night-profile dotted series and Moon series
                             return !item.text.includes('(Night Profile)') && item.text !== 'Moon (Airmass)';
@@ -1684,7 +1724,7 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
                             return original
                                 .filter(item => !item.text.includes('(Night Profile)') && item.text !== 'Moon (Airmass)')
                                 .map(item => {
-                                    // Issue #20: Use a horizontal line dash style instead of rectangle
+                                    // Issue #20: horizontal line icon instead of filled rectangle
                                     item.pointStyle = 'line';
                                     item.lineWidth = 3;
                                     return item;
@@ -1693,10 +1733,9 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
                     }
                 },
                 tooltip: {
-                    // Issue #22: Position tooltip above data points to avoid overlapping thick lines
-                    position: 'nearest',
-                    yAlign: 'bottom',
-                    caretPadding: 12,
+                    // Issue #22: Use the 'aboveLine' custom positioner (registered above) to keep
+                    // the tooltip above the thick observation lines
+                    position: 'aboveLine',
                     callbacks: {
                         title: function(tooltipItems) {
                             if (tooltipItems.length > 0) {
