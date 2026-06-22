@@ -1269,7 +1269,7 @@ function renderTimeline(blocks, solar_times, moon_plot) {
         blockEl.style.left = `${leftPct}%`;
         blockEl.style.width = `${widthPct}%`;
         blockEl.setAttribute("data-target", b.target_name);
-        blockEl.innerHTML = `<span>${b.target_name} (P${b.priority})</span>`;
+        blockEl.innerHTML = `<span>${b.target_name}</span>`;
         
         const obsLon = -121.6429;
         const bStartLST = formatLST(getLst(bStart, obsLon));
@@ -1651,10 +1651,13 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
                     ticks: {
                         callback: function(value, index, ticks) {
                             const date = new Date(value);
-                            const tStr = formatTimeForTimezone(date, currentTimezone);
-                            const tzLabel = currentTimezone === 'obs' ? 'Loc' : (currentTimezone === 'UTC' ? 'UT' : 'browser');
-                            return `${tStr} ${tzLabel}`;
+                            const utStr = formatTimeForTimezone(date, 'UTC');
+                            const locStr = formatTimeForTimezone(date, 'obs');
+                            // Return an array so each label renders on a separate line
+                            return [utStr + ' UT', locStr + ' Loc'];
                         },
+                        // Force ticks at whole UTC hours (3600000 ms)
+                        stepSize: 3600000,
                         color: '#94a3b8',
                         font: { family: 'Inter' }
                     }
@@ -1741,7 +1744,6 @@ function initAirmassChartDragZoom() {
             const xAxis = airmassChart.scales.x;
             const val1 = xAxis.getValueForPixel(startX);
             const val2 = xAxis.getValueForPixel(endX);
-            
             const minVal = Math.min(val1, val2);
             const maxVal = Math.max(val1, val2);
             
@@ -1751,6 +1753,16 @@ function initAirmassChartDragZoom() {
                 airmassChart.options.scales.x2.min = minVal;
                 airmassChart.options.scales.x2.max = maxVal;
             }
+            
+            const yAxis = airmassChart.scales.y;
+            const valY1 = yAxis.getValueForPixel(dragStart.y);
+            const valY2 = yAxis.getValueForPixel(dragEnd.y);
+            const minY = Math.min(valY1, valY2);
+            const maxY = Math.max(valY1, valY2);
+            
+            airmassChart.options.scales.y.min = Math.max(1.0, minY);
+            airmassChart.options.scales.y.max = Math.min(10.0, maxY);
+            
             airmassChart.update();
         } else {
             airmassChart.draw();
