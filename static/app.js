@@ -78,8 +78,17 @@ let targetSortAsc = true;
 
 // Initial Setup on Page Load
 document.addEventListener("DOMContentLoaded", () => {
-    // Set default date to 2026-06-18 (user's target date)
-    document.getElementById("obs-date").value = "2026-06-18";
+    // Issue #28: Default date to today
+    const today = new Date();
+    const yyyy = today.getFullYear();
+    const mm = String(today.getMonth() + 1).padStart(2, '0');
+    const dd = String(today.getDate()).padStart(2, '0');
+    document.getElementById("obs-date").value = `${yyyy}-${mm}-${dd}`;
+
+    // Issue #28: Trigger reschedule when date changes
+    document.getElementById("obs-date").addEventListener("change", () => {
+        triggerScheduling();
+    });
     
     // Add Event Listeners
     document.getElementById("target-form").addEventListener("submit", handleAddTarget);
@@ -332,11 +341,16 @@ function renderTargetsTable() {
     });
 
     tbody.innerHTML = sorted.map(t => {
-        // Issue #5: Status circle indicator — in its own <td> matching the empty <th>
+        // Issue #5/#35: Status circle — color matches new status scheme
         const isScheduled = scheduledNames.has(t.name);
-        const circleColor = isScheduled ? '#22c55e' : '#ef4444';
-        const circleTitle = isScheduled ? 'Scheduled' : 'Not scheduled';
+        const scheduledBlock = currentBlocksList.find(b => b.target_name === t.name);
+        const circleColor = isScheduled ? '#eab308' : '#f97316';  // yellow=scheduled, orange=not scheduled
+        const circleTitle = isScheduled ? 'Scheduled' : 'Not Scheduled';
         const statusCircle = `<span title="${circleTitle}" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${circleColor};"></span>`;
+
+        // Issue #36: Show current scheduled start time (HH:MM) and duration
+        const scheduledStartStr = scheduledBlock ? formatTimeForTimezone(scheduledBlock.start_time, currentTimezone) : (t.manual_start_time || '');
+        const scheduledDuration = scheduledBlock ? scheduledBlock.duration_minutes : (t.manual_duration !== null && t.manual_duration !== undefined ? t.manual_duration : '');
 
         return `
             <tr id="target-row-${t.name}" data-target="${t.name}" 
@@ -379,16 +393,18 @@ function renderTargetsTable() {
                     </div>
                 </td>
                 <td>
-                    <input type="text" placeholder="HH:MM" value="${t.manual_start_time || ''}" 
+                    <!-- Issue #36: Show current scheduled start time; editing updates manual_start_time -->
+                    <input type="text" placeholder="HH:MM" value="${scheduledStartStr}" 
                            onchange="updateTargetField('${t.name}', 'manual_start_time', this.value)" 
                            onclick="event.stopPropagation();" style="width: 75px; font-family: monospace; text-align: center;">
                 </td>
                 <td>
-                    <input type="number" placeholder="min" min="0" value="${t.manual_duration !== null && t.manual_duration !== undefined ? t.manual_duration : ''}" 
+                    <!-- Issue #36: Show current scheduled duration (exposure time) -->
+                    <input type="number" placeholder="min" min="0" value="${scheduledDuration}" 
                            onchange="updateTargetField('${t.name}', 'manual_duration', this.value)" 
                            onclick="event.stopPropagation();" style="width: 65px; text-align: center;">
                 </td>
-                <td><span class="status-pill status-unobservable" id="status-${t.name}"><span class="target-status-dot status-dot-standby"></span>Pending</span></td>
+                <td><span class="status-pill status-not-scheduled" id="status-${t.name}"><span class="target-status-dot" style="background:#f97316;"></span>Not Scheduled</span></td>
                 <td>
                     <input type="text" value="${t.comment || ''}" 
                            onchange="updateTargetField('${t.name}', 'comment', this.value)" 
@@ -976,9 +992,19 @@ async function recalculateStartingNow() {
 // SERVER INTERACTION OR CLIENT-SIDE FALLBACK SOLVER
 // ==============================================================================
 
-async function triggerScheduling() {
+// Issue #34: Debounce triggerScheduling to prevent flicker from rapid re-runs
+let _scheduleDebounceTimer = null;
+function triggerScheduling() {
+    clearTimeout(_scheduleDebounceTimer);
+    _scheduleDebounceTimer = setTimeout(_doSchedule, 150);
+}
+
+async function _doSchedule() {
     if (targetPool.length === 0) {
-        clearScheduleUI();
+        // Issue #37: Clear alerts when pool is empty
+        renderAlerts([], [], [], 0);
+        currentBlocksList = [];
+        renderTargetsTable();
         return;
     }
     
@@ -1048,22 +1074,23 @@ function updateScheduleUI(result) {
     const moonIllum = moon_info.phase;
     moonPic.style.boxShadow = `inset ${32 * (1 - moonIllum)}px 0px 0px rgba(15, 16, 27, 0.95), 0px 0px 15px #e2e8f0`;
     
+    // Issue #35: Updated status pills with new statuses and colors
     targetPool.forEach(t => {
         const statusPill = document.getElementById(`status-${t.name}`);
         if (!statusPill) return;
         
         if (unobservable.includes(t.name)) {
             statusPill.className = "status-pill status-unobservable";
-            statusPill.innerHTML = `<span class="target-status-dot status-dot-standby"></span>Unobservable`;
+            statusPill.innerHTML = `<span class="target-status-dot" style="background:#000;"></span>Unobservable`;
         } else if (conflicts.includes(t.name)) {
             statusPill.className = "status-pill status-conflict";
-            statusPill.innerHTML = `<span class="target-status-dot status-dot-standby"></span>Conflict`;
+            statusPill.innerHTML = `<span class="target-status-dot" style="background:#6b7280;"></span>Not Scheduled`;
         } else if (blocks.some(b => b.target_name === t.name)) {
             statusPill.className = "status-pill status-scheduled";
-            statusPill.innerHTML = `<span class="target-status-dot status-dot-scheduled"></span>Scheduled`;
+            statusPill.innerHTML = `<span class="target-status-dot" style="background:#eab308;"></span>Scheduled`;
         } else {
-            statusPill.className = "status-pill status-unobservable";
-            statusPill.innerHTML = `<span class="target-status-dot status-dot-standby"></span>Standby`;
+            statusPill.className = "status-pill status-not-scheduled";
+            statusPill.innerHTML = `<span class="target-status-dot" style="background:#f97316;"></span>Not Scheduled`;
         }
     });
     
@@ -1121,7 +1148,8 @@ function updateScheduleUI(result) {
                     style="cursor: pointer;">
                     <td>${timeCell}</td>
                     <td><strong>${b.target_name}</strong></td>
-                    <td><span class="badge" style="background: rgba(139, 92, 246, 0.1); border-color: rgba(139, 92, 246, 0.3); color: #c084fc;">P${b.priority}</span></td>
+                    <!-- Issue #33: priority as plain number, not badge -->
+                    <td>${b.priority}</td>
                     <td>${durationCell}</td>
                     <td>${b.airmass_start.toFixed(2)} - ${b.airmass_end.toFixed(2)}</td>
                     <td><span style="font-weight:600; color:var(--accent-cyan);">${b.airmass_median.toFixed(2)}</span></td>

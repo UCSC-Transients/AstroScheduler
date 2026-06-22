@@ -245,11 +245,12 @@
                                         <th style="width: 110px; text-align: center;">Airmass Range</th>
                                         <th style="width: 80px; text-align: center;">Median Airmass</th>
                                         <th>Comment</th>
+                                        <th style="width: 110px;">Status</th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     <tr>
-                                        <td colspan="7" class="text-center" style="color: var(--text-muted); padding: 15px;">No log entries.</td>
+                                        <td colspan="8" class="text-center" style="color: var(--text-muted); padding: 15px;">No log entries.</td>
                                     </tr>
                                 </tbody>
                             </table>
@@ -365,8 +366,8 @@
                                         <th onclick="setTargetSort('priority')" style="cursor: pointer; user-select: none;">Priority <span id="sort-icon-priority"></span></th>
                                         <th>Signal-to-Noise Ratio (S/N)</th>
                                         <th>Flags</th>
-                                        <th>Manual Start</th>
-                                        <th>Manual Duration (min)</th>
+                                        <th>Start Time</th>
+                                        <th>Exposure Time (min)</th>
                                         <th>Status</th>
                                         <th>Comment</th>
                                         <th>Actions</th>
@@ -477,6 +478,6 @@
     </div>
     
     <div id="timeline-tooltip" class="timeline-tooltip"></div>
-    <script src="../static/app.js"></script>
+    <script src="../static/app.js" defer></script>
 </body>
 </html>
