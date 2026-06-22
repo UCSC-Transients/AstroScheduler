@@ -76,6 +76,10 @@ let autoDisabledStandards = new Set();
 let targetSortField = 'priority';
 let targetSortAsc = true;
 
+// Issue #32: Lock mechanism — tracks which targets have a locked start time
+// Value is 'start' when locked, absent when unlocked
+let lockedTargets = new Map();
+
 // Initial Setup on Page Load
 document.addEventListener("DOMContentLoaded", () => {
     // Issue #28: Default date to today
@@ -434,8 +438,16 @@ function updateTargetField(name, field, val) {
         target.comment = val;
     } else if (field === 'manual_start_time') {
         target.manual_start_time = val.trim() || null;
+        // Issue #32: setting a start time auto-locks the target
+        if (target.manual_start_time) {
+            lockedTargets.set(name, 'start');
+        } else {
+            lockedTargets.delete(name);
+        }
     } else if (field === 'manual_duration') {
         target.manual_duration = val.trim() ? parseFloat(val) : null;
+        // Issue #32: changing exposure time with a locked start keeps start locked
+        // (end time will shift). No change needed to lockedTargets here.
     } else if (field === 'ra') {
         const parsed = parseCoordinate(val, true);
         if (!isNaN(parsed)) {
@@ -445,6 +457,25 @@ function updateTargetField(name, field, val) {
         const parsed = parseCoordinate(val, false);
         if (!isNaN(parsed)) {
             target.dec = parsed;
+        }
+    }
+    saveAndRefresh();
+}
+
+// Issue #32: Toggle lock icon for a target in the schedule table
+function toggleTargetLock(name) {
+    const target = targetPool.find(t => t.name === name);
+    if (!target) return;
+    if (lockedTargets.has(name)) {
+        // Unlock: clear manual start time
+        lockedTargets.delete(name);
+        target.manual_start_time = null;
+    } else {
+        // Lock at current scheduled start
+        const block = currentBlocksList.find(b => b.target_name === name);
+        if (block) {
+            lockedTargets.set(name, 'start');
+            target.manual_start_time = formatTimeForTimezone(block.start_time, 'UTC');
         }
     }
     saveAndRefresh();
@@ -464,6 +495,8 @@ function clearAllOverrides() {
         t.manual_duration = null;
         t.schedule_before = [];
     });
+    // Issue #32: clear all locks when overrides are cleared
+    lockedTargets.clear();
     saveAndRefresh();
 }
 
@@ -1117,27 +1150,36 @@ function updateScheduleUI(result) {
             
             let timeCell = "";
             let durationCell = "";
+            // Issue #32: Lock state
+            const isLocked = lockedTargets.has(b.target_name);
+            let lockCell = "";
             
             if (target) {
                 // Science target: editable start time and duration/exposure time
                 timeCell = `
                     <div style="display: flex; align-items: center; gap: 4px;" onclick="event.stopPropagation();">
                         <input type="text" value="${startVal}" 
-                               onchange="updateTargetManualStart('${b.target_name}', this.value)" 
+                               onchange="updateTargetField('${b.target_name}', 'manual_start_time', this.value)" 
                                style="width: 55px; font-family: monospace; text-align: center; padding: 2px 4px; border-radius: 4px; border: 1px solid var(--border-color); background: rgba(255, 255, 255, 0.05); color: #fff;">
                         <span>- ${endVal}</span>
                     </div>
                 `;
                 durationCell = `
-                    <input type="number" min="5" step="5" value="${b.duration_minutes}" 
-                           onchange="updateTargetManualDuration('${b.target_name}', this.value)" 
+                    <input type="number" min="1" step="1" value="${b.duration_minutes}" 
+                           onchange="updateTargetField('${b.target_name}', 'manual_duration', this.value)" 
                            style="width: 55px; text-align: center; padding: 2px 4px; border-radius: 4px; border: 1px solid var(--border-color); background: rgba(255, 255, 255, 0.05); color: #fff;" 
                            onclick="event.stopPropagation();">
                 `;
+                // Issue #32: lock button — 🔒 amber when locked, 🔓 dim when unlocked
+                lockCell = `<td style="text-align:center; width:30px;" onclick="event.stopPropagation();">
+                    <button onclick="toggleTargetLock('${b.target_name}')" title="${isLocked ? 'Click to unlock start time' : 'Click to lock start time'}"
+                        style="background:none; border:none; cursor:pointer; font-size:14px; opacity:${isLocked ? '1' : '0.35'}; color:${isLocked ? '#f59e0b' : 'inherit'};">${isLocked ? '🔒' : '🔓'}</button>
+                </td>`;
             } else {
-                // Standard star: static display
+                // Standard star: static display, no lock
                 timeCell = `<strong>${startVal} - ${endVal}</strong>`;
                 durationCell = `${b.duration_minutes}`;
+                lockCell = `<td></td>`;
             }
             
             return `
@@ -1145,10 +1187,11 @@ function updateScheduleUI(result) {
                     onmouseenter="highlightTarget('${b.target_name}')"
                     onmouseleave="unhighlightTarget('${b.target_name}')"
                     onclick="stickyHighlightTarget('${b.target_name}')"
-                    style="cursor: pointer;">
+                    style="cursor: pointer; ${isLocked ? 'background: rgba(245,158,11,0.05);' : ''}">
+                    ${lockCell}
                     <td>${timeCell}</td>
                     <td><strong>${b.target_name}</strong></td>
-                    <!-- Issue #33: priority as plain number, not badge -->
+                    <!-- Issue #33: priority as plain number -->
                     <td>${b.priority}</td>
                     <td>${durationCell}</td>
                     <td>${b.airmass_start.toFixed(2)} - ${b.airmass_end.toFixed(2)}</td>
@@ -2169,11 +2212,12 @@ function runLocalJSSolver(payload) {
     const sunset = solarTimes.sunset;
     const sunrise = solarTimes.sunrise;
     const totalDurationMs = sunrise.getTime() - sunset.getTime();
-    const numChunks = Math.floor(totalDurationMs / (300 * 1000));
+    // Issue #29: 1-minute chunks (was 5-minute)
+    const numChunks = Math.floor(totalDurationMs / (60 * 1000));
     
     const chunkTimes = [];
     for (let i = 0; i < numChunks; i++) {
-        chunkTimes.push(new Date(sunset.getTime() + i * 5 * 60 * 1000));
+        chunkTimes.push(new Date(sunset.getTime() + i * 60 * 1000));
     }
     
     const midTime = new Date(sunset.getTime() + totalDurationMs / 2);
@@ -2246,13 +2290,14 @@ function runLocalJSSolver(payload) {
             
             for (let i = 0; i < chunkTimes.length; i++) {
                 const ct = chunkTimes[i];
-                if (ct.getUTCHours() === hh && Math.abs(ct.getUTCMinutes() - mm) < 5) {
+                // Issue #29: exact minute match (tolerance 0)
+                if (ct.getUTCHours() === hh && ct.getUTCMinutes() === mm) {
                     return i;
                 }
             }
             for (let i = 0; i < chunkTimes.length; i++) {
                 const ct = chunkTimes[i];
-                if (ct.getHours() === hh && Math.abs(ct.getMinutes() - mm) < 5) {
+                if (ct.getHours() === hh && ct.getMinutes() === mm) {
                     return i;
                 }
             }
@@ -2279,27 +2324,28 @@ function runLocalJSSolver(payload) {
         }
     }
     
-    // 2. Determine standard stars twilight slots (restricted to at least 30 minutes after sunset / chunk 6)
-    let eveSlot1 = 6;
-    let eveSlot2 = 7;
+    // Issue #29: Standard star slots at 30 & 31 min after sunset (1-min chunks)
+    let eveSlot1 = 30;
+    let eveSlot2 = 31;
     const brightThreshold = 15.5; // Lick Shane threshold
     
     const scienceStartBlock = scheduledScience.find(b => new Date(b.start_time).getTime() === chunkTimes[0].getTime());
     if (scienceStartBlock) {
         const sciTarget = targets.find(t => t.name === scienceStartBlock.target_name);
         if (sciTarget && sciTarget.magnitude < brightThreshold) {
-            eveSlot1 = Math.max(6, Math.ceil(scienceStartBlock.duration_minutes / 5));
+            eveSlot1 = Math.max(30, Math.ceil(scienceStartBlock.duration_minutes));
             eveSlot2 = eveSlot1 + 1;
         }
     }
     
-    let mornSlot2 = numChunks - 7;
+    // Morning standards: 35 & 36 min before sunrise
+    let mornSlot2 = numChunks - 35;
     let mornSlot1 = mornSlot2 - 1;
     const scienceEndBlock = scheduledScience.find(b => new Date(b.end_time).getTime() === chunkTimes[numChunks - 1].getTime());
     if (scienceEndBlock) {
         const sciTarget = targets.find(t => t.name === scienceEndBlock.target_name);
         if (sciTarget && sciTarget.magnitude < brightThreshold) {
-            mornSlot2 = Math.min(numChunks - 7, numChunks - 1 - Math.ceil(scienceEndBlock.duration_minutes / 5));
+            mornSlot2 = Math.min(numChunks - 35, numChunks - 1 - Math.ceil(scienceEndBlock.duration_minutes));
             mornSlot1 = mornSlot2 - 1;
         }
     }
@@ -2412,7 +2458,8 @@ function runLocalJSSolver(payload) {
                 high_airmass: false,
                 comment: `Calib: ${starObj.color.charAt(0).toUpperCase() + starObj.color.slice(1)} / ${starObj.quality.charAt(0).toUpperCase() + starObj.quality.slice(1)}, Airmass ${getAirmassForTarget(starObj, chunkTimes[chunkIdx]).toFixed(2)}`
             };
-            const durChunks = 1; // 5 min block
+            // Issue #29: 5-minute standard star blocks = 5 chunks at 1-min granularity
+            const durChunks = 5;
             for (let c = chunkIdx; c < chunkIdx + durChunks; c++) {
                 reservedChunks.add(c);
             }
@@ -2423,7 +2470,7 @@ function runLocalJSSolver(payload) {
                 dec: starObj.dec,
                 start_time: chunkTimes[chunkIdx].toISOString(),
                 end_time: (chunkIdx + durChunks < numChunks) ? chunkTimes[chunkIdx + durChunks].toISOString() : sunrise.toISOString(),
-                duration_minutes: durChunks * 5,
+                duration_minutes: durChunks, // 1 chunk = 1 min, 5 chunks = 5 min
                 airmass_start: air,
                 airmass_end: air,
                 airmass_median: air,
@@ -2453,7 +2500,8 @@ function runLocalJSSolver(payload) {
         scheduledBlocks.forEach(b => {
             const bStart = new Date(b.start_time);
             const bEnd = new Date(b.end_time);
-            if (bStart > new Date(curr.getTime() + 5 * 60 * 1000)) {
+            // Issue #29: gap threshold is 1 minute
+            if (bStart > new Date(curr.getTime() + 1 * 60 * 1000)) {
                 empty_blocks.push({
                     start_time: curr.toISOString(),
                     end_time: b.start_time,
@@ -2463,7 +2511,7 @@ function runLocalJSSolver(payload) {
             curr = bEnd > curr ? bEnd : curr;
         });
         
-        if (new Date(curr.getTime() + 5 * 60 * 1000) < endActive) {
+        if (new Date(curr.getTime() + 1 * 60 * 1000) < endActive) {
             empty_blocks.push({
                 start_time: curr.toISOString(),
                 end_time: endActive.toISOString(),
@@ -2546,7 +2594,8 @@ function runLocalJSSolver(payload) {
         
         const durations = {};
         targetsList.forEach(t => {
-            durations[t.name] = Math.ceil(targetExps[t.name] / 300);
+            // Issue #29: convert seconds → 1-min chunks (was /300 for 5-min chunks)
+            durations[t.name] = Math.max(1, Math.ceil(targetExps[t.name] / 60));
         });
         
         const unobservable = [];
@@ -2825,7 +2874,8 @@ function runLocalJSSolver(payload) {
                 target_name: name,
                 start_time: chunkTimes[startIdx].toISOString(),
                 end_time: chunkTimes[startIdx + durChunks].toISOString(),
-                duration_minutes: durChunks * 5,
+                // Issue #29: 1 chunk = 1 minute
+                duration_minutes: durChunks,
                 airmass_start: startAir,
                 airmass_end: endAir,
                 airmass_median: medianAir,
