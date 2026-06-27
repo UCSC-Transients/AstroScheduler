@@ -543,6 +543,108 @@ class TestScheduler(unittest.TestCase):
         
         self.assertEqual(res_with_baseline['blocks'][0]['start_time'], start_time)
 
+    def test_previous_schedule_adds_new_target(self):
+        """Test that the scheduler still schedules a new target even if previous_schedule is provided."""
+        observatory = Observatory("Lick Observatory", 37.3414, -121.6429, 1283)
+        telescope = ShaneTelescope()
+        date_local = datetime.date(2026, 6, 18)
+        scheduler = Scheduler(observatory, telescope, date_local)
+
+        target_a = Target(
+            name="TargetA",
+            ra=180.0,
+            dec=37.3,
+            magnitude=12.0,
+            priority=1.0,
+            allow_twilight=True
+        )
+        target_b = Target(
+            name="TargetB",
+            ra=185.0,
+            dec=37.3,
+            magnitude=12.0,
+            priority=1.0,
+            allow_twilight=True
+        )
+
+        res = scheduler.solve([target_a], auto_standards=False)
+        start_time_a = res['blocks'][0]['start_time']
+
+        prev_sched = [{'target_name': 'TargetA', 'start_time': start_time_a}]
+        res_both = scheduler.solve([target_a, target_b], auto_standards=False, previous_schedule=prev_sched)
+        
+        scheduled_names = {b['target_name'] for b in res_both['blocks']}
+        self.assertIn("TargetA", scheduled_names)
+        self.assertIn("TargetB", scheduled_names)
+
+    def test_drag_drop_precedence_no_removal(self):
+        """Test that dragging a Priority 3 target before a Priority 1 target schedules both in correct order."""
+        observatory = Observatory("Lick Observatory", 37.3414, -121.6429, 1283)
+        telescope = ShaneTelescope()
+        date_local = datetime.date(2026, 6, 18)
+        scheduler = Scheduler(observatory, telescope, date_local)
+
+        # Allow long night so they easily fit
+        target_a = Target(
+            name="TargetA",
+            ra=180.0,
+            dec=37.3,
+            magnitude=12.0,
+            priority=1.0,
+            allow_twilight=True
+        )
+        target_b = Target(
+            name="TargetB",
+            ra=185.0,
+            dec=37.3,
+            magnitude=12.0,
+            priority=3.0,
+            allow_twilight=True,
+            schedule_before=["TargetA"] # B dragged before A
+        )
+
+        res = scheduler.solve([target_a, target_b], auto_standards=False)
+        scheduled_names = {b['target_name'] for b in res['blocks']}
+        
+        # Verify BOTH are scheduled (no removal!)
+        self.assertIn("TargetA", scheduled_names)
+        self.assertIn("TargetB", scheduled_names)
+
+        # Verify correct order: B is before A
+        block_a = next(b for b in res['blocks'] if b['target_name'] == "TargetA")
+        block_b = next(b for b in res['blocks'] if b['target_name'] == "TargetB")
+        
+        a_start = datetime.datetime.fromisoformat(block_a['start_time'])
+        b_end = datetime.datetime.fromisoformat(block_b['end_time'])
+        self.assertTrue(b_end <= a_start)
+
+    def test_reserved_chunks_conflict_not_unobservable(self):
+        """Test that physically observable targets blocked by reserved chunks go to conflicts, not unobservable."""
+        observatory = Observatory("Lick Observatory", 37.3414, -121.6429, 1283)
+        telescope = ShaneTelescope()
+        date_local = datetime.date(2026, 6, 18)
+        scheduler = Scheduler(observatory, telescope, date_local)
+
+        # Target A rises during night
+        target_a = Target(
+            name="TargetA",
+            ra=180.0,
+            dec=37.3,
+            magnitude=12.0,
+            priority=1.0,
+            allow_twilight=True
+        )
+
+        # If we reserve all chunks during the night
+        reserved = set(range(scheduler.num_chunks))
+
+        # Solve internal directly to verify partitioning
+        res = scheduler._solve_internal([target_a], reserved)
+        
+        # TargetA should be in conflicts, NOT unobservable
+        self.assertIn("TargetA", res['conflicts'])
+        self.assertNotIn("TargetA", res['unobservable'])
+
 
 if __name__ == '__main__':
     unittest.main()

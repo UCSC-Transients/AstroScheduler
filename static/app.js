@@ -1217,9 +1217,9 @@ function isStandardStarObservable(s, solar_times, observatory) {
     const utcNoon = new Date(localNoon.getTime() + offsetHours * 60 * 60 * 1000);
     const st = solar_times || getSolarTimesFallback(utcNoon, observatory.lat, observatory.lon, observatory.elevation);
     
-    // Check every 30 minutes from sunset to sunrise
-    let t = st.sunset.getTime();
-    const tEnd = st.sunrise.getTime();
+    // Check every 30 minutes from sunset + 30 minutes to sunrise - 30 minutes
+    let t = st.sunset.getTime() + 30 * 60 * 1000;
+    const tEnd = st.sunrise.getTime() - 30 * 60 * 1000;
     
     while (t <= tEnd) {
         const dt = new Date(t);

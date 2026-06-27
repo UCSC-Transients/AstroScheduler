@@ -1335,24 +1335,41 @@ class Scheduler:
         for t in targets:
             manual_start_chunks[t.name] = self.get_chunk_idx_from_time_str(t.manual_start_time)
             
-        # Filter impossible targets
+        # Filter impossible targets and conflicts
+        conflicts: List[str] = []
         unobservable_targets: List[str] = []
         observable_targets: List[Target] = []
         
         for t in targets:
-            # Check if has any valid chunk
-            has_any_valid_chunk = False
+            # 1. Check physical observability (ignoring reserved_chunks)
+            has_physical_chunk = False
             manual_chunk = manual_start_chunks[t.name]
             if manual_chunk is not None:
+                if self.is_chunk_valid(t, manual_chunk, is_manual=True):
+                    has_physical_chunk = True
+            else:
+                for c_idx in range(self.num_chunks):
+                    if self.is_chunk_valid(t, c_idx):
+                        has_physical_chunk = True
+                        break
+            
+            if not has_physical_chunk:
+                unobservable_targets.append(t.name)
+                continue
+                
+            # 2. Check scheduling availability (considering reserved_chunks)
+            has_avail_chunk = False
+            if manual_chunk is not None:
                 if manual_chunk not in reserved_chunks and self.is_chunk_valid(t, manual_chunk, is_manual=True):
-                    has_any_valid_chunk = True
+                    has_avail_chunk = True
             else:
                 for c_idx in range(self.num_chunks):
                     if c_idx not in reserved_chunks and self.is_chunk_valid(t, c_idx):
-                        has_any_valid_chunk = True
+                        has_avail_chunk = True
                         break
-            if not has_any_valid_chunk:
-                unobservable_targets.append(t.name)
+            
+            if not has_avail_chunk:
+                conflicts.append(t.name)
             else:
                 observable_targets.append(t)
                 
@@ -1363,7 +1380,6 @@ class Scheduler:
             
         sorted_priorities = sorted(obs_targets_by_prio.keys())
         current_schedule: Dict[str, int] = {}
-        conflicts: List[str] = []
         manually_scheduled: Set[str] = set()
         
         # Pre-schedule manual start science targets immediately and reserve their chunks
@@ -1493,8 +1509,18 @@ class Scheduler:
             def check_overlap(s1: int, d1: int, s2: int, d2: int) -> bool:
                 return not (s1 + d1 <= s2 or s2 + d2 <= s1)
                 
+            # Precompute minimum possible costs for suffix-based pruning
+            min_costs = [min(airmass_costs[t.name].values()) if airmass_costs[t.name] else 0.0 for t in targets_sorted_for_solve]
+            suffix_min_costs = []
+            current_sum = 0.0
+            for val in reversed(min_costs):
+                current_sum += val
+                suffix_min_costs.append(current_sum)
+            suffix_min_costs.reverse()
+            suffix_min_costs.append(0.0) # For idx == len(targets_sorted_for_solve)
+            
             search_iterations = 0
-            max_search_iterations = 10000
+            max_search_iterations = 300000
             
             def search(idx: int, schedule: Dict[str, int], cost: float):
                 nonlocal best_schedule, best_cost, search_iterations
@@ -1514,13 +1540,7 @@ class Scheduler:
                 t_dur = durations[t_name]
                 
                 # Check branch cost bound
-                remaining_lb = 0.0
-                for r_idx in range(idx, len(targets_sorted_for_solve)):
-                    r_target = targets_sorted_for_solve[r_idx]
-                    r_costs = airmass_costs[r_target.name].values()
-                    if r_costs:
-                        remaining_lb += min(r_costs)
-                if cost + remaining_lb >= best_cost:
+                if cost + suffix_min_costs[idx] >= best_cost:
                     return
                     
                 slots = valid_slots[t_name]
