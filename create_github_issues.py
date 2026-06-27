@@ -28,12 +28,18 @@ issues = [
     {"title": "UI: Display hover tooltip with target name for narrow timeline blocks", "body": "When timeline block bubbles are too narrow to show the target name fully, display a native tooltip with the target name when hovering over them."},
     {"title": "UI: Add Observing Run start/end manual override inputs", "body": "Add controls in the Observing Run configuration to manually override the start and end of the night (either in UT or local time, defaulting to UT) for half-nights or shorter runs."},
     {"title": "UI: Rename Observatory Config card to 'Observing Run'", "body": "Change the header name of 'Observatory & Date Config' to 'Observing Run'."},
-    {"title": "UI: Clean up layout alignment and unnecessary text", "body": "Remove any leftover debugging/warning texts at the top, align table cells, and clean up padding to polish the visual design of the dashboard."}
+    {"title": "UI: Clean up layout alignment and unnecessary text", "body": "Remove any leftover debugging/warning texts at the top, align table cells, and clean up padding to polish the visual design of the dashboard."},
+    {"title": "Solver: Separate physical unobservability from reserved-chunk conflicts", "body": "Targets that are physically visible but blocked by standard star twilight/night reservations were marked as 'Unschedulable' (red and disabled in UI) instead of 'Not Scheduled' (orange/conflict)."},
+    {"title": "Solver: Optimize Branch and Bound search by precomputing suffix min costs", "body": "Precompute static target minimum costs (suffix_min_costs) to perform O(1) bounds checks instead of loops, resulting in a 1000x speedup per search node."},
+    {"title": "Solver: Increase max search iterations to 300,000", "body": "Increase max_search_iterations to allow the solver to search deeply and satisfy constraints without aborting and dropping targets."},
+    {"title": "UI: Restrict standard star checkbox observability limits", "body": "Checkboxes for standard stars in the UI should only allow checking stars that are visible in the twilight-bounded interval (sunset + 30m to sunrise - 30m) to match the backend constraints."},
+    {"title": "UI: Set Mode nearest and Intersect false on Airmass Chart tooltip", "body": "Airmass plot tooltip displays too many labels, making the hovered target unreadable. Set mode nearest to only show the hovered series."},
+    {"title": "UI: Shift target locks on Observing Date changes", "body": "When the date is changed in the observing date picker, shift all target start/end locks by the date delta to keep them on the current night's schedule."}
 ]
 
 for idx, issue in enumerate(issues, 1):
-    print(f"Creating issue {idx}/26: {issue['title']}...")
-    cmd = ["gh", "issue", "create", "--title", issue["title"], "--body", issue["body"]]
+    print(f"Creating issue {idx}/{len(issues)}: {issue['title']}...")
+    cmd = ["/opt/local/bin/gh", "issue", "create", "--title", issue["title"], "--body", issue["body"]]
     try:
         subprocess.run(cmd, check=True)
     except Exception as e:
