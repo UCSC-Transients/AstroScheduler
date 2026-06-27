@@ -486,6 +486,42 @@ class ObservationBlock:
         }
 
 
+def parse_hour_minute(time_str: str, is_start: bool = False, is_local_tz: bool = False) -> Optional[Tuple[int, int]]:
+    if not time_str:
+        return None
+    clean = time_str.strip().lower()
+    
+    is_pm = "pm" in clean
+    is_am = "am" in clean
+    
+    numeric_str = "".join([c for c in clean if c.isdigit() or c == ":"]).strip()
+    if not numeric_str:
+        return None
+        
+    try:
+        if ":" in numeric_str:
+            parts = numeric_str.split(":")
+            hh = int(parts[0])
+            mm = int(parts[1])
+        else:
+            hh = int(numeric_str)
+            mm = 0
+    except ValueError:
+        return None
+        
+    if is_pm:
+        if hh < 12:
+            hh += 12
+    elif is_am:
+        if hh == 12:
+            hh = 0
+    else:
+        if is_start and is_local_tz and 0 < hh < 12:
+            hh += 12
+            
+    return hh, mm
+
+
 class Scheduler:
     """Discretizes the night and optimizes the schedule."""
     
@@ -543,9 +579,21 @@ class Scheduler:
                 if not (t_eve_18 <= t <= t_morn_18):
                     return False
             else:
-                # Allowed as early as 30 minutes after sunset, up to 30 minutes before sunrise
-                limit_start = self.solar_times['sunset'] + datetime.timedelta(minutes=30)
-                limit_end = self.solar_times['sunrise'] - datetime.timedelta(minutes=30)
+                is_standard = (target.priority == 0.0)
+                if is_standard:
+                    # Allowed as early as 30 minutes after sunset, up to 30 minutes before sunrise
+                    has_manual = bool(self.realtime_constraints and self.realtime_constraints.get('manual_limits_enabled'))
+                    limit_start = self.solar_times['sunset']
+                    if not has_manual:
+                        limit_start += datetime.timedelta(minutes=30)
+                    limit_end = self.solar_times['sunrise']
+                    if not has_manual:
+                        limit_end -= datetime.timedelta(minutes=30)
+                else:
+                    # Non-standard twilight targets must not extend beyond 12-degree twilight
+                    limit_start = self.solar_times['twilight_evening_12']
+                    limit_end = self.solar_times['twilight_morning_12']
+                
                 if not (limit_start <= t <= limit_end):
                     return False
 
@@ -665,14 +713,18 @@ class Scheduler:
 
         best_idx = None
         min_diff = float('inf')
+        dt_naive = dt.replace(tzinfo=None)
         for idx, c_time in enumerate(self.chunk_times):
-            diff = abs((c_time - dt).total_seconds())
+            c_time_naive = c_time.replace(tzinfo=None)
+            diff = abs((c_time_naive - dt_naive).total_seconds())
             if diff < min_diff:
                 min_diff = diff
                 best_idx = idx
-        return best_idx
+        if min_diff <= 60:
+            return best_idx
+        return None
 
-    def solve(self, targets: List[Target], disabled_standards: Optional[Set[str]] = None, selected_standards: Optional[List[str]] = None, auto_standards: bool = True, realtime_constraints: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def solve(self, targets: List[Target], disabled_standards: Optional[Set[str]] = None, selected_standards: Optional[List[str]] = None, auto_standards: bool = True, realtime_constraints: Optional[Dict[str, Any]] = None, standards_overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Main entry point for scheduling. Schedules standard stars first, then science targets.
         """
@@ -703,11 +755,12 @@ class Scheduler:
                     sunrise_hh = sunrise_local.hour
                     sunrise_mm = sunrise_local.minute
                     
-                start_parts = [int(x) for x in start_str.split(':')] if start_str else []
-                end_parts = [int(x) for x in end_str.split(':')] if end_str else []
+                is_local = (tz_mode != 'UTC')
+                start_res = parse_hour_minute(start_str, is_start=True, is_local_tz=is_local)
+                end_res = parse_hour_minute(end_str, is_start=False, is_local_tz=is_local)
                 
-                shh, smm = start_parts if len(start_parts) == 2 else (sunset_hh, sunset_mm)
-                ehh, emm = end_parts if len(end_parts) == 2 else (sunrise_hh, sunrise_mm)
+                shh, smm = start_res if start_res else (sunset_hh, sunset_mm)
+                ehh, emm = end_res if end_res else (sunrise_hh, sunrise_mm)
                 
                 if tz_mode == 'UTC':
                     cand_start = sunset_utc.replace(hour=shh, minute=smm, second=0, microsecond=0)
@@ -752,8 +805,106 @@ class Scheduler:
             morn_twil_start = self.solar_times['twilight_morning_18'] - datetime.timedelta(minutes=30)
             morn_twil_end = self.solar_times['sunrise'] - datetime.timedelta(minutes=30)
 
-        # Pre-schedule manual start science targets immediately and reserve their chunks
+        # Load standard stars database early
+        standards_data = []
+        import json
+        import os
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        standards_path = os.path.join(base_dir, "static", "standards.json")
+        if os.path.exists(standards_path):
+            try:
+                with open(standards_path, "r") as f:
+                    standards_data = json.load(f)
+            except Exception:
+                pass
+        if not standards_data:
+            # Fallback default database
+            standards_data = [
+                {"name": "BD+284211", "ra": "21:51:11.07", "dec": "+28:51:51.80", "color": "blue", "quality": "good", "magnitude": 10.5, "exposure_times": {"Lick Shane 3m": 300}},
+                {"name": "BD+174708", "ra": "22:11:31.37", "dec": "+18:05:34.20", "color": "red", "quality": "good", "magnitude": 9.5, "exposure_times": {"Lick Shane 3m": 300}},
+                {"name": "HD19445", "ra": "03:08:25.86", "dec": "+26:20:05.70", "color": "red", "quality": "good", "magnitude": 8.0, "exposure_times": {"Lick Shane 3m": 300}},
+                {"name": "G191B2B", "ra": "05:05:30.60", "dec": "+52:49:54.00", "color": "blue", "quality": "okay", "magnitude": 11.8, "exposure_times": {"Lick Shane 3m": 300}},
+                {"name": "HD84937", "ra": "09:48:56.09", "dec": "+13:44:39.30", "color": "red", "quality": "okay", "magnitude": 8.3, "exposure_times": {"Lick Shane 3m": 300}},
+                {"name": "Feige 34", "ra": "10:39:36.74", "dec": "+43:06:09.30", "color": "blue", "quality": "good", "magnitude": 11.2, "exposure_times": {"Lick Shane 3m": 300}},
+                {"name": "HZ 44", "ra": "13:23:35.26", "dec": "+36:07:59.50", "color": "blue", "quality": "okay", "magnitude": 11.7, "exposure_times": {"Lick Shane 3m": 300}},
+                {"name": "BD+262606", "ra": "14:49:02.35", "dec": "+25:42:09.10", "color": "red", "quality": "good", "magnitude": 9.7, "exposure_times": {"Lick Shane 3m": 300}},
+                {"name": "Feige 110", "ra": "23:19:58.39", "dec": "-05:09:55.80", "color": "blue", "quality": "good", "magnitude": 11.8, "exposure_times": {"Lick Shane 3m": 300}},
+                {"name": "LTT 377", "ra": "00:41:46.82", "dec": "-33:39:08.2", "color": "blue", "quality": "okay", "magnitude": 11.2, "exposure_times": {"Lick Shane 3m": 300}},
+                {"name": "LTT 1788", "ra": "03:48:22.2", "dec": "-39:08:35", "color": "blue", "quality": "okay", "magnitude": 13.1, "exposure_times": {"Lick Shane 3m": 300}},
+                {"name": "LTT 2415", "ra": "05:56:24.2", "dec": "-27:51:26", "color": "blue", "quality": "okay", "magnitude": 12.2, "exposure_times": {"Lick Shane 3m": 300}}
+            ]
+
+        if not auto_standards:
+            sel_set = set(selected_standards or [])
+            standards_data = [s for s in standards_data if s['name'] in sel_set]
+        elif disabled_standards:
+            standards_data = [s for s in standards_data if s['name'] not in disabled_standards]
+
+        # Parse standard stars into Target objects
+        standards = []
+        for s_data in standards_data:
+            standards.append({
+                'target': Target(
+                    name=s_data['name'],
+                    ra=s_data['ra'],
+                    dec=s_data['dec'],
+                    magnitude=s_data['magnitude'],
+                    priority=0.0,
+                    allow_twilight=True
+                ),
+                'color': s_data['color'],
+                'quality': s_data['quality'],
+                'exposure_times': s_data.get('exposure_times', {})
+            })
+
+        # Apply standards_overrides to parsed standard stars
+        if standards_overrides:
+            for s in standards:
+                name = s['target'].name
+                if name in standards_overrides:
+                    ovr = standards_overrides[name]
+                    if ovr.get('manual_start_time'):
+                        s['target'].manual_start_time = ovr['manual_start_time']
+                    if ovr.get('manual_duration') is not None:
+                        s['exposure_times'][self.telescope.name] = ovr['manual_duration'] * 60
+
+        # Pre-schedule manual start standard stars
         reserved_chunks = set()
+        manual_standard_blocks = []
+        for s in standards:
+            t = s['target']
+            if t.manual_start_time:
+                manual_chunk = self.get_chunk_idx_from_time_str(t.manual_start_time)
+                if manual_chunk is not None:
+                    t_name_tel = self.telescope.name
+                    exp_seconds = s['exposure_times'].get(t_name_tel, 300)
+                    dur_chunks = int(math.ceil(exp_seconds / 60.0))
+                    
+                    block_valid = True
+                    for c_idx in range(manual_chunk, manual_chunk + dur_chunks):
+                        if c_idx >= self.num_chunks or c_idx in reserved_chunks or not self.is_chunk_valid(t, c_idx, is_manual=True):
+                            block_valid = False
+                            break
+                    if block_valid:
+                        reserved_chunks.update(range(manual_chunk, manual_chunk + dur_chunks))
+                        airmass = self.get_airmass_for_target(t, self.chunk_times[manual_chunk])
+                        block = ObservationBlock(
+                            target=t,
+                            start_time=self.chunk_times[manual_chunk],
+                            duration_minutes=dur_chunks * 1,
+                            airmass_start=airmass,
+                            airmass_end=self.get_airmass_for_target(t, self.chunk_times[manual_chunk + dur_chunks - 1]),
+                            airmass_median=get_median([self.get_airmass_for_target(t, self.chunk_times[c]) for c in range(manual_chunk, manual_chunk + dur_chunks)]),
+                            priority=0.0,
+                            comment=f"Calib: {s['color'].capitalize()} / {s['quality'].capitalize()}, Airmass {airmass:.2f}"
+                        )
+                        block.target.priority = 0.0
+                        manual_standard_blocks.append(block)
+
+        # Filter out pre-scheduled standard stars so they aren't processed in standard selection loops
+        standards = [s for s in standards if not s['target'].manual_start_time]
+
+        # Pre-schedule manual start science targets immediately and reserve their chunks
         manual_science_blocks = []
         manually_scheduled_names = set()
 
@@ -797,10 +948,10 @@ class Scheduler:
 
         # 1. Run preliminary solve to see what gets scheduled and if we need high-airmass calibrations
         prelim_solve = self._solve_internal(remaining_targets, reserved_chunks=set(reserved_chunks))
-        scheduled_science = prelim_solve['blocks']
+        all_scheduled_science = prelim_solve['blocks'] + manual_science_blocks
         
         need_high_airmass = False
-        for b in scheduled_science:
+        for b in all_scheduled_science:
             if b.airmass_median > 1.5:
                 need_high_airmass = True
                 break
@@ -822,80 +973,32 @@ class Scheduler:
                 break
                 
         # Determine evening slots (restricted to at least 30 minutes after sunset, chunk index 30)
-        eve_slot_1 = 30
-        eve_slot_2 = 35
+        has_manual = bool(self.realtime_constraints and self.realtime_constraints.get('manual_limits_enabled'))
+        eve_slot_1 = 0 if has_manual else 30
+        eve_slot_2 = 5 if has_manual else 35
         # Check bright science target exception
         # Telescope brightness threshold: Lick is 15.5, Keck is 17.5
         bright_threshold = 17.5 if "Keck" in self.telescope.name else 15.5
         
-        science_start_block = next((b for b in scheduled_science if b.start_time == self.chunk_times[0]), None)
+        science_start_block = next((b for b in all_scheduled_science if b.start_time == self.chunk_times[0]), None)
         if science_start_block and science_start_block.target.magnitude < bright_threshold:
             # Shift evening slots
-            eve_slot_1 = max(30, int(science_start_block.duration_minutes))
+            eve_slot_1 = max(0 if has_manual else 30, int(science_start_block.duration_minutes))
             eve_slot_2 = eve_slot_1 + 5
             
         # Determine morning slots (restricted to at least 30 minutes before sunrise, chunk index self.num_chunks - 35)
-        morn_slot_2 = self.num_chunks - 35
+        morn_slot_2 = self.num_chunks - 5 if has_manual else self.num_chunks - 35
         morn_slot_1 = morn_slot_2 - 5
-        science_end_block = next((b for b in scheduled_science if b.end_time == self.chunk_times[-1]), None)
+        science_end_block = next((b for b in all_scheduled_science if b.end_time == self.chunk_times[-1]), None)
         if science_end_block and science_end_block.target.magnitude < bright_threshold:
-            morn_slot_2 = min(self.num_chunks - 35, self.num_chunks - 5 - int(science_end_block.duration_minutes))
+            morn_slot_2 = min(self.num_chunks - 5 if has_manual else self.num_chunks - 35, self.num_chunks - 5 - int(science_end_block.duration_minutes))
             morn_slot_1 = morn_slot_2 - 5
             
-        # 3. Load standard stars
-        standards_data = []
-        import json
-        import os
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        standards_path = os.path.join(base_dir, "static", "standards.json")
-        if os.path.exists(standards_path):
-            try:
-                with open(standards_path, "r") as f:
-                    standards_data = json.load(f)
-            except Exception:
-                pass
-        if not standards_data:
-            # Fallback default database
-            standards_data = [
-                {"name": "BD+284211", "ra": "21:51:11.07", "dec": "+28:51:51.80", "color": "blue", "quality": "good", "magnitude": 10.5, "exposure_times": {"Lick Shane 3m": 300}},
-                {"name": "BD+174708", "ra": "22:11:31.37", "dec": "+18:05:34.20", "color": "red", "quality": "good", "magnitude": 9.5, "exposure_times": {"Lick Shane 3m": 300}},
-                {"name": "HD19445", "ra": "03:08:25.86", "dec": "+26:20:05.70", "color": "red", "quality": "good", "magnitude": 8.0, "exposure_times": {"Lick Shane 3m": 300}},
-                {"name": "G191B2B", "ra": "05:05:30.60", "dec": "+52:49:54.00", "color": "blue", "quality": "okay", "magnitude": 11.8, "exposure_times": {"Lick Shane 3m": 300}},
-                {"name": "HD84937", "ra": "09:48:56.09", "dec": "+13:44:39.30", "color": "red", "quality": "okay", "magnitude": 8.3, "exposure_times": {"Lick Shane 3m": 300}},
-                {"name": "Feige 34", "ra": "10:39:36.74", "dec": "+43:06:09.30", "color": "blue", "quality": "good", "magnitude": 11.2, "exposure_times": {"Lick Shane 3m": 300}},
-                {"name": "HZ 44", "ra": "13:23:35.26", "dec": "+36:07:59.50", "color": "blue", "quality": "okay", "magnitude": 11.7, "exposure_times": {"Lick Shane 3m": 300}},
-                {"name": "BD+262606", "ra": "14:49:02.35", "dec": "+25:42:09.10", "color": "red", "quality": "good", "magnitude": 9.7, "exposure_times": {"Lick Shane 3m": 300}},
-                {"name": "Feige 110", "ra": "23:19:58.39", "dec": "-05:09:55.80", "color": "blue", "quality": "good", "magnitude": 11.8, "exposure_times": {"Lick Shane 3m": 300}},
-                {"name": "LTT 377", "ra": "00:41:46.82", "dec": "-33:39:08.2", "color": "blue", "quality": "okay", "magnitude": 11.2, "exposure_times": {"Lick Shane 3m": 300}},
-                {"name": "LTT 1788", "ra": "03:48:22.2", "dec": "-39:08:35", "color": "blue", "quality": "okay", "magnitude": 13.1, "exposure_times": {"Lick Shane 3m": 300}},
-                {"name": "LTT 2415", "ra": "05:56:24.2", "dec": "-27:51:26", "color": "blue", "quality": "okay", "magnitude": 12.2, "exposure_times": {"Lick Shane 3m": 300}}
-            ]
-            
-        if not auto_standards:
-            sel_set = set(selected_standards or [])
-            standards_data = [s for s in standards_data if s['name'] in sel_set]
-        elif disabled_standards:
-            standards_data = [s for s in standards_data if s['name'] not in disabled_standards]
-            
-        # Parse standard stars into Target objects
-        standards = []
-        for s_data in standards_data:
-            standards.append({
-                'target': Target(
-                    name=s_data['name'],
-                    ra=s_data['ra'],
-                    dec=s_data['dec'],
-                    magnitude=s_data['magnitude'],
-                    priority=0.0,
-                    allow_twilight=True
-                ),
-                'color': s_data['color'],
-                'quality': s_data['quality'],
-                'exposure_times': s_data.get('exposure_times', {})
-            })
+        # 3. Load standard stars: already done early in solve()
+        pass
             
         # 4. Search for the best standard star selection
-        standard_blocks = []
+        standard_blocks = list(manual_standard_blocks)
 
         def add_standard_block(star_dict, chunk_idx):
             target = star_dict['target']
@@ -971,7 +1074,8 @@ class Scheduler:
                     best_c, best_airmass = find_best_chunk(twil_chunks, 2.5)
 
                 # Pass 3: all night chunks, airmass <= 2.2
-                all_chunks = list(range(self.num_chunks))
+                min_chunk = 0 if has_manual else 30
+                all_chunks = [c for c in range(self.num_chunks) if c >= min_chunk]
                 if best_c is None:
                     best_c, best_airmass = find_best_chunk(all_chunks, 2.2)
 
@@ -990,13 +1094,9 @@ class Scheduler:
             blue_standards = [s for s in standards if s['color'] == 'blue']
             red_standards = [s for s in standards if s['color'] == 'red']
 
-            s_eb = None
-            s_er = None
-            s_mb = None
-            s_mr = None
-
             # Evening Blue (Slot 1)
             best_eb_score = -1.0
+            s_eb = None
             for s in blue_standards:
                 if any(c in reserved_chunks for c in range(eve_slot_1, eve_slot_1 + 5)):
                     break
@@ -1004,7 +1104,7 @@ class Scheduler:
                 if self.telescope.is_visible(t.ra, t.dec, self.chunk_times[eve_slot_1], self.observatory):
                     airmass = self.get_airmass_for_target(t, self.chunk_times[eve_slot_1])
                     if 0 < airmass <= 2.2:
-                        score = 10.0 if s['quality'] == 'good' else 5.0
+                        score = 100.0 if s['quality'] == 'good' else 10.0
                         if need_high_airmass:
                             if 1.5 <= airmass <= 2.2: score += 20.0
                         else:
@@ -1012,9 +1112,12 @@ class Scheduler:
                         if score > best_eb_score:
                             best_eb_score = score
                             s_eb = s
+            if s_eb is not None:
+                add_standard_block(s_eb, eve_slot_1)
 
             # Evening Red (Slot 2)
             best_er_score = -1.0
+            s_er = None
             for s in red_standards:
                 if any(c in reserved_chunks for c in range(eve_slot_2, eve_slot_2 + 5)):
                     break
@@ -1022,7 +1125,7 @@ class Scheduler:
                 if self.telescope.is_visible(t.ra, t.dec, self.chunk_times[eve_slot_2], self.observatory):
                     airmass = self.get_airmass_for_target(t, self.chunk_times[eve_slot_2])
                     if 0 < airmass <= 2.2:
-                        score = 10.0 if s['quality'] == 'good' else 5.0
+                        score = 100.0 if s['quality'] == 'good' else 10.0
                         if need_high_airmass:
                             if 1.5 <= airmass <= 2.2: score += 20.0
                         else:
@@ -1030,9 +1133,12 @@ class Scheduler:
                         if score > best_er_score:
                             best_er_score = score
                             s_er = s
+            if s_er is not None:
+                add_standard_block(s_er, eve_slot_2)
 
             # Morning Blue (Slot 1)
             best_mb_score = -1.0
+            s_mb = None
             for s in blue_standards:
                 if any(c in reserved_chunks for c in range(morn_slot_1, morn_slot_1 + 5)):
                     break
@@ -1040,7 +1146,7 @@ class Scheduler:
                 if self.telescope.is_visible(t.ra, t.dec, self.chunk_times[morn_slot_1], self.observatory):
                     airmass = self.get_airmass_for_target(t, self.chunk_times[morn_slot_1])
                     if 0 < airmass <= 2.2:
-                        score = 10.0 if s['quality'] == 'good' else 5.0
+                        score = 100.0 if s['quality'] == 'good' else 10.0
                         if need_high_airmass:
                             if 1.5 <= airmass <= 2.2: score += 20.0
                         else:
@@ -1048,9 +1154,12 @@ class Scheduler:
                         if score > best_mb_score:
                             best_mb_score = score
                             s_mb = s
+            if s_mb is not None:
+                add_standard_block(s_mb, morn_slot_1)
 
             # Morning Red (Slot 2)
             best_mr_score = -1.0
+            s_mr = None
             for s in red_standards:
                 if any(c in reserved_chunks for c in range(morn_slot_2, morn_slot_2 + 5)):
                     break
@@ -1058,7 +1167,7 @@ class Scheduler:
                 if self.telescope.is_visible(t.ra, t.dec, self.chunk_times[morn_slot_2], self.observatory):
                     airmass = self.get_airmass_for_target(t, self.chunk_times[morn_slot_2])
                     if 0 < airmass <= 2.2:
-                        score = 10.0 if s['quality'] == 'good' else 5.0
+                        score = 100.0 if s['quality'] == 'good' else 10.0
                         if need_high_airmass:
                             if 1.5 <= airmass <= 2.2: score += 20.0
                         else:
@@ -1066,13 +1175,6 @@ class Scheduler:
                         if score > best_mr_score:
                             best_mr_score = score
                             s_mr = s
-
-            if s_eb is not None:
-                add_standard_block(s_eb, eve_slot_1)
-            if s_er is not None:
-                add_standard_block(s_er, eve_slot_2)
-            if s_mb is not None:
-                add_standard_block(s_mb, morn_slot_1)
             if s_mr is not None:
                 add_standard_block(s_mr, morn_slot_2)
                 
@@ -1245,17 +1347,22 @@ class Scheduler:
                 else:
                     conflicts.append(t.name)
                     
+        previously_scheduled = set(current_schedule.keys())
+        
         for prio in sorted_priorities:
             prio_targets = obs_targets_by_prio.get(prio, [])
             if not prio_targets:
                 continue
                 
-            targets_to_schedule = []
-            for p in sorted_priorities:
-                if p <= prio:
-                    # Exclude manually scheduled targets
-                    targets_to_schedule.extend([tg for tg in obs_targets_by_prio.get(p, []) if tg.name not in manually_scheduled])
-                    
+            # S_active are previously scheduled science targets that are not manual
+            S_active = [tg for tg in targets if tg.name in previously_scheduled and tg.name not in manually_scheduled]
+            # new_active are the targets of current priority that are not manual
+            new_active = [tg for tg in prio_targets if tg.name not in manually_scheduled]
+            
+            targets_to_schedule = S_active + new_active
+            if not targets_to_schedule:
+                continue
+                
             durations: Dict[str, int] = {}
             for tg in targets:
                 durations[tg.name] = int(math.ceil(target_exposures[tg.name] / 60.0))
@@ -1280,7 +1387,24 @@ class Scheduler:
                         airmasses.sort()
                         mid = len(airmasses) // 2
                         median_airmass = airmasses[mid] if len(airmasses) % 2 != 0 else (airmasses[mid-1] + airmasses[mid]) / 2.0
-                        costs[s_idx] = median_airmass
+                        
+                        # Calculate twilight proximity penalty for non-standard targets
+                        twilight_dist = 0.0
+                        if not (t.priority == 0.0):
+                            t_eve_18 = self.solar_times['twilight_evening_18']
+                            t_morn_18 = self.solar_times['twilight_morning_18']
+                            dists = []
+                            for c_idx in range(s_idx, s_idx + dur_chunks):
+                                c_time = self.chunk_times[c_idx]
+                                if c_time < t_eve_18:
+                                    dists.append((t_eve_18 - c_time).total_seconds() / 60.0)
+                                elif c_time > t_morn_18:
+                                    dists.append((c_time - t_morn_18).total_seconds() / 60.0)
+                                else:
+                                    dists.append(0.0)
+                            twilight_dist = get_median(dists)
+                            
+                        costs[s_idx] = median_airmass + 1000.0 * twilight_dist
                 valid_slots[t.name] = slots
                 airmass_costs[t.name] = costs
                     
@@ -1289,6 +1413,9 @@ class Scheduler:
                 targets_to_schedule,
                 key=lambda x: (x.priority, -durations[x.name])
             )
+            
+            S_active_names = {t.name for t in S_active}
+            new_active_names = {t.name for t in new_active}
             
             best_schedule: Optional[Dict[str, int]] = None
             best_cost = float('inf')
@@ -1335,12 +1462,10 @@ class Scheduler:
                     precedence_ok = True
                     for p_name, p_start in schedule.items():
                         p_dur = durations[p_name]
-                        # If target must be before p_name
                         if p_name in target.schedule_before:
                             if not (s + t_dur <= p_start):
                                 precedence_ok = False
                                 break
-                        # If p_name must be before target
                         p_obj = next((tg for tg in targets if tg.name == p_name), None)
                         if p_obj is not None and t_name in p_obj.schedule_before:
                             if not (p_start + p_dur <= s):
@@ -1353,43 +1478,23 @@ class Scheduler:
                     schedule[t_name] = s
                     search(idx + 1, schedule, cost + airmass_costs[t_name][s])
                     del schedule[t_name]
+                
+                # If target is new, we can skip it (with a large penalty)
+                if t_name in new_active_names:
+                    search(idx + 1, schedule, cost + 100000.0)
                     
             initial_schedule = {k: v for k, v in current_schedule.items() if k in manually_scheduled}
             search(0, initial_schedule, 0.0)
             
             if best_schedule is not None:
                 current_schedule = best_schedule
-            else:
-                for t in prio_targets:
-                    if t.name in manually_scheduled:
-                        continue
-                    t_dur = durations[t.name]
-                    fit_found = False
-                    for s in valid_slots[t.name]:
-                        overlap = False
-                        for p_name, p_start in current_schedule.items():
-                            if check_overlap(s, t_dur, p_start, durations[p_name]):
-                                overlap = True
-                                break
-                        if not overlap:
-                            precedence_ok = True
-                            for p_name, p_start in current_schedule.items():
-                                p_dur = durations[p_name]
-                                if p_name in t.schedule_before:
-                                    if not (s + t_dur <= p_start):
-                                        precedence_ok = False
-                                        break
-                                p_obj = next((tg for tg in targets if tg.name == p_name), None)
-                                if p_obj is not None and t.name in p_obj.schedule_before:
-                                    if not (p_start + p_dur <= s):
-                                        precedence_ok = False
-                                        break
-                            if precedence_ok:
-                                fit_found = True
-                                current_schedule[t.name] = s
-                                break
-                    if not fit_found:
+                previously_scheduled = set(current_schedule.keys())
+                for t in new_active:
+                    if t.name not in current_schedule:
                         conflicts.append(t.name)
+            else:
+                for t in new_active:
+                    conflicts.append(t.name)
                         
         scheduled_blocks: List[ObservationBlock] = []
         for t_name, start_idx in current_schedule.items():
@@ -1420,34 +1525,4 @@ class Scheduler:
             'unobservable': unobservable_targets
         }
 
-    def get_chunk_idx_from_time_str(self, time_str: Optional[str]) -> Optional[int]:
-        if not time_str:
-            return None
-        try:
-            # Parse ISO string
-            dt = datetime.datetime.fromisoformat(time_str.replace("Z", "+00:00"))
-        except ValueError:
-            try:
-                # Parse HH:MM
-                parts = time_str.split(":")
-                hh = int(parts[0])
-                mm = int(parts[1])
-                # Find closest chunk by hour/minute matching with 30 minute tolerance
-                for idx, c_time in enumerate(self.chunk_times):
-                    diff_min = abs((c_time.hour - hh) * 60 + (c_time.minute - mm))
-                    if diff_min < 30 or diff_min > 1410:
-                        return idx
-                return None
-            except Exception:
-                return None
-        
-        best_idx = None
-        min_diff = float('inf')
-        for idx, c_time in enumerate(self.chunk_times):
-            diff = abs((c_time - dt).total_seconds())
-            if diff < min_diff:
-                min_diff = diff
-                best_idx = idx
-        if min_diff < 1800:
-            return best_idx
-        return None
+

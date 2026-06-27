@@ -242,8 +242,8 @@ class TestScheduler(unittest.TestCase):
         date_local = datetime.date(2026, 9, 21)
         scheduler = Scheduler(observatory, telescope, date_local)
 
-        # Select 5 standards manually that are well-spaced and visible
-        selected = ["BD+284211", "BD+174708", "HD19445", "G191B2B", "BD+262606"]
+        # Select 5 standards manually that are well-spaced and visible outside the 30-minute buffer
+        selected = ["BD+284211", "BD+174708", "HD19445", "G191B2B", "Feige 110"]
         res = scheduler.solve([], auto_standards=False, selected_standards=selected)
         standard_blocks = [b for b in res['blocks'] if b['priority'] == 0.0]
         
@@ -278,7 +278,246 @@ class TestScheduler(unittest.TestCase):
         for t in scheduler.chunk_times:
             self.assertTrue(scheduler.start_night <= t < scheduler.end_night)
 
+    def test_strict_time_tolerance(self):
+        observatory = Observatory("Lick Observatory", 37.3414, -121.6429, 1283)
+        telescope = ShaneTelescope()
+        date_local = datetime.date(2026, 6, 18)
+        scheduler = Scheduler(observatory, telescope, date_local)
+
+        # A locked time perfectly matching a chunk (e.g. index 10) should succeed
+        matching_time = scheduler.chunk_times[10].isoformat()
+        self.assertEqual(scheduler.get_chunk_idx_from_time_str(matching_time), 10)
+
+        # A locked time offset by more than 1 minute (e.g. 5 minutes before sunset) should return None
+        offset_time = (scheduler.start_night - datetime.timedelta(minutes=5)).isoformat()
+        self.assertIsNone(scheduler.get_chunk_idx_from_time_str(offset_time))
+
+    def test_standard_star_twilight_buffer(self):
+        observatory = Observatory("Lick Observatory", 37.3414, -121.6429, 1283)
+        telescope = ShaneTelescope()
+        date_local = datetime.date(2026, 6, 18)
+        scheduler = Scheduler(observatory, telescope, date_local)
+
+        # Run solve with auto_standards=True
+        res = scheduler.solve([], auto_standards=True)
+        for block in res['blocks']:
+            if block['priority'] == 0.0:
+                # Ensure it's not scheduled within 30 minutes of sunset or sunrise
+                start_dt = datetime.datetime.fromisoformat(block['start_time']).replace(tzinfo=None)
+                end_dt = datetime.datetime.fromisoformat(block['end_time']).replace(tzinfo=None)
+                start_night = scheduler.start_night.replace(tzinfo=None)
+                end_night = scheduler.end_night.replace(tzinfo=None)
+                self.assertTrue(start_dt >= start_night + datetime.timedelta(minutes=30))
+                self.assertTrue(end_dt <= end_night - datetime.timedelta(minutes=30))
+
+    def test_locked_target_precedence_constraint(self):
+        observatory = Observatory("Lick Observatory", 37.3414, -121.6429, 1283)
+        telescope = ShaneTelescope()
+        date_local = datetime.date(2026, 6, 18)
+        scheduler = Scheduler(observatory, telescope, date_local)
+
+        # A is locked at chunk 500, B is unlocked but must schedule before A (schedule_before=["A"])
+        locked_time = scheduler.chunk_times[500].isoformat()
+        target_a = Target("A", 18.0, 30.0, 10.0, 1.0, comment="", manual_start_time=locked_time, manual_duration=30, allow_twilight=True)
+        target_b = Target("B", 18.0, 30.0, 10.0, 1.0, comment="", manual_start_time=None, manual_duration=30, schedule_before=["A"], allow_twilight=True)
+    
+        res = scheduler.solve([target_a, target_b], auto_standards=False)
+        print("TEST CONFLICTS:", res['conflicts'])
+        print("TEST BLOCKS:", [b['target_name'] for b in res['blocks']])
+        
+        block_a = next(b for b in res['blocks'] if b['target_name'] == "A")
+        block_b = next(b for b in res['blocks'] if b['target_name'] == "B")
+        
+        a_start = datetime.datetime.fromisoformat(block_a['start_time']).replace(tzinfo=None)
+        b_end = datetime.datetime.fromisoformat(block_b['end_time']).replace(tzinfo=None)
+        self.assertTrue(b_end <= a_start)
+
+    def test_observed_target_filtering(self):
+        from app import run_schedule_logic
+        data = {
+            'date': '2026-06-18',
+            'observatory': {'name': 'Lick Observatory', 'lat': 37.3414, 'lon': -121.6429, 'elevation': 1283},
+            'targets': [
+                {'name': 'ObservedTarget', 'ra': 18.0, 'dec': 30.0, 'magnitude': 10.0, 'priority': 1.0, 'allow_twilight': True, 'status': 'Observed'},
+                {'name': 'ActiveTarget', 'ra': 18.0, 'dec': 30.0, 'magnitude': 10.0, 'priority': 1.0, 'allow_twilight': True, 'status': 'Scheduled'}
+            ],
+            'auto_standards': False
+        }
+        res = run_schedule_logic(data)
+        block_names = [b['target_name'] for b in res['blocks']]
+        self.assertIn('ActiveTarget', block_names)
+        self.assertNotIn('ObservedTarget', block_names)
+
+    def test_standard_star_scheduling_with_manual_limits(self):
+        observatory = Observatory("Lick Observatory", 37.3414, -121.6429, 1283)
+        telescope = ShaneTelescope()
+        date_local = datetime.date(2026, 6, 18)
+        scheduler = Scheduler(observatory, telescope, date_local)
+
+        realtime_constraints = {
+            'manual_limits_enabled': True,
+            'manual_limit_start': '04:00',
+            'manual_limit_end': '08:00',
+            'manual_limit_tz': 'UTC'
+        }
+        res = scheduler.solve([], auto_standards=True, realtime_constraints=realtime_constraints)
+        
+        # Verify that standards can be scheduled within overridden boundaries
+        standard_blocks = [b for b in res['blocks'] if b['priority'] == 0.0]
+        self.assertTrue(len(standard_blocks) > 0)
+        
+        start_night = scheduler.start_night.replace(tzinfo=None)
+        end_night = scheduler.end_night.replace(tzinfo=None)
+        
+        for block in standard_blocks:
+            start_dt = datetime.datetime.fromisoformat(block['start_time']).replace(tzinfo=None)
+            end_dt = datetime.datetime.fromisoformat(block['end_time']).replace(tzinfo=None)
+            self.assertTrue(start_dt >= start_night)
+            self.assertTrue(end_dt <= end_night)
+
+    def test_twilight_science_target_nautical_limit_and_darkest_part_override(self):
+        observatory = Observatory("Lick Observatory", 37.3414, -121.6429, 1283)
+        telescope = ShaneTelescope()
+        date_local = datetime.date(2026, 6, 18)
+        scheduler = Scheduler(observatory, telescope, date_local)
+
+        t_eve_12 = scheduler.solar_times['twilight_evening_12'].replace(tzinfo=None)
+        t_morn_12 = scheduler.solar_times['twilight_morning_12'].replace(tzinfo=None)
+        t_eve_18 = scheduler.solar_times['twilight_evening_18'].replace(tzinfo=None)
+
+        # LST at twilight_evening_12
+        lst_eve_12 = get_lst(scheduler.solar_times['twilight_evening_12'], observatory.longitude)
+        
+        target = Target(
+            name="TwilightScienceTarget",
+            ra=lst_eve_12 * 15.0,
+            dec=37.3,
+            magnitude=15.0,
+            priority=1.0,
+            allow_twilight=True
+        )
+
+        res = scheduler.solve([target], auto_standards=False)
+        blocks = [b for b in res['blocks'] if b['target_name'] == "TwilightScienceTarget"]
+        self.assertEqual(len(blocks), 1)
+
+        block = blocks[0]
+        start_time = datetime.datetime.fromisoformat(block['start_time']).replace(tzinfo=None)
+        end_time = datetime.datetime.fromisoformat(block['end_time']).replace(tzinfo=None)
+
+        # Must not extend beyond 12-degree twilight
+        self.assertTrue(start_time >= t_eve_12)
+        self.assertTrue(end_time <= t_morn_12)
+
+        # Darkest twilight preference: should be scheduled closer to 18-degree boundary
+        dist_to_18 = abs((t_eve_18 - start_time).total_seconds())
+        dist_to_12 = abs((start_time - t_eve_12).total_seconds())
+        self.assertTrue(dist_to_18 < dist_to_12)
+
+    def test_layered_priority_solver_shifting(self):
+        observatory = Observatory("Lick Observatory", 37.3414, -121.6429, 1283)
+        telescope = ShaneTelescope()
+        date_local = datetime.date(2026, 6, 18)
+        scheduler = Scheduler(observatory, telescope, date_local)
+
+        # Override night parameters to have exactly 8 hours (480 minutes)
+        t_start = datetime.datetime(2026, 6, 19, 3, 30, 0, tzinfo=datetime.timezone.utc)
+        t_end = datetime.datetime(2026, 6, 19, 11, 30, 0, tzinfo=datetime.timezone.utc)
+        
+        scheduler.solar_times = {
+            'sunset': t_start,
+            'sunrise': t_end,
+            'twilight_evening_18': t_start + datetime.timedelta(minutes=30),
+            'twilight_morning_18': t_end - datetime.timedelta(minutes=30),
+            'twilight_evening_12': t_start + datetime.timedelta(minutes=15),
+            'twilight_morning_12': t_end - datetime.timedelta(minutes=15),
+        }
+        
+        scheduler.start_night = t_start
+        scheduler.end_night = t_end
+        scheduler.num_chunks = 480
+        scheduler.chunk_times = [t_start + datetime.timedelta(minutes=i) for i in range(480)]
+
+        # Target A (Priority 1), Target B (Priority 2). Transit at 07:30 UT.
+        lst_mid = get_lst(t_start + datetime.timedelta(hours=4), observatory.longitude)
+        target_a = Target(
+            name="TargetA",
+            ra=lst_mid * 15.0,
+            dec=37.3,
+            magnitude=15.0,
+            priority=1.0,
+            allow_twilight=False
+        )
+        target_b = Target(
+            name="TargetB",
+            ra=lst_mid * 15.0,
+            dec=37.3,
+            magnitude=15.0,
+            priority=2.0,
+            allow_twilight=False
+        )
+
+        # Force 240 minutes (14400s) exposure
+        scheduler.telescope.classification_exposure = lambda mag: 14400
+        scheduler.telescope.normal_exposure = lambda mag: 14400
+
+        res = scheduler.solve([target_a, target_b], auto_standards=False)
+        blocks = res['blocks']
+        
+        # Verify both A and B are scheduled (requires shifting A from its optimal center slot)
+        scheduled_names = {b['target_name'] for b in blocks}
+        self.assertIn("TargetA", scheduled_names)
+        self.assertIn("TargetB", scheduled_names)
+
+    def test_timeline_reordering_constraints(self):
+        observatory = Observatory("Lick Observatory", 37.3414, -121.6429, 1283)
+        telescope = ShaneTelescope()
+        date_local = datetime.date(2026, 6, 18)
+        scheduler = Scheduler(observatory, telescope, date_local)
+
+        # Force 60 minutes exposure
+        scheduler.telescope.classification_exposure = lambda mag: 3600
+        scheduler.telescope.normal_exposure = lambda mag: 3600
+
+        # Transit at 07:30 UT
+        t_mid = datetime.datetime(2026, 6, 19, 7, 30, 0, tzinfo=datetime.timezone.utc)
+        lst_mid = get_lst(t_mid, observatory.longitude)
+
+        # Target A (P1) and Target B (P3)
+        target_a = Target(
+            name="TargetA",
+            ra=lst_mid * 15.0,
+            dec=37.3,
+            magnitude=12.0,
+            priority=1.0,
+            allow_twilight=True
+        )
+        target_b = Target(
+            name="TargetB",
+            ra=lst_mid * 15.0,
+            dec=37.3,
+            magnitude=12.0,
+            priority=3.0,
+            allow_twilight=True,
+            schedule_before=["TargetA"]
+        )
+
+        res = scheduler.solve([target_a, target_b], auto_standards=False)
+        blocks = res['blocks']
+        
+        # Verify both are scheduled
+        scheduled_names = {b['target_name'] for b in blocks}
+        self.assertIn("TargetA", scheduled_names)
+        self.assertIn("TargetB", scheduled_names)
+
+        # Verify precedence constraint: B must be before A
+        block_a = next(b for b in blocks if b['target_name'] == "TargetA")
+        block_b = next(b for b in blocks if b['target_name'] == "TargetB")
+        
+        a_start = datetime.datetime.fromisoformat(block_a['start_time'])
+        b_end = datetime.datetime.fromisoformat(block_b['end_time'])
+        self.assertTrue(b_end <= a_start)
+
 
 if __name__ == '__main__':
     unittest.main()
-

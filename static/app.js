@@ -72,16 +72,42 @@ let disabledStandards = new Set();
 // Stars auto-disabled after scheduling because they were not picked by the scheduler
 let autoDisabledStandards = new Set();
 
+// Issue #16: Manual standard star selection mode tracking
+let autoStandardsMode = true;
+let selectedStandards = new Set();
+
 // Target list sort state
-let targetSortField = 'priority';
+let targetSortField = 'none';
 let targetSortAsc = true;
+let targetDisplayOrder = [];
+let alertsDismissed = false;
 
 // Issue #32: Lock mechanism — tracks which targets have a locked start time
 // Value is 'start' when locked, absent when unlocked
 let lockedTargets = new Map();
 
+function syncLockedTargets() {
+    lockedTargets.clear();
+    targetPool.forEach(t => {
+        if (t.manual_start_time && !t.lock_type) {
+            t.lock_type = 'start';
+        }
+        if (t.lock_type) {
+            lockedTargets.set(t.name, t.lock_type);
+        }
+    });
+    standardStars.forEach(s => {
+        if (s.manual_start_time && !s.lock_type) {
+            s.lock_type = 'start';
+        }
+        if (s.lock_type) {
+            lockedTargets.set(s.name, s.lock_type);
+        }
+    });
+}
+
 // Initial Setup on Page Load
-document.addEventListener("DOMContentLoaded", () => {
+document.addEventListener("DOMContentLoaded", async () => {
     // Issue #28: Default date to today
     const today = new Date();
     const yyyy = today.getFullYear();
@@ -100,6 +126,25 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("load-sample-btn").addEventListener("click", loadSampleTargets);
     document.getElementById("clear-targets-btn").addEventListener("click", clearAllTargets);
     
+    // Issue #16: Load manual standards mode state
+    const storedAuto = localStorage.getItem("autoStandardsMode");
+    if (storedAuto !== null) {
+        autoStandardsMode = storedAuto === "true";
+    }
+    const storedSelected = localStorage.getItem("selectedStandards");
+    if (storedSelected) {
+        try {
+            const parsed = JSON.parse(storedSelected);
+            if (Array.isArray(parsed)) {
+                selectedStandards = new Set(parsed);
+            }
+        } catch(e) {}
+    }
+    const resetBtn = document.getElementById("reset-auto-standards-btn");
+    if (resetBtn) {
+        resetBtn.style.display = autoStandardsMode ? "none" : "inline-block";
+    }
+
     // Load local storage if available, otherwise load samples
     const stored = localStorage.getItem("targetPool");
     if (stored) {
@@ -118,6 +163,8 @@ document.addEventListener("DOMContentLoaded", () => {
                         high_airmass: !!t.high_airmass,
                         comment: t.comment || "",
                         manual_start_time: t.manual_start_time || null,
+                        manual_end_time: t.manual_end_time || null,
+                        lock_type: t.lock_type || null,
                         manual_duration: null,
                         schedule_before: Array.isArray(t.schedule_before) ? t.schedule_before : []
                     };
@@ -151,8 +198,11 @@ document.addEventListener("DOMContentLoaded", () => {
                     
                     return clean;
                 });
+                
+                // Sync lockedTargets map
+                syncLockedTargets();
+                
                 renderTargetsTable();
-                triggerScheduling();
             } else {
                 loadSampleTargets();
             }
@@ -185,8 +235,9 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     
     // Load standard stars and init drag zoom
-    loadStandardStars();
+    await loadStandardStars();
     initAirmassChartDragZoom();
+    triggerScheduling();
 });
 
 
@@ -246,7 +297,9 @@ function handleAddTarget(e) {
 
 function deleteTarget(name) {
     targetPool = targetPool.filter(t => t.name !== name);
-    saveAndRefresh();
+    saveState();
+    renderTargetsTable();
+    triggerScheduling();
 }
 
 function editTarget(name) {
@@ -287,7 +340,26 @@ function loadSampleTargets() {
 }
 
 function saveAndRefresh() {
+    syncLockedTargets();
     localStorage.setItem("targetPool", JSON.stringify(targetPool));
+    localStorage.setItem("autoStandardsMode", autoStandardsMode);
+    localStorage.setItem("selectedStandards", JSON.stringify(Array.from(selectedStandards)));
+    
+    // Save standards overrides
+    const standards_overrides = {};
+    standardStars.forEach(s => {
+        if (s.manual_start_time || s.manual_duration !== null || s.lock_type) {
+            standards_overrides[s.name] = {
+                manual_start_time: s.manual_start_time || null,
+                manual_end_time: s.manual_end_time || null,
+                manual_duration: s.manual_duration !== undefined ? s.manual_duration : null,
+                lock_type: s.lock_type || null,
+                schedule_before: s.schedule_before || []
+            };
+        }
+    });
+    localStorage.setItem("standardsOverrides", JSON.stringify(standards_overrides));
+    
     renderTargetsTable();
     triggerScheduling();
 }
@@ -306,6 +378,77 @@ function toggleCollapse(btn) {
 }
 
 // Issue #11: Target list column sorting
+// Issue #11: Target list column sorting
+function sortDisplayOrder() {
+    if (!targetSortField || targetSortField === 'none' || targetSortField === 'input') {
+        targetDisplayOrder = targetPool.map(t => t.name);
+        return;
+    }
+    
+    if (targetSortField === 'schedule') {
+        const scheduledOrder = {};
+        currentBlocksList.forEach((b, i) => {
+            scheduledOrder[b.target_name] = i;
+        });
+        targetDisplayOrder.sort((a, b) => {
+            const idxA = scheduledOrder[a] !== undefined ? scheduledOrder[a] : Infinity;
+            const idxB = scheduledOrder[b] !== undefined ? scheduledOrder[b] : Infinity;
+            return idxA - idxB;
+        });
+        return;
+    }
+    
+    targetDisplayOrder.sort((nameA, nameB) => {
+        const a = targetPool.find(t => t.name === nameA);
+        const b = targetPool.find(t => t.name === nameB);
+        if (!a || !b) return 0;
+        
+        let va = a[targetSortField];
+        let vb = b[targetSortField];
+        if (targetSortField === 'magnitude') {
+            va = a.magnitude;
+            vb = b.magnitude;
+        } else if (targetSortField === 'priority') {
+            va = a.priority;
+            vb = b.priority;
+        }
+        if (typeof va === 'string') va = va.toLowerCase();
+        if (typeof vb === 'string') vb = vb.toLowerCase();
+        if (va < vb) return targetSortAsc ? -1 : 1;
+        if (va > vb) return targetSortAsc ? 1 : -1;
+        return 0;
+    });
+}
+
+function changeTargetSorting(val) {
+    if (val === 'input') {
+        targetSortField = 'none';
+    } else if (val === 'name') {
+        targetSortField = 'name';
+        targetSortAsc = true;
+    } else if (val === 'ra') {
+        targetSortField = 'ra';
+        targetSortAsc = true;
+    } else if (val === 'mag') {
+        targetSortField = 'magnitude';
+        targetSortAsc = true;
+    } else if (val === 'prio') {
+        targetSortField = 'priority';
+        targetSortAsc = true;
+    } else if (val === 'schedule') {
+        targetSortField = 'schedule';
+        targetSortAsc = true;
+    }
+    
+    ['name', 'ra', 'dec', 'magnitude', 'priority'].forEach(f => {
+        const el = document.getElementById('sort-icon-' + f);
+        if (el) el.textContent = '';
+    });
+    
+    sortDisplayOrder();
+    renderTargetsTable();
+}
+
 function setTargetSort(field) {
     if (targetSortField === field) {
         targetSortAsc = !targetSortAsc;
@@ -320,44 +463,85 @@ function setTargetSort(field) {
     });
     const activeIcon = document.getElementById('sort-icon-' + field);
     if (activeIcon) activeIcon.textContent = targetSortAsc ? ' ▲' : ' ▼';
+    
+    sortDisplayOrder();
     renderTargetsTable();
 }
 
 function renderTargetsTable() {
+    const scrollX = window.scrollX;
+    const scrollY = window.scrollY;
+
     const tbody = document.querySelector("#targets-table tbody");
     if (targetPool.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="12" class="text-center">No targets in pool</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="13" class="text-center">No targets in pool</td></tr>`;
+        window.scrollTo(scrollX, scrollY);
         return;
     }
 
-    // Issue #5: Determine which targets are currently scheduled
-    const scheduledNames = new Set(currentBlocksList.map(b => b.target_name));
-
-    // Issue #11: Sort targetPool copy
-    const sorted = [...targetPool].sort((a, b) => {
-        let va = a[targetSortField];
-        let vb = b[targetSortField];
-        if (typeof va === 'string') va = va.toLowerCase();
-        if (typeof vb === 'string') vb = vb.toLowerCase();
-        if (va < vb) return targetSortAsc ? -1 : 1;
-        if (va > vb) return targetSortAsc ? 1 : -1;
-        return 0;
+    // Sync targetDisplayOrder with targetPool (keep existing, remove deleted, append new)
+    const poolNames = new Set(targetPool.map(t => t.name));
+    targetDisplayOrder = targetDisplayOrder.filter(name => poolNames.has(name));
+    const displaySet = new Set(targetDisplayOrder);
+    targetPool.forEach(t => {
+        if (!displaySet.has(t.name)) {
+            targetDisplayOrder.push(t.name);
+        }
     });
 
+    // Determine which targets are currently scheduled
+    const scheduledNames = new Set(currentBlocksList.map(b => b.target_name));
+
+    const sorted = targetDisplayOrder.map(name => targetPool.find(t => t.name === name)).filter(Boolean);
+
+    const conflicts = lastScheduleResult?.conflicts || [];
+    const unobservable = lastScheduleResult?.unobservable || [];
+
     tbody.innerHTML = sorted.map(t => {
-        // Issue #5/#35: Status circle — color matches new status scheme
         const isScheduled = scheduledNames.has(t.name);
         const scheduledBlock = currentBlocksList.find(b => b.target_name === t.name);
-        const circleColor = isScheduled ? '#eab308' : '#f97316';  // yellow=scheduled, orange=not scheduled
-        const circleTitle = isScheduled ? 'Scheduled' : 'Not Scheduled';
+
+        let statusClass = "status-not-scheduled";
+        let statusDotColor = "#f97316";
+        let statusText = "Not Scheduled";
+        
+        if (t.status === "Observed") {
+            statusClass = "status-observed";
+            statusDotColor = "#10b981";
+            statusText = "Observed";
+        } else if (t.status === "Skipped") {
+            statusClass = "status-skipped";
+            statusDotColor = "#6b7280";
+            statusText = "Skipped";
+        } else if (t.status === "Failed") {
+            statusClass = "status-failed";
+            statusDotColor = "#ef4444";
+            statusText = "Failed";
+        } else if (t.status === "Punted") {
+            statusClass = "status-punted";
+            statusDotColor = "#3b82f6";
+            statusText = "Punted";
+        } else if (unobservable.includes(t.name)) {
+            statusClass = "status-unobservable";
+            statusDotColor = "#ef4444";
+            statusText = "Unschedulable";
+        } else if (isScheduled) {
+            statusClass = "status-scheduled";
+            statusDotColor = "#eab308";
+            statusText = "Scheduled";
+        }
+
+        const circleColor = isScheduled ? '#eab308' : (unobservable.includes(t.name) ? '#ef4444' : '#f97316');
+        const circleTitle = isScheduled ? 'Scheduled' : (unobservable.includes(t.name) ? 'Unschedulable' : 'Not Scheduled');
         const statusCircle = `<span title="${circleTitle}" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${circleColor};"></span>`;
 
-        // Issue #36: Show current scheduled start time (HH:MM) and duration
         const scheduledStartStr = scheduledBlock ? formatTimeForTimezone(scheduledBlock.start_time, currentTimezone) : (t.manual_start_time || '');
         const scheduledDuration = scheduledBlock ? scheduledBlock.duration_minutes : (t.manual_duration !== null && t.manual_duration !== undefined ? t.manual_duration : '');
 
+        const rowClass = unobservable.includes(t.name) ? "status-row-unobservable" : "";
+
         return `
-            <tr id="target-row-${t.name}" data-target="${t.name}" 
+            <tr id="target-row-${t.name}" data-target="${t.name}" class="${rowClass}"
                 onmouseenter="highlightTarget('${t.name}')" 
                 onmouseleave="unhighlightTarget('${t.name}')" 
                 onclick="stickyHighlightTarget('${t.name}')"
@@ -397,18 +581,16 @@ function renderTargetsTable() {
                     </div>
                 </td>
                 <td>
-                    <!-- Issue #36: Show current scheduled start time; editing updates manual_start_time -->
                     <input type="text" placeholder="HH:MM" value="${scheduledStartStr}" 
                            onchange="updateTargetField('${t.name}', 'manual_start_time', this.value)" 
                            onclick="event.stopPropagation();" style="width: 75px; font-family: monospace; text-align: center;">
                 </td>
                 <td>
-                    <!-- Issue #36: Show current scheduled duration (exposure time) -->
                     <input type="number" placeholder="min" min="0" value="${scheduledDuration}" 
                            onchange="updateTargetField('${t.name}', 'manual_duration', this.value)" 
                            onclick="event.stopPropagation();" style="width: 65px; text-align: center;">
                 </td>
-                <td><span class="status-pill status-not-scheduled" id="status-${t.name}"><span class="target-status-dot" style="background:#f97316;"></span>Not Scheduled</span></td>
+                <td><span class="status-pill ${statusClass}" id="status-${t.name}"><span class="target-status-dot" style="background:${statusDotColor};"></span>${statusText}</span></td>
                 <td>
                     <input type="text" value="${t.comment || ''}" 
                            onchange="updateTargetField('${t.name}', 'comment', this.value)" 
@@ -422,10 +604,12 @@ function renderTargetsTable() {
             </tr>
         `;
     }).join('');
+
+    window.scrollTo(scrollX, scrollY);
 }
 
 function updateTargetField(name, field, val) {
-    const target = targetPool.find(t => t.name === name);
+    const target = targetPool.find(t => t.name === name) || standardStars.find(s => s.name === name);
     if (!target) return;
     
     if (field === 'magnitude') {
@@ -437,17 +621,14 @@ function updateTargetField(name, field, val) {
     } else if (field === 'comment') {
         target.comment = val;
     } else if (field === 'manual_start_time') {
-        target.manual_start_time = val.trim() || null;
-        // Issue #32: setting a start time auto-locks the target
-        if (target.manual_start_time) {
-            lockedTargets.set(name, 'start');
-        } else {
-            lockedTargets.delete(name);
-        }
+        updateTargetManualStart(name, val);
+        return;
     } else if (field === 'manual_duration') {
-        target.manual_duration = val.trim() ? parseFloat(val) : null;
-        // Issue #32: changing exposure time with a locked start keeps start locked
-        // (end time will shift). No change needed to lockedTargets here.
+        updateTargetManualDuration(name, val);
+        return;
+    } else if (field === 'manual_end_time') {
+        updateTargetManualEnd(name, val);
+        return;
     } else if (field === 'ra') {
         const parsed = parseCoordinate(val, true);
         if (!isNaN(parsed)) {
@@ -462,20 +643,108 @@ function updateTargetField(name, field, val) {
     saveAndRefresh();
 }
 
-// Issue #32: Toggle lock icon for a target in the schedule table
+function updateTargetManualStart(name, val) {
+    const target = targetPool.find(t => t.name === name) || standardStars.find(s => s.name === name);
+    if (!target) return;
+    
+    if (!val.trim()) {
+        target.manual_start_time = null;
+        target.manual_end_time = null;
+        target.lock_type = null;
+        lockedTargets.delete(name);
+    } else {
+        const dateStr = document.getElementById("obs-date").value;
+        const iso = parseTimeInputToISO(val, dateStr, currentTimezone);
+        if (iso) {
+            target.manual_start_time = iso;
+        } else {
+            target.manual_start_time = val.trim();
+        }
+        target.lock_type = 'start';
+        lockedTargets.set(name, 'start');
+        
+        // Calculate new manual end time based on start time and duration
+        const duration = target.manual_duration !== null && target.manual_duration !== undefined ? target.manual_duration : 30;
+        const startDate = new Date(target.manual_start_time);
+        if (!isNaN(startDate.getTime())) {
+            const endDate = new Date(startDate.getTime() + duration * 60 * 1000);
+            target.manual_end_time = endDate.toISOString();
+        }
+    }
+    saveAndRefresh();
+}
+
+function updateTargetManualEnd(name, val) {
+    const target = targetPool.find(t => t.name === name) || standardStars.find(s => s.name === name);
+    if (!target) return;
+    
+    if (!val.trim()) {
+        target.manual_start_time = null;
+        target.manual_end_time = null;
+        target.lock_type = null;
+        lockedTargets.delete(name);
+    } else {
+        const dateStr = document.getElementById("obs-date").value;
+        const iso = parseTimeInputToISO(val, dateStr, currentTimezone);
+        if (iso) {
+            target.manual_end_time = iso;
+        } else {
+            target.manual_end_time = val.trim();
+        }
+        target.lock_type = 'end';
+        lockedTargets.set(name, 'end');
+        
+        // Calculate new manual start time based on end time and duration
+        const duration = target.manual_duration !== null && target.manual_duration !== undefined ? target.manual_duration : 30;
+        const endDate = new Date(target.manual_end_time);
+        if (!isNaN(endDate.getTime())) {
+            const startDate = new Date(endDate.getTime() - duration * 60 * 1000);
+            target.manual_start_time = startDate.toISOString();
+        }
+    }
+    saveAndRefresh();
+}
+
+function updateTargetManualDuration(name, val) {
+    const target = targetPool.find(t => t.name === name) || standardStars.find(s => s.name === name);
+    if (!target) return;
+    
+    const duration = val.trim() ? parseFloat(val) : null;
+    target.manual_duration = duration;
+    
+    if (duration !== null) {
+        if (target.lock_type === 'end' && target.manual_end_time) {
+            const endDate = new Date(target.manual_end_time);
+            if (!isNaN(endDate.getTime())) {
+                const startDate = new Date(endDate.getTime() - duration * 60 * 1000);
+                target.manual_start_time = startDate.toISOString();
+            }
+        } else if (target.manual_start_time) {
+            const startDate = new Date(target.manual_start_time);
+            if (!isNaN(startDate.getTime())) {
+                const endDate = new Date(startDate.getTime() + duration * 60 * 1000);
+                target.manual_end_time = endDate.toISOString();
+            }
+        }
+    }
+    saveAndRefresh();
+}
+
 function toggleTargetLock(name) {
-    const target = targetPool.find(t => t.name === name);
+    const target = targetPool.find(t => t.name === name) || standardStars.find(s => s.name === name);
     if (!target) return;
     if (lockedTargets.has(name)) {
-        // Unlock: clear manual start time
         lockedTargets.delete(name);
         target.manual_start_time = null;
+        target.manual_end_time = null;
+        target.lock_type = null;
     } else {
-        // Lock at current scheduled start
         const block = currentBlocksList.find(b => b.target_name === name);
         if (block) {
             lockedTargets.set(name, 'start');
             target.manual_start_time = formatTimeForTimezone(block.start_time, 'UTC');
+            target.manual_end_time = formatTimeForTimezone(block.end_time, 'UTC');
+            target.lock_type = 'start';
         }
     }
     saveAndRefresh();
@@ -492,10 +761,18 @@ function updateTargetCheckbox(name, field, checked) {
 function clearAllOverrides() {
     targetPool.forEach(t => {
         t.manual_start_time = null;
+        t.manual_end_time = null;
         t.manual_duration = null;
+        t.lock_type = null;
         t.schedule_before = [];
     });
-    // Issue #32: clear all locks when overrides are cleared
+    standardStars.forEach(s => {
+        s.manual_start_time = null;
+        s.manual_end_time = null;
+        s.manual_duration = null;
+        s.lock_type = null;
+        s.schedule_before = [];
+    });
     lockedTargets.clear();
     saveAndRefresh();
 }
@@ -591,12 +868,53 @@ function formatTimeForTimezone(isoStr, tz) {
     return isoStr.substring(11, 16);
 }
 
+function parseHourMinute(timeStr, isStart = false) {
+    if (!timeStr) return null;
+    const clean = timeStr.trim().toLowerCase();
+    
+    let isPm = false;
+    let isAm = false;
+    if (clean.includes("pm")) {
+        isPm = true;
+    } else if (clean.includes("am")) {
+        isAm = true;
+    }
+    
+    const numericStr = clean.replace(/[a-z]/g, '').trim();
+    if (!numericStr) return null;
+    
+    let hh = 0;
+    let mm = 0;
+    
+    if (numericStr.includes(":")) {
+        const parts = numericStr.split(":");
+        hh = parseInt(parts[0], 10);
+        mm = parseInt(parts[1], 10);
+    } else {
+        hh = parseInt(numericStr, 10);
+        mm = 0;
+    }
+    
+    if (isNaN(hh) || isNaN(mm)) return null;
+    
+    if (isPm) {
+        if (hh < 12) hh += 12;
+    } else if (isAm) {
+        if (hh === 12) hh = 0;
+    } else {
+        if (isStart && hh > 0 && hh < 12) {
+            hh += 12;
+        }
+    }
+    
+    return { hh, mm };
+}
+
 function parseTimeInputToISO(timeStr, dateStr, tz) {
     if (!timeStr) return null;
-    const parts = timeStr.trim().split(':');
-    const hh = parseInt(parts[0], 10);
-    const mm = parseInt(parts[1], 10);
-    if (isNaN(hh) || isNaN(mm)) return null;
+    const parsed = parseHourMinute(timeStr, false);
+    if (!parsed) return null;
+    const { hh, mm } = parsed;
     
     const dateParts = dateStr.split('-');
     const year = parseInt(dateParts[0], 10);
@@ -638,42 +956,52 @@ function formatLST(lstVal) {
 
 function changeTimezone(val) {
     currentTimezone = val;
-    if (lastScheduleResult) {
-        updateScheduleUI(lastScheduleResult);
-    }
+    saveAndRefresh();
 }
 
-function updateTargetManualStart(name, val) {
-    const target = targetPool.find(t => t.name === name);
-    if (!target) return;
+function updateNightOverridePlaceholders() {
+    if (!lastScheduleResult || !lastScheduleResult.solar_times) return;
     
-    if (!val.trim()) {
-        target.manual_start_time = null;
-    } else {
-        const dateStr = document.getElementById("obs-date").value;
-        const iso = parseTimeInputToISO(val, dateStr, currentTimezone);
-        if (iso) {
-            target.manual_start_time = iso;
-        } else {
-            target.manual_start_time = val.trim();
-        }
-    }
-    saveAndRefresh();
-}
-
-function updateTargetManualDuration(name, val) {
-    const target = targetPool.find(t => t.name === name);
-    if (!target) return;
-    target.manual_duration = val.trim() ? parseFloat(val) : null;
-    saveAndRefresh();
+    const tzOverride = document.getElementById("manual-night-tz")?.value || "UTC";
+    const sunsetISO = lastScheduleResult.solar_times.sunset;
+    const sunriseISO = lastScheduleResult.solar_times.sunrise;
+    
+    const sunsetFormatted = formatTimeForTimezone(sunsetISO, tzOverride);
+    const sunriseFormatted = formatTimeForTimezone(sunriseISO, tzOverride);
+    
+    const startInput = document.getElementById("manual-night-start");
+    const endInput = document.getElementById("manual-night-end");
+    
+    if (startInput) startInput.placeholder = sunsetFormatted;
+    if (endInput) endInput.placeholder = sunriseFormatted;
 }
 
 // Drag & Drop and Standard Stars
 async function loadStandardStars() {
+    const storedOverrides = localStorage.getItem("standardsOverrides");
+    let overrides = {};
+    if (storedOverrides) {
+        try {
+            overrides = JSON.parse(storedOverrides);
+        } catch (e) {}
+    }
+
     try {
         const res = await fetch("/static/standards.json");
         if (res.ok) {
-            standardStars = await res.json();
+            const raw = await res.json();
+            standardStars = raw.map(s => {
+                const ovr = overrides[s.name] || {};
+                return {
+                    ...s,
+                    manual_start_time: ovr.manual_start_time || null,
+                    manual_end_time: ovr.manual_end_time || null,
+                    manual_duration: ovr.manual_duration !== undefined ? ovr.manual_duration : null,
+                    lock_type: ovr.lock_type || null,
+                    schedule_before: ovr.schedule_before || [],
+                    allow_twilight: true
+                };
+            });
         } else {
             throw new Error("Failed to load standards");
         }
@@ -692,17 +1020,33 @@ async function loadStandardStars() {
             {"name": "LTT 377", "ra": "00:41:46.82", "dec": "-33:39:08.2", "color": "blue", "quality": "okay", "magnitude": 11.2},
             {"name": "LTT 1788", "ra": "03:48:22.2", "dec": "-39:08:35", "color": "blue", "quality": "okay", "magnitude": 13.1},
             {"name": "LTT 2415", "ra": "05:56:24.2", "dec": "-27:51:26", "color": "blue", "quality": "okay", "magnitude": 12.2}
-        ];
+        ].map(s => {
+            const ovr = overrides[s.name] || {};
+            return {
+                ...s,
+                manual_start_time: ovr.manual_start_time || null,
+                manual_end_time: ovr.manual_end_time || null,
+                manual_duration: ovr.manual_duration !== undefined ? ovr.manual_duration : null,
+                lock_type: ovr.lock_type || null,
+                schedule_before: ovr.schedule_before || [],
+                allow_twilight: true
+            };
+        });
     }
+    syncLockedTargets();
     renderStandardsTable();
 }
 
 function renderStandardsTable() {
+    const scrollX = window.scrollX;
+    const scrollY = window.scrollY;
+
     const tbody = document.querySelector("#standards-table tbody");
     if (!tbody) return;
     
     if (standardStars.length === 0) {
         tbody.innerHTML = `<tr><td colspan="8" class="text-center">No standard stars loaded</td></tr>`;
+        window.scrollTo(scrollX, scrollY);
         return;
     }
     
@@ -749,7 +1093,7 @@ function renderStandardsTable() {
         const badgeColor = s.color === "blue" ? "badge-color-blue" : "badge-color-red";
         // Issue #13: checked = observable, not user-disabled, and not auto-disabled (meaning it was scheduled)
         const isAutoDisabled = autoDisabledStandards.has(s.name);
-        const isChecked = isObs && !isDisabled && !isAutoDisabled;
+        const isChecked = autoStandardsMode ? (isObs && !isDisabled && !isAutoDisabled) : selectedStandards.has(s.name);
         
         return `
             <tr class="${rowClass}">
@@ -771,19 +1115,45 @@ function renderStandardsTable() {
             </tr>
         `;
     }).join("");
+    window.scrollTo(scrollX, scrollY);
 }
 
 function toggleStandardUse(name, enabled) {
-    if (enabled) {
-        disabledStandards.delete(name);
-        // User explicitly wants this star — clear auto-disabled so it is tried in next schedule run
-        autoDisabledStandards.delete(name);
-    } else {
-        disabledStandards.add(name);
-        autoDisabledStandards.delete(name);
+    if (autoStandardsMode) {
+        // Transition from auto to manual selection mode
+        autoStandardsMode = false;
+        selectedStandards.clear();
+        
+        // Get the standard stars that are currently scheduled in the UI
+        const scheduledNames = new Set(currentBlocksList.map(b => b.target_name));
+        standardStars.forEach(s => {
+            if (scheduledNames.has(s.name)) {
+                selectedStandards.add(s.name);
+            }
+        });
     }
-    renderStandardsTable();
-    triggerScheduling();
+    
+    if (enabled) {
+        selectedStandards.add(name);
+    } else {
+        selectedStandards.delete(name);
+    }
+    
+    // Update the visibility of the reset button
+    const resetBtn = document.getElementById("reset-auto-standards-btn");
+    if (resetBtn) resetBtn.style.display = "inline-block";
+    
+    saveAndRefresh();
+}
+
+function resetToAutoStandards() {
+    autoStandardsMode = true;
+    selectedStandards.clear();
+    
+    const resetBtn = document.getElementById("reset-auto-standards-btn");
+    if (resetBtn) resetBtn.style.display = "none";
+    
+    saveAndRefresh();
 }
 
 function isStandardStarObservable(s, solar_times, observatory) {
@@ -857,47 +1227,110 @@ function parseTargetsText(text) {
     
     for (let line of lines) {
         line = line.trim();
-        if (!line || line.startsWith("#")) continue;
+        if (!line || line.startsWith("#") || line.startsWith("!")) continue;
         
-        const parts = line.split(/[,\s]+/).map(p => p.trim()).filter(Boolean);
-        if (parts.length < 4) continue;
-        
-        const name = parts[0];
-        const raStr = parts[1];
-        const decStr = parts[2];
-        const magStr = parts[3];
-        
-        const ra = parseCoordinate(raStr, true);
-        const dec = parseCoordinate(decStr, false);
-        const magnitude = parseFloat(magStr);
-        
-        if (isNaN(ra) || isNaN(dec) || isNaN(magnitude)) continue;
-        
-        let priority = 2.0;
-        if (parts.length >= 5) {
-            const prioVal = parseFloat(parts[4]);
-            if (!isNaN(prioVal)) priority = prioVal;
-        }
-        
+        let magnitude = NaN;
+        let comment = "";
+        let priority = 3.0; // default priority is 3.0
         let allow_twilight = false;
         let high_airmass = false;
         let sn_mode = "normal";
-        let comment = "";
         
-        if (parts.length >= 6) {
-            const flags = parts[5].toLowerCase();
-            if (flags.includes("twil")) allow_twilight = true;
-            if (flags.includes("airmass")) high_airmass = true;
-            if (flags.includes("high_sn")) sn_mode = "high_sn";
-            else if (flags.includes("class")) sn_mode = "classification";
+        let cleanLine = line;
+        
+        // Extract comment = ...
+        const commentMatch = cleanLine.match(/comment\s*=\s*(.+)$/i);
+        if (commentMatch) {
+            comment = commentMatch[1].trim();
+            cleanLine = cleanLine.replace(commentMatch[0], "");
         }
         
-        if (parts.length >= 7) {
-            const commentStartIdx = line.indexOf(parts[6]);
+        // Extract mag/magnitude = ...
+        const magMatch = cleanLine.match(/(?:mag|magnitude)\s*=\s*([0-9.-]+)/i);
+        if (magMatch) {
+            magnitude = parseFloat(magMatch[1]);
+            cleanLine = cleanLine.replace(magMatch[0], "");
+        }
+        
+        // Extract priority = ...
+        const prioMatch = cleanLine.match(/priority\s*=\s*([0-9.-]+)/i);
+        let priorityParsed = false;
+        if (prioMatch) {
+            priority = parseFloat(prioMatch[1]);
+            priorityParsed = true;
+            cleanLine = cleanLine.replace(prioMatch[0], "");
+        }
+        
+        const parts = cleanLine.split(/[,\s]+/).map(p => p.trim()).filter(Boolean);
+        if (parts.length < 3) continue;
+        
+        const name = parts[0];
+        let raStr = "";
+        let decStr = "";
+        let nextIdx = 3;
+        
+        const isNum = (s) => !isNaN(parseFloat(s));
+        
+        if (parts.length >= 7 && isNum(parts[1]) && isNum(parts[2]) && isNum(parts[3]) && isNum(parts[4]) && isNum(parts[5]) && isNum(parts[6])) {
+            raStr = parts[1] + ":" + parts[2] + ":" + parts[3];
+            decStr = parts[4] + ":" + parts[5] + ":" + parts[6];
+            nextIdx = 7;
+            
+            if (parts.length > nextIdx && (parts[nextIdx] === "2000" || parts[nextIdx] === "1950" || parts[nextIdx] === "B1950" || parts[nextIdx] === "J2000")) {
+                nextIdx++;
+            }
+        } else {
+            raStr = parts[1];
+            decStr = parts[2];
+            nextIdx = 3;
+        }
+        
+        const ra = parseCoordinate(raStr, true);
+        const dec = parseCoordinate(decStr, false);
+        
+        if (isNaN(magnitude) && parts.length > nextIdx) {
+            const val = parseFloat(parts[nextIdx]);
+            if (!isNaN(val)) {
+                magnitude = val;
+                nextIdx++;
+            }
+        }
+        
+        if (!priorityParsed && parts.length > nextIdx) {
+            const val = parseFloat(parts[nextIdx]);
+            if (!isNaN(val)) {
+                priority = val;
+                nextIdx++;
+                priorityParsed = true;
+            }
+        }
+        if (!priorityParsed) {
+            priority = 3.0;
+        }
+        
+        // Check for flags in remaining tokens or line
+        const lowerLine = line.toLowerCase();
+        if (lowerLine.includes("twil") || lowerLine.includes("twilight")) allow_twilight = true;
+        if (lowerLine.includes("airmass")) high_airmass = true;
+        if (lowerLine.includes("high_sn")) sn_mode = "high_sn";
+        else if (lowerLine.includes("class")) sn_mode = "classification";
+        
+        // If we consumed a flags token, skip nextIdx
+        if (parts.length > nextIdx) {
+            const tokenLower = parts[nextIdx].toLowerCase();
+            if (tokenLower.includes("twil") || tokenLower.includes("airmass") || tokenLower.includes("high_sn") || tokenLower.includes("class") || tokenLower.includes("normal")) {
+                nextIdx++;
+            }
+        }
+        
+        if (!comment && parts.length > nextIdx) {
+            const commentStartIdx = line.indexOf(parts[nextIdx]);
             if (commentStartIdx !== -1) {
                 comment = line.substring(commentStartIdx).trim();
             }
         }
+        
+        if (isNaN(ra) || isNaN(dec) || isNaN(magnitude)) continue;
         
         newTargets.push({
             name, ra, dec, magnitude, priority, sn_mode, allow_twilight, high_airmass, comment,
@@ -912,7 +1345,7 @@ function setMode(mode) {
     if (mode === 'realtime') {
         document.getElementById("mode-realtime-btn").classList.add("active");
         document.getElementById("mode-planning-btn").classList.remove("active");
-        document.querySelectorAll(".real-time-only").forEach(el => el.style.display = "block");
+        document.querySelectorAll(".real-time-only").forEach(el => el.style.display = "");
         logToTerminal("Observing environment switched to Real-Time Mode.");
     } else {
         document.getElementById("mode-planning-btn").classList.add("active");
@@ -990,6 +1423,17 @@ async function recalculateStartingNow() {
         start_from: new Date(nowMs).toISOString()
     };
     
+    const standards_overrides = {};
+    standardStars.forEach(s => {
+        if (s.manual_start_time || s.manual_duration !== null || s.lock_type) {
+            standards_overrides[s.name] = {
+                manual_start_time: s.manual_start_time || null,
+                manual_duration: s.manual_duration !== undefined ? s.manual_duration : null,
+                schedule_before: s.schedule_before || []
+            };
+        }
+    });
+
     const requestPayload = {
         date,
         observatory: {
@@ -1000,6 +1444,9 @@ async function recalculateStartingNow() {
         },
         targets: targetPool,
         disabled_standards: disabledArray,
+        auto_standards: autoStandardsMode,
+        selected_standards: Array.from(selectedStandards),
+        standards_overrides,
         realtime_constraints
     };
     
@@ -1054,13 +1501,35 @@ async function _doSchedule() {
     const altLimitInput = document.getElementById("rt-alt-limit")?.value;
     const alt_limit = (altLimitInput !== undefined && altLimitInput !== "") ? parseFloat(altLimitInput) : null;
     
+    const startOverride = document.getElementById("manual-night-start")?.value.trim() || "";
+    const endOverride = document.getElementById("manual-night-end")?.value.trim() || "";
+    const tzOverride = document.getElementById("manual-night-tz")?.value || "UTC";
+
     const realtime_constraints = {
         extinction,
         mag_limit,
         ha_limit,
         alt_limit
     };
+
+    if (startOverride || endOverride) {
+        realtime_constraints.manual_limits_enabled = true;
+        realtime_constraints.manual_limit_start = startOverride;
+        realtime_constraints.manual_limit_end = endOverride;
+        realtime_constraints.manual_limit_tz = tzOverride === 'obs' ? 'Local' : 'UTC';
+    }
     
+    const standards_overrides = {};
+    standardStars.forEach(s => {
+        if (s.manual_start_time || s.manual_duration !== null || s.lock_type) {
+            standards_overrides[s.name] = {
+                manual_start_time: s.manual_start_time || null,
+                manual_duration: s.manual_duration !== undefined ? s.manual_duration : null,
+                schedule_before: s.schedule_before || []
+            };
+        }
+    });
+
     const requestPayload = {
         date,
         observatory: {
@@ -1071,6 +1540,9 @@ async function _doSchedule() {
         },
         targets: targetPool,
         disabled_standards: disabledArray,
+        auto_standards: autoStandardsMode,
+        selected_standards: Array.from(selectedStandards),
+        standards_overrides,
         realtime_constraints
     };
     
@@ -1096,6 +1568,11 @@ async function _doSchedule() {
 }
 
 function updateScheduleUI(result) {
+    const scrollX = window.scrollX;
+    const scrollY = window.scrollY;
+
+    alertsDismissed = false;
+
     lastScheduleResult = result;
     const { blocks, conflicts, unobservable, empty_blocks, moon_info, moon_plot, airmass_plots, solar_times } = result;
     
@@ -1140,28 +1617,32 @@ function updateScheduleUI(result) {
 
     const schedBody = document.querySelector("#schedule-table tbody");
     if (blocks.length === 0) {
-        schedBody.innerHTML = `<tr><td colspan="7" class="text-center" style="color: var(--text-muted);">No targets could be scheduled due to conflicts or visibility limits.</td></tr>`;
+        schedBody.innerHTML = `<tr><td colspan="8" class="text-center" style="color: var(--text-muted);">No targets could be scheduled due to conflicts or visibility limits.</td></tr>`;
     } else {
         schedBody.innerHTML = blocks.map(b => {
             const startVal = formatTimeForTimezone(b.start_time, currentTimezone);
             const endVal = formatTimeForTimezone(b.end_time, currentTimezone);
             
-            const target = targetPool.find(t => t.name === b.target_name);
+            const target = targetPool.find(t => t.name === b.target_name) || standardStars.find(s => s.name === b.target_name);
             
             let timeCell = "";
             let durationCell = "";
-            // Issue #32: Lock state
             const isLocked = lockedTargets.has(b.target_name);
             let lockCell = "";
             
             if (target) {
-                // Science target: editable start time and duration/exposure time
+                const startLocked = target.lock_type === 'start';
+                const endLocked = target.lock_type === 'end';
+                
                 timeCell = `
                     <div style="display: flex; align-items: center; gap: 4px;" onclick="event.stopPropagation();">
                         <input type="text" value="${startVal}" 
                                onchange="updateTargetField('${b.target_name}', 'manual_start_time', this.value)" 
-                               style="width: 55px; font-family: monospace; text-align: center; padding: 2px 4px; border-radius: 4px; border: 1px solid var(--border-color); background: rgba(255, 255, 255, 0.05); color: #fff;">
-                        <span>- ${endVal}</span>
+                               style="width: 55px; font-family: monospace; text-align: center; padding: 2px 4px; border-radius: 4px; border: 1px solid ${startLocked ? '#f59e0b' : 'var(--border-color)'}; background: rgba(255, 255, 255, 0.05); color: #fff;">
+                        <span>-</span>
+                        <input type="text" value="${endVal}" 
+                               onchange="updateTargetField('${b.target_name}', 'manual_end_time', this.value)" 
+                               style="width: 55px; font-family: monospace; text-align: center; padding: 2px 4px; border-radius: 4px; border: 1px solid ${endLocked ? '#f59e0b' : 'var(--border-color)'}; background: rgba(255, 255, 255, 0.05); color: #fff;">
                     </div>
                 `;
                 durationCell = `
@@ -1170,13 +1651,11 @@ function updateScheduleUI(result) {
                            style="width: 55px; text-align: center; padding: 2px 4px; border-radius: 4px; border: 1px solid var(--border-color); background: rgba(255, 255, 255, 0.05); color: #fff;" 
                            onclick="event.stopPropagation();">
                 `;
-                // Issue #32: lock button — 🔒 amber when locked, 🔓 dim when unlocked
                 lockCell = `<td style="text-align:center; width:30px;" onclick="event.stopPropagation();">
-                    <button onclick="toggleTargetLock('${b.target_name}')" title="${isLocked ? 'Click to unlock start time' : 'Click to lock start time'}"
+                    <button onclick="toggleTargetLock('${b.target_name}')" title="${isLocked ? 'Click to unlock' : 'Click to lock start time'}"
                         style="background:none; border:none; cursor:pointer; font-size:14px; opacity:${isLocked ? '1' : '0.35'}; color:${isLocked ? '#f59e0b' : 'inherit'};">${isLocked ? '🔒' : '🔓'}</button>
                 </td>`;
             } else {
-                // Standard star: static display, no lock
                 timeCell = `<strong>${startVal} - ${endVal}</strong>`;
                 durationCell = `${b.duration_minutes}`;
                 lockCell = `<td></td>`;
@@ -1224,6 +1703,10 @@ function updateScheduleUI(result) {
     renderStandardsTable();
     // Issue #5: Re-render target table now that currentBlocksList is populated with scheduled blocks
     renderTargetsTable();
+    // Issue #30: Update night overrides input placeholders
+    updateNightOverridePlaceholders();
+
+    window.scrollTo(scrollX, scrollY);
 }
 
 
@@ -1231,24 +1714,95 @@ function updateScheduleUI(result) {
 // VISUAL TIMELINE BUILDER
 // ==============================================================================
 
+
+
 function handleTimelineReorder(draggedName, targetName) {
+    if (draggedName === targetName) return;
+    
+    // Filter current blocks list to only include science targets
+    const sciBlocks = currentBlocksList.filter(b => b.priority > 0);
+    
+    const draggedIdx = sciBlocks.findIndex(b => b.target_name === draggedName);
+    if (draggedIdx === -1) return; // Standard stars cannot be dragged
+    
+    let targetIdx = sciBlocks.findIndex(b => b.target_name === targetName);
+    
+    // If targetName is a standard star, find the nearest science target in the timeline
+    if (targetIdx === -1) {
+        const fullTargetIdx = currentBlocksList.findIndex(b => b.target_name === targetName);
+        if (fullTargetIdx === -1) return;
+        
+        let found = false;
+        // Look to the right first
+        for (let i = fullTargetIdx + 1; i < currentBlocksList.length; i++) {
+            if (currentBlocksList[i].priority > 0) {
+                targetName = currentBlocksList[i].target_name;
+                targetIdx = sciBlocks.findIndex(b => b.target_name === targetName);
+                found = true;
+                break;
+            }
+        }
+        // Look to the left if not found
+        if (!found) {
+            for (let i = fullTargetIdx - 1; i >= 0; i--) {
+                if (currentBlocksList[i].priority > 0) {
+                    targetName = currentBlocksList[i].target_name;
+                    targetIdx = sciBlocks.findIndex(b => b.target_name === targetName);
+                    found = true;
+                    break;
+                }
+            }
+        }
+        if (!found) return; // No science targets scheduled to reorder against
+    }
+
+    if (targetName === draggedName) return;
+
+    // 1. Clear all old constraints involving draggedName to start fresh
     const draggedTarget = targetPool.find(t => t.name === draggedName);
     if (!draggedTarget) return;
+    draggedTarget.schedule_before = [];
     
-    if (!draggedTarget.schedule_before) {
-        draggedTarget.schedule_before = [];
-    }
+    targetPool.forEach(t => {
+        if (t.schedule_before) {
+            t.schedule_before = t.schedule_before.filter(z => z !== draggedName);
+        }
+    });
+
+    // 2. Get the list of science target names in the current schedule order
+    const names = sciBlocks.map(b => b.target_name);
     
-    const targetIdx = currentBlocksList.findIndex(b => b.target_name === targetName);
-    if (targetIdx !== -1) {
-        for (let i = targetIdx; i < currentBlocksList.length; i++) {
-            const nameToBefore = currentBlocksList[i].target_name;
-            if (nameToBefore !== draggedName && !draggedTarget.schedule_before.includes(nameToBefore)) {
-                draggedTarget.schedule_before.push(nameToBefore);
+    // 3. Compute the new sequence by moving draggedName to be just before targetName
+    names.splice(draggedIdx, 1);
+    const newIdx = names.indexOf(targetName);
+    names.splice(newIdx, 0, draggedName);
+    
+    // 4. Find the new index of draggedName
+    const draggedNewIdx = names.indexOf(draggedName);
+    
+    // 5. Add constraint for the left neighbor (leftNeighbor must be scheduled before draggedTarget)
+    if (draggedNewIdx > 0) {
+        const leftName = names[draggedNewIdx - 1];
+        const leftTarget = targetPool.find(t => t.name === leftName);
+        if (leftTarget) {
+            if (!leftTarget.schedule_before) leftTarget.schedule_before = [];
+            if (!leftTarget.schedule_before.includes(draggedName)) {
+                leftTarget.schedule_before.push(draggedName);
             }
         }
     }
     
+    // 6. Add constraint for the right neighbor (draggedTarget must be scheduled before rightNeighbor)
+    if (draggedNewIdx < names.length - 1) {
+        const rightName = names[draggedNewIdx + 1];
+        const rightTarget = targetPool.find(t => t.name === rightName);
+        if (rightTarget) {
+            if (!draggedTarget.schedule_before.includes(rightName)) {
+                draggedTarget.schedule_before.push(rightName);
+            }
+        }
+    }
+
     saveAndRefresh();
 }
 
@@ -1262,8 +1816,8 @@ function renderTimeline(blocks, solar_times, moon_plot) {
         return;
     }
     
-    const nightStart = new Date(new Date(solar_times.sunset).getTime() + 30 * 60 * 1000);
-    const nightEnd = new Date(new Date(solar_times.sunrise).getTime() - 30 * 60 * 1000);
+    const nightStart = new Date(solar_times.sunset);
+    const nightEnd = new Date(solar_times.sunrise);
     const nightDurationMs = nightEnd.getTime() - nightStart.getTime();
     
     // 1. Build LST axis (top)
@@ -1498,9 +2052,22 @@ function renderTimeline(blocks, solar_times, moon_plot) {
 // ALERTS CONSOLE RENDERER
 // ==============================================================================
 
+function clearAlerts() {
+    alertsDismissed = true;
+    const consoleEl = document.getElementById("alerts-console");
+    if (consoleEl) {
+        consoleEl.style.display = "none";
+    }
+}
+
 function renderAlerts(conflicts, unobservable, empty_blocks, scheduled_count) {
     const consoleEl = document.getElementById("alerts-console");
     consoleEl.innerHTML = "";
+    
+    if (alertsDismissed) {
+        consoleEl.style.display = "none";
+        return;
+    }
     
     const items = [];
     
@@ -1535,7 +2102,13 @@ function renderAlerts(conflicts, unobservable, empty_blocks, scheduled_count) {
     }
     
     if (items.length > 0) {
-        consoleEl.innerHTML = items.join('');
+        const headerHtml = `
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; border-bottom: 1px solid var(--border-color); padding-bottom: 8px;">
+                <span style="font-weight: bold; color: #fff; font-size: 0.95rem;">Alerts & Conflicts</span>
+                <button onclick="clearAlerts()" class="btn" style="padding: 2px 8px; font-size: 0.75rem; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 4px; cursor: pointer; color: #fca5a5;">Clear Alerts</button>
+            </div>
+        `;
+        consoleEl.innerHTML = headerHtml + items.join('');
         consoleEl.style.display = "block";
     } else {
         consoleEl.style.display = "none";
@@ -1590,7 +2163,7 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
         const moonPoints = moon_plot.map(p => {
             return {
                 x: new Date(p.time).getTime(),
-                y: (p.airmass > 2.5 || p.airmass <= 0) ? null : p.airmass
+                y: (p.airmass <= 0) ? null : p.airmass
             };
         });
         datasets.push({
@@ -1616,7 +2189,7 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
         const fullNightPoints = plotData.map(p => {
             return {
                 x: new Date(p.time).getTime(),
-                y: (p.airmass > 2.5 || p.airmass <= 0) ? null : p.airmass
+                y: (p.airmass <= 0) ? null : p.airmass
             };
         });
         
@@ -1641,7 +2214,7 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
                 const inRange = (timeMs >= startMs && timeMs <= endMs);
                 return {
                     x: timeMs,
-                    y: (inRange && p.airmass <= 2.5 && p.airmass > 0) ? p.airmass : null
+                    y: (inRange && p.airmass > 0) ? p.airmass : null
                 };
             });
             
@@ -2209,8 +2782,99 @@ function runLocalJSSolver(payload) {
     
     const solarTimes = getSolarTimesFallback(utcNoon, observatory.lat, observatory.lon, observatory.elevation);
     
-    const sunset = solarTimes.sunset;
-    const sunrise = solarTimes.sunrise;
+    let sunset = solarTimes.sunset;
+    let sunrise = solarTimes.sunrise;
+    
+    const rt = payload.realtime_constraints || {};
+    if (rt.manual_limits_enabled) {
+        const tzMode = rt.manual_limit_tz || 'UTC';
+        
+        let shh, smm;
+        if (tzMode !== 'UTC') {
+            try {
+                const options = { timeZone: "America/Los_Angeles", hour: "numeric", minute: "numeric", hour12: false };
+                const partsSunset = new Intl.DateTimeFormat("en-US", options).formatToParts(sunset);
+                shh = parseInt(partsSunset.find(p => p.type === 'hour').value, 10);
+                smm = parseInt(partsSunset.find(p => p.type === 'minute').value, 10);
+            } catch (e) {
+                const localDate = new Date(sunset.getTime() - 7 * 60 * 60 * 1000);
+                shh = localDate.getUTCHours();
+                smm = localDate.getUTCMinutes();
+            }
+        } else {
+            shh = sunset.getUTCHours();
+            smm = sunset.getUTCMinutes();
+        }
+        if (rt.manual_limit_start) {
+            const parsed = parseHourMinute(rt.manual_limit_start, true);
+            if (parsed) {
+                shh = parsed.hh;
+                smm = parsed.mm;
+            }
+        }
+
+        let ehh, emm;
+        if (tzMode !== 'UTC') {
+            try {
+                const options = { timeZone: "America/Los_Angeles", hour: "numeric", minute: "numeric", hour12: false };
+                const partsSunrise = new Intl.DateTimeFormat("en-US", options).formatToParts(sunrise);
+                ehh = parseInt(partsSunrise.find(p => p.type === 'hour').value, 10);
+                emm = parseInt(partsSunrise.find(p => p.type === 'minute').value, 10);
+            } catch (e) {
+                const localDate = new Date(sunrise.getTime() - 7 * 60 * 60 * 1000);
+                ehh = localDate.getUTCHours();
+                emm = localDate.getUTCMinutes();
+            }
+        } else {
+            ehh = sunrise.getUTCHours();
+            emm = sunrise.getUTCMinutes();
+        }
+        if (rt.manual_limit_end) {
+            const parsed = parseHourMinute(rt.manual_limit_end, false);
+            if (parsed) {
+                ehh = parsed.hh;
+                emm = parsed.mm;
+            }
+        }
+
+        if (tzMode === 'UTC') {
+            sunset = new Date(Date.UTC(solarTimes.sunset.getUTCFullYear(), solarTimes.sunset.getUTCMonth(), solarTimes.sunset.getUTCDate(), shh, smm, 0, 0));
+            sunrise = new Date(Date.UTC(solarTimes.sunrise.getUTCFullYear(), solarTimes.sunrise.getUTCMonth(), solarTimes.sunrise.getUTCDate(), ehh, emm, 0, 0));
+            if (sunrise < sunset) {
+                sunrise = new Date(sunrise.getTime() + 24 * 60 * 60 * 1000);
+            }
+        } else {
+            function getOffset(date) {
+                try {
+                    const formatter = new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", timeZoneName: "longOffset" });
+                    const formatted = formatter.format(date);
+                    const match = formatted.match(/GMT([-+]\d+)/);
+                    return match ? parseInt(match[1], 10) : -7;
+                } catch (e) {
+                    return -7;
+                }
+            }
+            const tempStart = new Date(Date.UTC(dateParts[0], dateParts[1] - 1, dateParts[2], shh, smm, 0, 0));
+            const startOffset = getOffset(tempStart);
+            sunset = new Date(Date.UTC(dateParts[0], dateParts[1] - 1, dateParts[2], shh - startOffset, smm, 0, 0));
+            
+            let endDay = new Date(Date.UTC(dateParts[0], dateParts[1] - 1, dateParts[2]));
+            if (ehh < shh) {
+                endDay = new Date(endDay.getTime() + 24 * 60 * 60 * 1000);
+            }
+            const tempEnd = new Date(Date.UTC(endDay.getUTCFullYear(), endDay.getUTCMonth(), endDay.getUTCDate(), ehh, emm, 0, 0));
+            const endOffset = getOffset(tempEnd);
+            sunrise = new Date(Date.UTC(endDay.getUTCFullYear(), endDay.getUTCMonth(), endDay.getUTCDate(), ehh - endOffset, emm, 0, 0));
+        }
+        
+        if (solarTimes.twilight_evening_18 < sunset) {
+            solarTimes.twilight_evening_18 = sunset;
+        }
+        if (solarTimes.twilight_morning_18 > sunrise) {
+            solarTimes.twilight_morning_18 = sunrise;
+        }
+    }
+    
     const totalDurationMs = sunrise.getTime() - sunset.getTime();
     // Issue #29: 1-minute chunks (was 5-minute)
     const numChunks = Math.floor(totalDurationMs / (60 * 1000));
@@ -2238,40 +2902,58 @@ function runLocalJSSolver(payload) {
         return true;
     }
     
-    function isChunkValid(t, cIdx) {
+    function isChunkValid(t, cIdx, isManual = false) {
         const dt = chunkTimes[cIdx];
         
         // Twilight check
-        if (!t.allow_twilight) {
-            if (dt < solarTimes.twilight_evening_18 || dt > solarTimes.twilight_morning_18) {
-                return false;
+        if (!isManual) {
+            if (!t.allow_twilight) {
+                if (dt < solarTimes.twilight_evening_18 || dt > solarTimes.twilight_morning_18) {
+                    return false;
+                }
+            } else {
+                const rt = payload.realtime_constraints || {};
+                const isStandard = (t.priority === 0.0);
+                if (isStandard) {
+                    const limitStart = rt.manual_limits_enabled ? sunset : new Date(sunset.getTime() + 30 * 60 * 1000);
+                    const limitEnd = rt.manual_limits_enabled ? sunrise : new Date(sunrise.getTime() - 30 * 60 * 1000);
+                    if (dt < limitStart || dt > limitEnd) {
+                        return false;
+                    }
+                } else {
+                    const limitStart = new Date(solarTimes.twilight_evening_12);
+                    const limitEnd = new Date(solarTimes.twilight_morning_12);
+                    if (dt < limitStart || dt > limitEnd) {
+                        return false;
+                    }
+                }
             }
-        } else {
-            const limitStart = new Date(sunset.getTime() + 30 * 60 * 1000);
-            const limitEnd = new Date(sunrise.getTime() - 30 * 60 * 1000);
-            if (dt < limitStart || dt > limitEnd) {
-                return false;
-            }
+            
+            // Pointing check
+            if (!isShaneVisible(t, dt)) return false;
         }
-        
-        // Pointing check
-        if (!isShaneVisible(t, dt)) return false;
         
         // Airmass check
         const airmass = getAirmassForTarget(t, dt);
-        const limitAirmass = t.high_airmass ? 2.2 : 1.7;
-        if (airmass <= 0 || airmass > limitAirmass) return false;
-        
-        // Real-time limits
-        const rt = payload.realtime_constraints || {};
-        if (rt.ha_limit !== undefined && rt.ha_limit !== null && rt.ha_limit !== "") {
-            const lst = getLst(dt, observatory.lon);
-            const ha = getHourAngle(lst, t.ra);
-            if (Math.abs(ha) > parseFloat(rt.ha_limit)) return false;
+        if (isManual) {
+            if (airmass <= 0) return false;
+        } else {
+            const limitAirmass = t.high_airmass ? 2.2 : 1.7;
+            if (airmass <= 0 || airmass > limitAirmass) return false;
         }
-        if (rt.alt_limit !== undefined && rt.alt_limit !== null && rt.alt_limit !== "") {
-            const altAz = getAltAz(dt, observatory.lat, observatory.lon, t.ra, t.dec);
-            if (altAz.alt < parseFloat(rt.alt_limit)) return false;
+        
+        if (!isManual) {
+            // Real-time limits
+            const rt = payload.realtime_constraints || {};
+            if (rt.ha_limit !== undefined && rt.ha_limit !== null && rt.ha_limit !== "") {
+                const lst = getLst(dt, observatory.lon);
+                const ha = getHourAngle(lst, t.ra);
+                if (Math.abs(ha) > parseFloat(rt.ha_limit)) return false;
+            }
+            if (rt.alt_limit !== undefined && rt.alt_limit !== null && rt.alt_limit !== "") {
+                const altAz = getAltAz(dt, observatory.lat, observatory.lon, t.ra, t.dec);
+                if (altAz.alt < parseFloat(rt.alt_limit)) return false;
+            }
         }
         
         return true;
@@ -2305,52 +2987,7 @@ function runLocalJSSolver(payload) {
         return null;
     }
     
-    // Sort and calculate exposures
-    const targetExposures = {};
-    targets.forEach(t => {
-        const sep = getSeparation(t.ra, t.dec, moon.ra, moon.dec);
-        targetExposures[t.name] = calculateExposure(t, moon.phase, sep);
-    });
-    
-    // 1. Run preliminary solve to see what gets scheduled and if we need high-airmass calibrations
-    const prelimSolve = solveInternal(targets, new Set());
-    const scheduledScience = prelimSolve.blocks;
-    
-    let needHighAirmass = false;
-    for (let i = 0; i < scheduledScience.length; i++) {
-        if (scheduledScience[i].airmass_median > 1.5) {
-            needHighAirmass = true;
-            break;
-        }
-    }
-    
-    // Issue #29: Standard star slots at 30 & 31 min after sunset (1-min chunks)
-    let eveSlot1 = 30;
-    let eveSlot2 = 31;
-    const brightThreshold = 15.5; // Lick Shane threshold
-    
-    const scienceStartBlock = scheduledScience.find(b => new Date(b.start_time).getTime() === chunkTimes[0].getTime());
-    if (scienceStartBlock) {
-        const sciTarget = targets.find(t => t.name === scienceStartBlock.target_name);
-        if (sciTarget && sciTarget.magnitude < brightThreshold) {
-            eveSlot1 = Math.max(30, Math.ceil(scienceStartBlock.duration_minutes));
-            eveSlot2 = eveSlot1 + 1;
-        }
-    }
-    
-    // Morning standards: 35 & 36 min before sunrise
-    let mornSlot2 = numChunks - 35;
-    let mornSlot1 = mornSlot2 - 1;
-    const scienceEndBlock = scheduledScience.find(b => new Date(b.end_time).getTime() === chunkTimes[numChunks - 1].getTime());
-    if (scienceEndBlock) {
-        const sciTarget = targets.find(t => t.name === scienceEndBlock.target_name);
-        if (sciTarget && sciTarget.magnitude < brightThreshold) {
-            mornSlot2 = Math.min(numChunks - 35, numChunks - 1 - Math.ceil(scienceEndBlock.duration_minutes));
-            mornSlot1 = mornSlot2 - 1;
-        }
-    }
-    
-    // 3. Load standard stars database
+    // 3. Load standard stars database early
     let standardsData = [
         {"name": "BD+284211", "ra": 21.853, "dec": 28.86, "color": "blue", "quality": "good", "magnitude": 10.5},
         {"name": "BD+174708", "ra": 22.192, "dec": 18.09, "color": "red", "quality": "good", "magnitude": 9.5},
@@ -2365,124 +3002,337 @@ function runLocalJSSolver(payload) {
         {"name": "LTT 1788", "ra": 3.806, "dec": -39.14, "color": "blue", "quality": "okay", "magnitude": 13.1},
         {"name": "LTT 2415", "ra": 5.940, "dec": -27.86, "color": "blue", "quality": "okay", "magnitude": 12.2}
     ];
+    standardsData.forEach(s => {
+        s.allow_twilight = true;
+    });
     
     if (payload.disabled_standards) {
         const disabledSet = new Set(payload.disabled_standards);
         standardsData = standardsData.filter(s => !disabledSet.has(s.name));
     }
-    
-    const blueStandards = standardsData.filter(s => s.color === 'blue');
-    const redStandards = standardsData.filter(s => s.color === 'red');
-    
-    let bestSelection = null;
-    let bestScore = -1.0;
-    
-    blueStandards.forEach(s_eb => {
-        if (!isShaneVisible(s_eb, chunkTimes[eveSlot1])) return;
-        const airmass_eb = getAirmassForTarget(s_eb, chunkTimes[eveSlot1]);
-        if (airmass_eb > 2.2 || airmass_eb <= 0) return;
-        
-        redStandards.forEach(s_er => {
-            if (!isShaneVisible(s_er, chunkTimes[eveSlot2])) return;
-            const airmass_er = getAirmassForTarget(s_er, chunkTimes[eveSlot2]);
-            if (airmass_er > 2.2 || airmass_er <= 0) return;
-            
-            const mornOptions = [[null, null, 0.0, 999.0, 999.0]];
-            blueStandards.forEach(s_mb => {
-                if (!isShaneVisible(s_mb, chunkTimes[mornSlot1])) return;
-                const airmass_mb = getAirmassForTarget(s_mb, chunkTimes[mornSlot1]);
-                if (airmass_mb > 2.2 || airmass_mb <= 0) return;
-                
-                redStandards.forEach(s_mr => {
-                    if (!isShaneVisible(s_mr, chunkTimes[mornSlot2])) return;
-                    const airmass_mr = getAirmassForTarget(s_mr, chunkTimes[mornSlot2]);
-                    if (airmass_mr > 2.2 || airmass_mr <= 0) return;
-                    
-                    let scoreAdd = 50.0;
-                    if (s_mb.quality === 'good') scoreAdd += 10.0;
-                    if (s_mr.quality === 'good') scoreAdd += 10.0;
-                    mornOptions.push([s_mb, s_mr, scoreAdd, airmass_mb, airmass_mr]);
-                });
-            });
-            
-            mornOptions.forEach(([s_mb, s_mr, mornScore, airmass_mb, airmass_mr]) => {
-                let score = 100.0 + mornScore;
-                if (s_eb.quality === 'good') score += 10.0;
-                if (s_er.quality === 'good') score += 10.0;
-                
-                if (needHighAirmass) {
-                    if (s_mb !== null) {
-                        const bLow = (airmass_eb < 1.3 || airmass_mb < 1.3);
-                        const bHigh = (1.5 <= airmass_eb && airmass_eb <= 2.2) || (1.5 <= airmass_mb && airmass_mb <= 2.2);
-                        score += (bLow && bHigh) ? 40.0 : 10.0;
-                    } else {
-                        if (airmass_eb < 1.3) score += 10.0;
-                    }
-                    
-                    if (s_mr !== null) {
-                        const rLow = (airmass_er < 1.3 || airmass_mr < 1.3);
-                        const rHigh = (1.5 <= airmass_er && airmass_er <= 2.2) || (1.5 <= airmass_mr && airmass_mr <= 2.2);
-                        score += (rLow && rHigh) ? 40.0 : 10.0;
-                    } else {
-                        if (airmass_er < 1.3) score += 10.0;
-                    }
-                } else {
-                    if (airmass_eb < 1.3) score += 10.0;
-                    if (airmass_er < 1.3) score += 10.0;
-                    if (s_mb !== null && airmass_mb < 1.3) score += 10.0;
-                    if (s_mr !== null && airmass_mr < 1.3) score += 10.0;
+
+    if (payload.standards_overrides) {
+        standardsData.forEach(s => {
+            if (payload.standards_overrides[s.name]) {
+                const ovr = payload.standards_overrides[s.name];
+                if (ovr.manual_start_time) {
+                    s.manual_start_time = ovr.manual_start_time;
                 }
-                
-                if (score > bestScore) {
-                    bestScore = score;
-                    bestSelection = [s_eb, s_er, s_mb, s_mr, eveSlot1, eveSlot2, mornSlot1, mornSlot2];
+                if (ovr.manual_duration !== null && ovr.manual_duration !== undefined) {
+                    s.manual_duration = ovr.manual_duration;
                 }
-            });
+            }
         });
+    }
+
+    const prelimReservedChunks = new Set();
+    const manualStandardBlocks = [];
+
+    standardsData.forEach(s => {
+        if (s.manual_start_time) {
+            const manualChunk = getChunkIdxFromTimeStr(s.manual_start_time);
+            if (manualChunk !== null) {
+                let durChunks = 5;
+                if (s.manual_duration !== null && s.manual_duration !== undefined) {
+                    durChunks = Math.max(1, Math.ceil(s.manual_duration));
+                }
+                let blockValid = true;
+                for (let c = manualChunk; c < manualChunk + durChunks; c++) {
+                    if (c >= numChunks || prelimReservedChunks.has(c) || !isChunkValid(s, c, true)) {
+                        blockValid = false;
+                        break;
+                    }
+                }
+                if (blockValid) {
+                    for (let c = manualChunk; c < manualChunk + durChunks; c++) {
+                        prelimReservedChunks.add(c);
+                    }
+                    const air = getAirmassForTarget(s, chunkTimes[manualChunk]);
+                    manualStandardBlocks.push({
+                        target_name: s.name,
+                        ra: s.ra,
+                        dec: s.dec,
+                        start_time: chunkTimes[manualChunk].toISOString(),
+                        end_time: (manualChunk + durChunks < numChunks) ? chunkTimes[manualChunk + durChunks].toISOString() : sunrise.toISOString(),
+                        duration_minutes: durChunks,
+                        airmass_start: air,
+                        airmass_end: air,
+                        airmass_median: air,
+                        priority: 0.0,
+                        comment: `Calib: ${s.color.charAt(0).toUpperCase() + s.color.slice(1)} / ${s.quality.charAt(0).toUpperCase() + s.quality.slice(1)}, Airmass ${air.toFixed(2)}`
+                    });
+                }
+            }
+        }
+    });
+
+    // Filter out pre-scheduled standards so they aren't processed in standard selection loops
+    let activeStandardsData = standardsData.filter(s => !s.manual_start_time);
+
+    // Sort and calculate exposures
+    const targetExposures = {};
+    targets.forEach(t => {
+        const sep = getSeparation(t.ra, t.dec, moon.ra, moon.dec);
+        targetExposures[t.name] = calculateExposure(t, moon.phase, sep);
     });
     
-    const reservedChunks = new Set();
-    const standardBlocks = [];
+    // 1. Run preliminary solve to see what gets scheduled and if we need high-airmass calibrations
+    const prelimSolve = solveInternal(targets, new Set(prelimReservedChunks));
+    const scheduledScience = prelimSolve.blocks;
     
-    if (bestSelection !== null) {
-        const [s_eb, s_er, s_mb, s_mr, es1, es2, ms1, ms2] = bestSelection;
-        
-        function addStandardBlock(starObj, chunkIdx) {
-            const targetObj = {
-                name: starObj.name,
-                ra: starObj.ra,
-                dec: starObj.dec,
-                magnitude: starObj.magnitude,
-                priority: 0.0,
-                allow_twilight: true,
-                high_airmass: false,
-                comment: `Calib: ${starObj.color.charAt(0).toUpperCase() + starObj.color.slice(1)} / ${starObj.quality.charAt(0).toUpperCase() + starObj.quality.slice(1)}, Airmass ${getAirmassForTarget(starObj, chunkTimes[chunkIdx]).toFixed(2)}`
-            };
-            // Issue #29: 5-minute standard star blocks = 5 chunks at 1-min granularity
-            const durChunks = 5;
-            for (let c = chunkIdx; c < chunkIdx + durChunks; c++) {
-                reservedChunks.add(c);
+    let needHighAirmass = false;
+    for (let i = 0; i < scheduledScience.length; i++) {
+        if (scheduledScience[i].airmass_median > 1.5) {
+            needHighAirmass = true;
+            break;
+        }
+    }
+    
+    // Issue #29: Standard star slots at 30 & 35 min after sunset (1-min chunks)
+    const hasManual = !!(payload.realtime_constraints && payload.realtime_constraints.manual_limits_enabled);
+    let eveSlot1 = hasManual ? 0 : 30;
+    let eveSlot2 = hasManual ? 5 : 35;
+    const brightThreshold = 15.5; // Lick Shane threshold
+    
+    const scienceStartBlock = scheduledScience.find(b => new Date(b.start_time).getTime() === chunkTimes[0].getTime());
+    if (scienceStartBlock) {
+        const sciTarget = targets.find(t => t.name === scienceStartBlock.target_name);
+        if (sciTarget && sciTarget.magnitude < brightThreshold) {
+            eveSlot1 = Math.max(hasManual ? 0 : 30, Math.ceil(scienceStartBlock.duration_minutes));
+            eveSlot2 = eveSlot1 + 5;
+        }
+    }
+    
+    // Morning standards: 35 & 40 min before sunrise
+    let mornSlot2 = hasManual ? numChunks - 5 : numChunks - 35;
+    let mornSlot1 = mornSlot2 - 5;
+    const scienceEndBlock = scheduledScience.find(b => new Date(b.end_time).getTime() === chunkTimes[numChunks - 1].getTime());
+    if (scienceEndBlock) {
+        const sciTarget = targets.find(t => t.name === scienceEndBlock.target_name);
+        if (sciTarget && sciTarget.magnitude < brightThreshold) {
+            mornSlot2 = Math.min(hasManual ? numChunks - 5 : numChunks - 35, numChunks - 5 - Math.ceil(scienceEndBlock.duration_minutes));
+            mornSlot1 = mornSlot2 - 5;
+        }
+    }
+    
+    // 3. Setup standard stars
+    const blueStandards = activeStandardsData.filter(s => s.color === 'blue');
+    const redStandards = activeStandardsData.filter(s => s.color === 'red');
+    
+    const reservedChunks = new Set(prelimReservedChunks);
+    const standardBlocks = [...manualStandardBlocks];
+    
+    function addStandardBlock(starObj, chunkIdx) {
+        if (!starObj) return;
+        const targetObj = {
+            name: starObj.name,
+            ra: starObj.ra,
+            dec: starObj.dec,
+            magnitude: starObj.magnitude,
+            priority: 0.0,
+            allow_twilight: true,
+            high_airmass: false,
+            comment: `Calib: ${starObj.color.charAt(0).toUpperCase() + starObj.color.slice(1)} / ${starObj.quality.charAt(0).toUpperCase() + starObj.quality.slice(1)}, Airmass ${getAirmassForTarget(starObj, chunkTimes[chunkIdx]).toFixed(2)}`
+        };
+        let durChunks = 5;
+        if (starObj.manual_duration !== null && starObj.manual_duration !== undefined) {
+            durChunks = Math.max(1, Math.ceil(starObj.manual_duration));
+        }
+        for (let c = chunkIdx; c < chunkIdx + durChunks; c++) {
+            reservedChunks.add(c);
+        }
+        const air = getAirmassForTarget(starObj, chunkTimes[chunkIdx]);
+        standardBlocks.push({
+            target_name: targetObj.name,
+            ra: starObj.ra,
+            dec: starObj.dec,
+            start_time: chunkTimes[chunkIdx].toISOString(),
+            end_time: (chunkIdx + durChunks < numChunks) ? chunkTimes[chunkIdx + durChunks].toISOString() : sunrise.toISOString(),
+            duration_minutes: durChunks,
+            airmass_start: air,
+            airmass_end: air,
+            airmass_median: air,
+            priority: 0.0,
+            comment: targetObj.comment
+        });
+    }
+
+    if (payload.auto_standards !== false) {
+        // Auto Selection Mode (schedule independently for each of the 4 slots if observable)
+        let s_eb = null;
+        let s_er = null;
+        let s_mb = null;
+        let s_mr = null;
+
+        // Evening Blue (Slot 1)
+        let best_eb_score = -1.0;
+        blueStandards.forEach(s => {
+            if (Array.from({length: 5}, (_, i) => eveSlot1 + i).some(c => reservedChunks.has(c))) return;
+            if (!isShaneVisible(s, chunkTimes[eveSlot1])) return;
+            const air = getAirmassForTarget(s, chunkTimes[eveSlot1]);
+            if (air > 0 && air <= 2.2) {
+                let score = s.quality === 'good' ? 100.0 : 10.0;
+                if (needHighAirmass) {
+                    if (air >= 1.5 && air <= 2.2) score += 20.0;
+                } else {
+                    if (air < 1.3) score += 20.0;
+                }
+                if (score > best_eb_score) {
+                    best_eb_score = score;
+                    s_eb = s;
+                }
             }
-            const air = getAirmassForTarget(starObj, chunkTimes[chunkIdx]);
-            standardBlocks.push({
-                target_name: targetObj.name,
-                ra: starObj.ra,
-                dec: starObj.dec,
-                start_time: chunkTimes[chunkIdx].toISOString(),
-                end_time: (chunkIdx + durChunks < numChunks) ? chunkTimes[chunkIdx + durChunks].toISOString() : sunrise.toISOString(),
-                duration_minutes: durChunks, // 1 chunk = 1 min, 5 chunks = 5 min
-                airmass_start: air,
-                airmass_end: air,
-                airmass_median: air,
-                priority: 0.0,
-                comment: targetObj.comment
-            });
+        });
+        if (s_eb) {
+            addStandardBlock(s_eb, eveSlot1);
+        }
+
+        // Evening Red (Slot 2)
+        let best_er_score = -1.0;
+        redStandards.forEach(s => {
+            if (Array.from({length: 5}, (_, i) => eveSlot2 + i).some(c => reservedChunks.has(c))) return;
+            if (!isShaneVisible(s, chunkTimes[eveSlot2])) return;
+            const air = getAirmassForTarget(s, chunkTimes[eveSlot2]);
+            if (air > 0 && air <= 2.2) {
+                let score = s.quality === 'good' ? 100.0 : 10.0;
+                if (needHighAirmass) {
+                    if (air >= 1.5 && air <= 2.2) score += 20.0;
+                } else {
+                    if (air < 1.3) score += 20.0;
+                }
+                if (score > best_er_score) {
+                    best_er_score = score;
+                    s_er = s;
+                }
+            }
+        });
+        if (s_er) {
+            addStandardBlock(s_er, eveSlot2);
+        }
+
+        // Morning Blue (Slot 1)
+        let best_mb_score = -1.0;
+        blueStandards.forEach(s => {
+            if (Array.from({length: 5}, (_, i) => mornSlot1 + i).some(c => reservedChunks.has(c))) return;
+            if (!isShaneVisible(s, chunkTimes[mornSlot1])) return;
+            const air = getAirmassForTarget(s, chunkTimes[mornSlot1]);
+            if (air > 0 && air <= 2.2) {
+                let score = s.quality === 'good' ? 100.0 : 10.0;
+                if (needHighAirmass) {
+                    if (air >= 1.5 && air <= 2.2) score += 20.0;
+                } else {
+                    if (air < 1.3) score += 20.0;
+                }
+                if (score > best_mb_score) {
+                    best_mb_score = score;
+                    s_mb = s;
+                }
+            }
+        });
+        if (s_mb) {
+            addStandardBlock(s_mb, mornSlot1);
+        }
+
+        // Morning Red (Slot 2)
+        let best_mr_score = -1.0;
+        redStandards.forEach(s => {
+            if (Array.from({length: 5}, (_, i) => mornSlot2 + i).some(c => reservedChunks.has(c))) return;
+            if (!isShaneVisible(s, chunkTimes[mornSlot2])) return;
+            const air = getAirmassForTarget(s, chunkTimes[mornSlot2]);
+            if (air > 0 && air <= 2.2) {
+                let score = s.quality === 'good' ? 100.0 : 10.0;
+                if (needHighAirmass) {
+                    if (air >= 1.5 && air <= 2.2) score += 20.0;
+                } else {
+                    if (air < 1.3) score += 20.0;
+                }
+                if (score > best_mr_score) {
+                    best_mr_score = score;
+                    s_mr = s;
+                }
+            }
+        });
+        if (s_mr) {
+            addStandardBlock(s_mr, mornSlot2);
+        }
+    } else {
+        // Manual Selection Mode
+        const selectedSet = new Set(payload.selected_standards || []);
+        const manualStandards = activeStandardsData.filter(s => selectedSet.has(s.name));
+        
+        // Sort by RA
+        manualStandards.sort((a, b) => a.ra - b.ra);
+        
+        // Find twilight chunks
+        const twilChunks = [];
+        const eveTwilStart = new Date(sunset.getTime() + 30 * 60 * 1000);
+        const eveTwilEnd = new Date(sunset.getTime() + 90 * 60 * 1000);
+        const mornTwilStart = new Date(sunrise.getTime() - 90 * 60 * 1000);
+        const mornTwilEnd = new Date(sunrise.getTime() - 30 * 60 * 1000);
+        
+        for (let c = 0; c < numChunks; c++) {
+            const ct = chunkTimes[c];
+            if ((ct >= eveTwilStart && ct <= eveTwilEnd) || (ct >= mornTwilStart && ct <= mornTwilEnd)) {
+                twilChunks.push(c);
+            }
         }
         
-        addStandardBlock(s_eb, es1);
-        addStandardBlock(s_er, es2);
-        if (s_mb !== null) addStandardBlock(s_mb, ms1);
-        if (s_mr !== null) addStandardBlock(s_mr, ms2);
+        manualStandards.forEach(s => {
+            let durChunks = 5;
+            if (s.manual_duration !== null && s.manual_duration !== undefined) {
+                durChunks = Math.max(1, Math.ceil(s.manual_duration));
+            }
+            
+            function findBestChunk(allowedChunks, maxAirmass) {
+                let bc = null;
+                let ba = Infinity;
+                
+                for (let i = 0; i < allowedChunks.length; i++) {
+                    const cIdx = allowedChunks[i];
+                    if (cIdx + durChunks > numChunks) continue;
+                    
+                    let overlap = false;
+                    for (let c = cIdx; c < cIdx + durChunks; c++) {
+                        if (reservedChunks.has(c)) {
+                            overlap = true;
+                            break;
+                        }
+                    }
+                    if (overlap) continue;
+                    
+                    let blockOk = true;
+                    for (let offset = 0; offset < durChunks; offset++) {
+                        if (!isShaneVisible(s, chunkTimes[cIdx + offset])) {
+                            blockOk = false;
+                            break;
+                        }
+                    }
+                    if (!blockOk) continue;
+                    
+                    const air = getAirmassForTarget(s, chunkTimes[cIdx]);
+                    if (air > 0 && air <= maxAirmass) {
+                        if (air < ba) {
+                            ba = air;
+                            bc = cIdx;
+                        }
+                    }
+                }
+                return { bc, ba };
+            }
+            
+            let res = findBestChunk(twilChunks, 2.2);
+            if (res.bc === null) res = findBestChunk(twilChunks, 2.5);
+            
+            const minChunk = hasManual ? 0 : 30;
+            const allChunks = Array.from({length: numChunks}, (_, i) => i).filter(c => c >= minChunk);
+            if (res.bc === null) res = findBestChunk(allChunks, 2.2);
+            if (res.bc === null) res = findBestChunk(allChunks, 2.5);
+            if (res.bc === null) res = findBestChunk(allChunks, 10.0);
+            
+            if (res.bc !== null) {
+                addStandardBlock(s, res.bc);
+            }
+        });
     }
     
     // 4. Run final solve with reserved standard blocks
@@ -2587,14 +3437,13 @@ function runLocalJSSolver(payload) {
             }
         });
         
-                const manualStartChunks = {};
+        const manualStartChunks = {};
         targetsList.forEach(t => {
             manualStartChunks[t.name] = getChunkIdxFromTimeStr(t.manual_start_time);
         });
         
         const durations = {};
         targetsList.forEach(t => {
-            // Issue #29: convert seconds → 1-min chunks (was /300 for 5-min chunks)
             durations[t.name] = Math.max(1, Math.ceil(targetExps[t.name] / 60));
         });
         
@@ -2605,12 +3454,20 @@ function runLocalJSSolver(payload) {
             let hasAnyValid = false;
             const manualChunk = manualStartChunks[t.name];
             if (manualChunk !== null) {
-                if (!reserved.has(manualChunk) && isChunkValid(t, manualChunk)) {
+                const durChunks = durations[t.name];
+                let blockValid = true;
+                for (let c = manualChunk; c < manualChunk + durChunks; c++) {
+                    if (c >= numChunks || reserved.has(c) || !isChunkValid(t, c, true)) {
+                        blockValid = false;
+                        break;
+                    }
+                }
+                if (blockValid) {
                     hasAnyValid = true;
                 }
             } else {
                 for (let c = 0; c < numChunks; c++) {
-                    if (!reserved.has(c) && isChunkValid(t, c)) {
+                    if (!reserved.has(c) && isChunkValid(t, c, false)) {
                         hasAnyValid = true;
                         break;
                     }
@@ -2638,73 +3495,101 @@ function runLocalJSSolver(payload) {
         
         let currentSchedule = {}; // name -> startChunk
         const conflicts = [];
+        const manuallyScheduled = new Set();
+        
+        // Pre-schedule manual start science targets immediately and reserve their chunks
+        observable.forEach(t => {
+            const manualChunk = manualStartChunks[t.name];
+            if (manualChunk !== null) {
+                const durChunks = durations[t.name];
+                let blockValid = true;
+                for (let c = manualChunk; c < manualChunk + durChunks; c++) {
+                    if (c >= numChunks || reserved.has(c) || !isChunkValid(t, c, true)) {
+                        blockValid = false;
+                        break;
+                    }
+                }
+                if (blockValid) {
+                    currentSchedule[t.name] = manualChunk;
+                    for (let c = manualChunk; c < manualChunk + durChunks; c++) {
+                        reserved.add(c);
+                    }
+                    manuallyScheduled.add(t.name);
+                } else {
+                    conflicts.push(t.name);
+                }
+            }
+        });
+        
+        let previouslyScheduled = new Set(Object.keys(currentSchedule));
         
         sortedPrios.forEach(prio => {
             const prioTargets = obsTargetsByPrio[prio] || [];
             if (prioTargets.length === 0) return;
             
-            const targetsToSchedule = [];
-            sortedPrios.forEach(p => {
-                if (p <= prio) {
-                    targetsToSchedule.push(...(obsTargetsByPrio[p] || []));
-                }
-            });
+            // S_active: previously scheduled science targets that are not manual
+            const S_active = observable.filter(tg => previouslyScheduled.has(tg.name) && !manuallyScheduled.has(tg.name));
+            // new_active: targets of current priority that are not manual
+            const new_active = prioTargets.filter(tg => !manuallyScheduled.has(tg.name));
             
-                        const validSlots = {};
+            const targetsToSchedule = [...S_active, ...new_active];
+            if (targetsToSchedule.length === 0) return;
+            
+            const S_active_names = new Set(S_active.map(t => t.name));
+            const new_active_names = new Set(new_active.map(t => t.name));
+            
+            const validSlots = {};
             const airmassCosts = {};
             
             targetsToSchedule.forEach(t => {
                 const durChunks = durations[t.name];
+                const slots = [];
+                const costs = {};
                 
-                const manualChunk = manualStartChunks[t.name];
-                if (manualChunk !== null) {
+                for (let s = 0; s <= numChunks - durChunks; s++) {
                     let blockValid = true;
                     const airmasses = [];
-                    for (let c = manualChunk; c < manualChunk + durChunks; c++) {
-                        if (c >= numChunks || reserved.has(c) || !isChunkValid(t, c)) {
+                    for (let c = s; c < s + durChunks; c++) {
+                        if (reserved.has(c) || !isChunkValid(t, c, false)) {
                             blockValid = false;
                             break;
                         }
                         airmasses.push(getAirmassForTarget(t, chunkTimes[c]));
                     }
+                    
                     if (blockValid) {
-                        validSlots[t.name] = [manualChunk];
+                        slots.push(s);
                         airmasses.sort((a,b)=>a-b);
                         const mid = Math.floor(airmasses.length / 2);
                         const median = airmasses.length % 2 !== 0 ? airmasses[mid] : (airmasses[mid-1] + airmasses[mid]) / 2.0;
-                        airmassCosts[t.name] = {};
-                        airmassCosts[t.name][manualChunk] = median;
-                    } else {
-                        validSlots[t.name] = [];
-                        airmassCosts[t.name] = {};
-                    }
-                } else {
-                    const slots = [];
-                    const costs = {};
-                    
-                    for (let s = 0; s <= numChunks - durChunks; s++) {
-                        let blockValid = true;
-                        const airmasses = [];
-                        for (let c = s; c < s + durChunks; c++) {
-                            if (reserved.has(c) || !isChunkValid(t, c)) {
-                                blockValid = false;
-                                break;
+                        
+                        // Calculate twilight proximity penalty for non-standard targets
+                        let twilightDist = 0.0;
+                        if (t.priority !== 0.0) {
+                            const tEve18 = solarTimes.twilight_evening_18;
+                            const tMorn18 = solarTimes.twilight_morning_18;
+                            const dists = [];
+                            for (let c = s; c < s + durChunks; c++) {
+                                const ct = chunkTimes[c];
+                                if (ct < tEve18) {
+                                    dists.push((tEve18.getTime() - ct.getTime()) / (60 * 1000));
+                                } else if (ct > tMorn18) {
+                                    dists.push((ct.getTime() - tMorn18.getTime()) / (60 * 1000));
+                                } else {
+                                    dists.push(0.0);
+                                }
                             }
-                            airmasses.push(getAirmassForTarget(t, chunkTimes[c]));
+                            dists.sort((a,b)=>a-b);
+                            const mIdx = Math.floor(dists.length / 2);
+                            twilightDist = dists.length % 2 !== 0 ? dists[mIdx] : (dists[mIdx-1] + dists[mIdx]) / 2.0;
                         }
                         
-                        if (blockValid) {
-                            slots.push(s);
-                            airmasses.sort((a,b)=>a-b);
-                            const mid = Math.floor(airmasses.length / 2);
-                            const median = airmasses.length % 2 !== 0 ? airmasses[mid] : (airmasses[mid-1] + airmasses[mid]) / 2.0;
-                            costs[s] = median;
-                        }
+                        costs[s] = median + 1000.0 * twilightDist;
                     }
-                    
-                    validSlots[t.name] = slots;
-                    airmassCosts[t.name] = costs;
                 }
+                
+                validSlots[t.name] = slots;
+                airmassCosts[t.name] = costs;
             });
             
             const solverTargets = [...targetsToSchedule].sort((a,b) => {
@@ -2779,7 +3664,7 @@ function runLocalJSSolver(payload) {
                             }
                         }
                         
-                        const pObj = solverTargets.find(tg => tg.name === pName);
+                        const pObj = targetsList.find(tg => tg.name === pName);
                         if (pObj && pObj.schedule_before && pObj.schedule_before.includes(name)) {
                             if (!(pStart + pDur <= s)) {
                                 precedenceOk = false;
@@ -2794,61 +3679,33 @@ function runLocalJSSolver(payload) {
                     search(idx + 1, sched, cost + airmassCosts[name][s]);
                     delete sched[name];
                 }
+                
+                // If target is new, we can skip it (with a large penalty)
+                if (new_active_names.has(name)) {
+                    search(idx + 1, sched, cost + 100000.0);
+                }
             }
             
-            search(0, {}, 0);
+            const initialSchedule = {};
+            manuallyScheduled.forEach(name => {
+                if (currentSchedule[name] !== undefined) {
+                    initialSchedule[name] = currentSchedule[name];
+                }
+            });
+            
+            search(0, initialSchedule, 0);
             
             if (bestSchedule !== null) {
                 currentSchedule = bestSchedule;
-            } else {
-                prioTargets.forEach(t => {
-                    const dur = durations[t.name];
-                    let fit = false;
-                    const slots = validSlots[t.name] || [];
-                    for (let i = 0; i < slots.length; i++) {
-                        const s = slots[i];
-                        let isOverlap = false;
-                        const keys = Object.keys(currentSchedule);
-                        for (let k = 0; k < keys.length; k++) {
-                            const pName = keys[k];
-                            if (overlap(s, dur, currentSchedule[pName], durations[pName])) {
-                                isOverlap = true;
-                                break;
-                            }
-                        }
-                        if (!isOverlap) {
-                            let precedenceOk = true;
-                            const keysSched = Object.keys(currentSchedule);
-                            for (let k = 0; k < keysSched.length; k++) {
-                                const pName = keysSched[k];
-                                const pStart = currentSchedule[pName];
-                                const pDur = durations[pName];
-                                
-                                if (t.schedule_before && t.schedule_before.includes(pName)) {
-                                    if (!(s + dur <= pStart)) {
-                                        precedenceOk = false;
-                                        break;
-                                    }
-                                }
-                                
-                                const pObj = solverTargets.find(tg => tg.name === pName);
-                                if (pObj && pObj.schedule_before && pObj.schedule_before.includes(t.name)) {
-                                    if (!(pStart + pDur <= s)) {
-                                        precedenceOk = false;
-                                        break;
-                                    }
-                                }
-                            }
-                            if (precedenceOk) {
-                                fit = true;
-                                currentSchedule[t.name] = s;
-                                break;
-                            }
-                        }
-                    }
-                    if (!fit) {
+                previouslyScheduled = new Set(Object.keys(currentSchedule));
+                new_active.forEach(t => {
+                    if (currentSchedule[t.name] === undefined) {
                         conflicts.push(t.name);
                     }
+                });
+            } else {
+                new_active.forEach(t => {
+                    conflicts.push(t.name);
                 });
             }
         });
@@ -2874,7 +3731,6 @@ function runLocalJSSolver(payload) {
                 target_name: name,
                 start_time: chunkTimes[startIdx].toISOString(),
                 end_time: chunkTimes[startIdx + durChunks].toISOString(),
-                // Issue #29: 1 chunk = 1 minute
                 duration_minutes: durChunks,
                 airmass_start: startAir,
                 airmass_end: endAir,
