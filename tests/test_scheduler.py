@@ -518,6 +518,31 @@ class TestScheduler(unittest.TestCase):
         b_end = datetime.datetime.fromisoformat(block_b['end_time'])
         self.assertTrue(b_end <= a_start)
 
+    def test_previous_schedule_baseline(self):
+        """Test scheduler accepts previous_schedule to guide and speed up scheduling."""
+        observatory = Observatory("Lick Observatory", 37.3414, -121.6429, 1283)
+        telescope = ShaneTelescope()
+        date_local = datetime.date(2026, 6, 18)
+        scheduler = Scheduler(observatory, telescope, date_local)
+
+        target_a = Target(
+            name="TargetA",
+            ra=180.0,
+            dec=37.3,
+            magnitude=12.0,
+            priority=1.0,
+            allow_twilight=True
+        )
+
+        res = scheduler.solve([target_a], auto_standards=False)
+        start_time = res['blocks'][0]['start_time']
+
+        # Run with previous schedule
+        prev_sched = [{'target_name': 'TargetA', 'start_time': start_time}]
+        res_with_baseline = scheduler.solve([target_a], auto_standards=False, previous_schedule=prev_sched)
+        
+        self.assertEqual(res_with_baseline['blocks'][0]['start_time'], start_time)
+
 
 if __name__ == '__main__':
     unittest.main()

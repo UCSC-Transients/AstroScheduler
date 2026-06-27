@@ -140,7 +140,8 @@ def run_schedule_logic(data: dict) -> dict:
         selected_standards=selected_standards,
         auto_standards=auto_standards,
         realtime_constraints=rt_constraints,
-        standards_overrides=standards_overrides
+        standards_overrides=standards_overrides,
+        previous_schedule=data.get('previous_schedule')
     )
 
 

@@ -81,6 +81,7 @@ let targetSortField = 'none';
 let targetSortAsc = true;
 let targetDisplayOrder = [];
 let alertsDismissed = false;
+let lastObsDate = null;
 
 // Issue #32: Lock mechanism — tracks which targets have a locked start time
 // Value is 'start' when locked, absent when unlocked
@@ -108,15 +109,65 @@ function syncLockedTargets() {
 
 // Initial Setup on Page Load
 document.addEventListener("DOMContentLoaded", async () => {
-    // Issue #28: Default date to today
-    const today = new Date();
-    const yyyy = today.getFullYear();
-    const mm = String(today.getMonth() + 1).padStart(2, '0');
-    const dd = String(today.getDate()).padStart(2, '0');
-    document.getElementById("obs-date").value = `${yyyy}-${mm}-${dd}`;
+    // Restore date from localStorage if present
+    const storedDate = localStorage.getItem("obsDate");
+    if (storedDate) {
+        document.getElementById("obs-date").value = storedDate;
+    } else {
+        const today = new Date();
+        const yyyy = today.getFullYear();
+        const mm = String(today.getMonth() + 1).padStart(2, '0');
+        const dd = String(today.getDate()).padStart(2, '0');
+        document.getElementById("obs-date").value = `${yyyy}-${mm}-${dd}`;
+    }
+    lastObsDate = document.getElementById("obs-date").value;
 
-    // Issue #28: Trigger reschedule when date changes
+    // Issue #28: Trigger reschedule when date changes, and adjust locked times to match the new night
     document.getElementById("obs-date").addEventListener("change", () => {
+        const newDateStr = document.getElementById("obs-date").value;
+        if (lastObsDate && lastObsDate !== newDateStr) {
+            const dOld = new Date(lastObsDate);
+            const dNew = new Date(newDateStr);
+            const diffTime = dNew.getTime() - dOld.getTime();
+            const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
+            
+            if (diffDays !== 0) {
+                const shiftTime = (timeStr) => {
+                    if (!timeStr) return null;
+                    const d = new Date(timeStr);
+                    if (isNaN(d.getTime())) return timeStr;
+                    d.setDate(d.getDate() + diffDays);
+                    return d.toISOString();
+                };
+                
+                targetPool.forEach(t => {
+                    if (t.manual_start_time) t.manual_start_time = shiftTime(t.manual_start_time);
+                    if (t.manual_end_time) t.manual_end_time = shiftTime(t.manual_end_time);
+                });
+                standardStars.forEach(s => {
+                    if (s.manual_start_time) s.manual_start_time = shiftTime(s.manual_start_time);
+                    if (s.manual_end_time) s.manual_end_time = shiftTime(s.manual_end_time);
+                });
+                
+                localStorage.setItem("targetPool", JSON.stringify(targetPool));
+                
+                const overrides = {};
+                standardStars.forEach(s => {
+                    if (s.manual_start_time || s.manual_duration !== null || s.lock_type || (s.schedule_before && s.schedule_before.length > 0)) {
+                        overrides[s.name] = {
+                            manual_start_time: s.manual_start_time || null,
+                            manual_end_time: s.manual_end_time || null,
+                            manual_duration: s.manual_duration !== undefined ? s.manual_duration : null,
+                            lock_type: s.lock_type || null,
+                            schedule_before: s.schedule_before || []
+                        };
+                    }
+                });
+                localStorage.setItem("standardsOverrides", JSON.stringify(overrides));
+            }
+        }
+        lastObsDate = newDateStr;
+        localStorage.setItem("obsDate", newDateStr);
         triggerScheduling();
     });
     
@@ -340,15 +391,13 @@ function loadSampleTargets() {
 }
 
 function saveAndRefresh() {
-    syncLockedTargets();
     localStorage.setItem("targetPool", JSON.stringify(targetPool));
     localStorage.setItem("autoStandardsMode", autoStandardsMode);
     localStorage.setItem("selectedStandards", JSON.stringify(Array.from(selectedStandards)));
     
-    // Save standards overrides
     const standards_overrides = {};
     standardStars.forEach(s => {
-        if (s.manual_start_time || s.manual_duration !== null || s.lock_type) {
+        if (s.manual_start_time || s.manual_duration !== null || s.lock_type || (s.schedule_before && s.schedule_before.length > 0)) {
             standards_overrides[s.name] = {
                 manual_start_time: s.manual_start_time || null,
                 manual_end_time: s.manual_end_time || null,
@@ -360,9 +409,10 @@ function saveAndRefresh() {
     });
     localStorage.setItem("standardsOverrides", JSON.stringify(standards_overrides));
     
+    syncLockedTargets();
     renderTargetsTable();
     triggerScheduling();
-}
+};
 
 
 // ==============================================================================
@@ -1167,22 +1217,23 @@ function isStandardStarObservable(s, solar_times, observatory) {
     const utcNoon = new Date(localNoon.getTime() + offsetHours * 60 * 60 * 1000);
     const st = solar_times || getSolarTimesFallback(utcNoon, observatory.lat, observatory.lon, observatory.elevation);
     
-    const eveTime = new Date(st.sunset.getTime() + 30 * 60 * 1000);
-    const mornTime = new Date(st.sunrise.getTime() - 30 * 60 * 1000);
+    // Check every 30 minutes from sunset to sunrise
+    let t = st.sunset.getTime();
+    const tEnd = st.sunrise.getTime();
     
-    const altAzEve = getAltAz(eveTime, observatory.lat, observatory.lon, s.ra, s.dec);
-    const altAzMorn = getAltAz(mornTime, observatory.lat, observatory.lon, s.ra, s.dec);
+    while (t <= tEnd) {
+        const dt = new Date(t);
+        if (isShaneVisible(s, dt, observatory)) {
+            const altAz = getAltAz(dt, observatory.lat, observatory.lon, s.ra, s.dec);
+            const airmass = getAirmass(altAz.alt);
+            if (airmass > 0 && airmass <= 2.5) {
+                return true;
+            }
+        }
+        t += 30 * 60 * 1000;
+    }
     
-    const airmassEve = getAirmass(altAzEve.alt);
-    const airmassMorn = getAirmass(altAzMorn.alt);
-    
-    const isShaneEve = isShaneVisible(s, eveTime, observatory);
-    const isShaneMorn = isShaneVisible(s, mornTime, observatory);
-    
-    const validEve = isShaneEve && airmassEve > 0 && airmassEve <= 2.2;
-    const validMorn = isShaneMorn && airmassMorn > 0 && airmassMorn <= 2.2;
-    
-    return validEve || validMorn;
+    return false;
 }
 
 function isShaneVisible(t, dt, observatory) {
@@ -1428,6 +1479,7 @@ async function recalculateStartingNow() {
         if (s.manual_start_time || s.manual_duration !== null || s.lock_type) {
             standards_overrides[s.name] = {
                 manual_start_time: s.manual_start_time || null,
+                manual_end_time: s.manual_end_time || null,
                 manual_duration: s.manual_duration !== undefined ? s.manual_duration : null,
                 schedule_before: s.schedule_before || []
             };
@@ -1447,7 +1499,8 @@ async function recalculateStartingNow() {
         auto_standards: autoStandardsMode,
         selected_standards: Array.from(selectedStandards),
         standards_overrides,
-        realtime_constraints
+        realtime_constraints,
+        previous_schedule: currentBlocksList.map(b => ({ target_name: b.target_name, start_time: b.start_time }))
     };
     
     try {
@@ -1524,6 +1577,7 @@ async function _doSchedule() {
         if (s.manual_start_time || s.manual_duration !== null || s.lock_type) {
             standards_overrides[s.name] = {
                 manual_start_time: s.manual_start_time || null,
+                manual_end_time: s.manual_end_time || null,
                 manual_duration: s.manual_duration !== undefined ? s.manual_duration : null,
                 schedule_before: s.schedule_before || []
             };
@@ -1543,7 +1597,8 @@ async function _doSchedule() {
         auto_standards: autoStandardsMode,
         selected_standards: Array.from(selectedStandards),
         standards_overrides,
-        realtime_constraints
+        realtime_constraints,
+        previous_schedule: currentBlocksList.map(b => ({ target_name: b.target_name, start_time: b.start_time }))
     };
     
     try {
@@ -1780,26 +1835,23 @@ function handleTimelineReorder(draggedName, targetName) {
     // 4. Find the new index of draggedName
     const draggedNewIdx = names.indexOf(draggedName);
     
-    // 5. Add constraint for the left neighbor (leftNeighbor must be scheduled before draggedTarget)
-    if (draggedNewIdx > 0) {
-        const leftName = names[draggedNewIdx - 1];
-        const leftTarget = targetPool.find(t => t.name === leftName);
-        if (leftTarget) {
-            if (!leftTarget.schedule_before) leftTarget.schedule_before = [];
-            if (!leftTarget.schedule_before.includes(draggedName)) {
-                leftTarget.schedule_before.push(draggedName);
+    // 5. For every target before the dragged target in the new sequence, add draggedName to its schedule_before
+    for (let i = 0; i < draggedNewIdx; i++) {
+        const xName = names[i];
+        const xTarget = targetPool.find(t => t.name === xName) || standardStars.find(s => s.name === xName);
+        if (xTarget) {
+            if (!xTarget.schedule_before) xTarget.schedule_before = [];
+            if (!xTarget.schedule_before.includes(draggedName)) {
+                xTarget.schedule_before.push(draggedName);
             }
         }
     }
     
-    // 6. Add constraint for the right neighbor (draggedTarget must be scheduled before rightNeighbor)
-    if (draggedNewIdx < names.length - 1) {
-        const rightName = names[draggedNewIdx + 1];
-        const rightTarget = targetPool.find(t => t.name === rightName);
-        if (rightTarget) {
-            if (!draggedTarget.schedule_before.includes(rightName)) {
-                draggedTarget.schedule_before.push(rightName);
-            }
+    // 6. For every target after the dragged target in the new sequence, add it to draggedTarget's schedule_before
+    for (let i = draggedNewIdx + 1; i < names.length; i++) {
+        const yName = names[i];
+        if (!draggedTarget.schedule_before.includes(yName)) {
+            draggedTarget.schedule_before.push(yName);
         }
     }
 
@@ -2349,7 +2401,7 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
                 }
             },
             interaction: {
-                mode: 'index',
+                mode: 'nearest',
                 intersect: false,
             },
             plugins: {
@@ -2380,6 +2432,8 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
                     // Issue #22: Use the 'aboveLine' custom positioner (registered above) to keep
                     // the tooltip above the thick observation lines
                     position: 'aboveLine',
+                    mode: 'nearest',
+                    intersect: false,
                     callbacks: {
                         title: function(tooltipItems) {
                             if (tooltipItems.length > 0) {

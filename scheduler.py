@@ -750,11 +750,21 @@ class Scheduler:
             return best_idx
         return None
 
-    def solve(self, targets: List[Target], disabled_standards: Optional[Set[str]] = None, selected_standards: Optional[List[str]] = None, auto_standards: bool = True, realtime_constraints: Optional[Dict[str, Any]] = None, standards_overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def solve(self, targets: List[Target], disabled_standards: Optional[Set[str]] = None, selected_standards: Optional[List[str]] = None, auto_standards: bool = True, realtime_constraints: Optional[Dict[str, Any]] = None, standards_overrides: Optional[Dict[str, Any]] = None, previous_schedule: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
         """
         Main entry point for scheduling. Schedules standard stars first, then science targets.
         """
         self.realtime_constraints = realtime_constraints or {}
+        
+        previous_start_chunks = {}
+        if previous_schedule:
+            for item in previous_schedule:
+                t_name = item.get('target_name')
+                start_time_str = item.get('start_time')
+                if t_name and start_time_str:
+                    c_idx = self.get_chunk_idx_from_time_str(start_time_str)
+                    if c_idx is not None:
+                        previous_start_chunks[t_name] = c_idx
         
         rt = self.realtime_constraints
         if rt.get('manual_limits_enabled'):
@@ -973,7 +983,7 @@ class Scheduler:
         remaining_targets = [t for t in targets if t.name not in manually_scheduled_names]
 
         # 1. Run preliminary solve to see what gets scheduled and if we need high-airmass calibrations
-        prelim_solve = self._solve_internal(remaining_targets, reserved_chunks=set(reserved_chunks))
+        prelim_solve = self._solve_internal(remaining_targets, reserved_chunks=set(reserved_chunks), previous_start_chunks=previous_start_chunks)
         all_scheduled_science = prelim_solve['blocks'] + manual_science_blocks
         
         need_high_airmass = False
@@ -1205,7 +1215,7 @@ class Scheduler:
                 add_standard_block(s_mr, morn_slot_2)
                 
         # 6. Run final solver pass with the reserved standard chunks
-        final_solve = self._solve_internal(remaining_targets, reserved_chunks)
+        final_solve = self._solve_internal(remaining_targets, reserved_chunks, previous_start_chunks=previous_start_chunks)
         
         # Merge scheduled blocks
         scheduled_blocks = final_solve['blocks'] + standard_blocks + manual_science_blocks
@@ -1304,7 +1314,7 @@ class Scheduler:
             'solar_times': {k: v.isoformat() for k, v in self.solar_times.items()}
         }
 
-    def _solve_internal(self, targets: List[Target], reserved_chunks: Set[int]) -> Dict[str, Any]:
+    def _solve_internal(self, targets: List[Target], reserved_chunks: Set[int], previous_start_chunks: Optional[Dict[str, int]] = None) -> Dict[str, Any]:
         """
         Schedules science targets using a priority-sequential Branch and Bound algorithm.
         Enforces precedence constraints (schedule_before) and manual schedule adjustments.
@@ -1435,22 +1445,43 @@ class Scheduler:
                 airmass_costs[t.name] = costs
                     
             # Search
-            # Check if a target has any precedence constraints
+            # Build precedence graph for topological sorting
+            graph = {t.name: [] for t in targets_to_schedule}
+            in_degree = {t.name: 0 for t in targets_to_schedule}
+            
+            for t in targets_to_schedule:
+                if t.schedule_before:
+                    for after in t.schedule_before:
+                        if after in graph:
+                            graph[t.name].append(after)
+                            in_degree[after] += 1
+            
             has_constraint = {}
-            for tg in targets_to_schedule:
-                hc = False
-                if tg.schedule_before:
-                    hc = True
-                else:
-                    for other in targets_to_schedule:
-                        if other.schedule_before and tg.name in other.schedule_before:
-                            hc = True
-                            break
-                has_constraint[tg.name] = hc
-
+            for t in targets_to_schedule:
+                has_constraint[t.name] = (len(graph[t.name]) > 0) or (in_degree[t.name] > 0)
+                
+            topo_order = []
+            zero_in = [name for name, deg in in_degree.items() if deg == 0 and has_constraint[name]]
+            while zero_in:
+                curr = zero_in.pop(0)
+                topo_order.append(curr)
+                for neighbor in graph[curr]:
+                    in_degree[neighbor] -= 1
+                    if in_degree[neighbor] == 0:
+                        zero_in.append(neighbor)
+                        
+            # If there's a cycle, the remaining nodes won't be in topo_order. 
+            # We just append them to the end with rank = infinity.
+            topo_rank = {name: i for i, name in enumerate(topo_order)}
+            
             targets_sorted_for_solve = sorted(
                 targets_to_schedule,
-                key=lambda x: (not has_constraint[x.name], x.priority, -durations[x.name])
+                key=lambda x: (
+                    not has_constraint[x.name],
+                    topo_rank.get(x.name, 999999),
+                    x.priority,
+                    -durations[x.name]
+                )
             )
             
             S_active_names = {t.name for t in S_active}
@@ -1494,6 +1525,8 @@ class Scheduler:
                     
                 slots = valid_slots[t_name]
                 s_prev = current_schedule.get(t_name)
+                if s_prev is None and previous_start_chunks is not None:
+                    s_prev = previous_start_chunks.get(t_name)
                 if s_prev is not None and s_prev in slots:
                     other_slots = [s for s in slots if s != s_prev]
                     sorted_slots = [s_prev] + sorted(other_slots, key=lambda s: airmass_costs[t_name][s])
