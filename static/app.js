@@ -2889,8 +2889,15 @@ function runLocalJSSolver(payload) {
     const moon = getMoonPosition(dMid);
     
     function getAirmassForTarget(t, dt) {
+        if (!t._airmassCache) t._airmassCache = {};
+        const key = dt.getTime();
+        if (t._airmassCache[key] !== undefined) {
+            return t._airmassCache[key];
+        }
         const altAz = getAltAz(dt, observatory.lat, observatory.lon, t.ra, t.dec);
-        return getAirmass(altAz.alt);
+        const val = getAirmass(altAz.alt);
+        t._airmassCache[key] = val;
+        return val;
     }
     
     function isShaneVisible(t, dt) {
@@ -3592,7 +3599,27 @@ function runLocalJSSolver(payload) {
                 airmassCosts[t.name] = costs;
             });
             
+            const hasConstraint = {};
+            targetsToSchedule.forEach(tg => {
+                let hc = false;
+                if (tg.schedule_before && tg.schedule_before.length > 0) {
+                    hc = true;
+                } else {
+                    for (let i = 0; i < targetsToSchedule.length; i++) {
+                        const other = targetsToSchedule[i];
+                        if (other.schedule_before && other.schedule_before.includes(tg.name)) {
+                            hc = true;
+                            break;
+                        }
+                    }
+                }
+                hasConstraint[tg.name] = hc;
+            });
+
             const solverTargets = [...targetsToSchedule].sort((a,b) => {
+                const hcA = hasConstraint[a.name] ? 0 : 1;
+                const hcB = hasConstraint[b.name] ? 0 : 1;
+                if (hcA !== hcB) return hcA - hcB;
                 if (a.priority !== b.priority) return a.priority - b.priority;
                 return durations[b.name] - durations[a.name];
             });
@@ -3600,7 +3627,7 @@ function runLocalJSSolver(payload) {
             let bestSchedule = null;
             let bestCost = Infinity;
             let searchIterations = 0;
-            const maxSearchIterations = 2000;
+            const maxSearchIterations = 100000;
             
             function overlap(s1, d1, s2, d2) {
                 return !(s1 + d1 <= s2 || s2 + d2 <= s1);
@@ -3635,7 +3662,14 @@ function runLocalJSSolver(payload) {
                 if (cost + lb >= bestCost) return;
                 
                 const slots = validSlots[name] || [];
-                const sortedSlots = [...slots].sort((a,b) => airmassCosts[name][a] - airmassCosts[name][b]);
+                let sortedSlots;
+                const sPrev = currentSchedule[name];
+                if (sPrev !== undefined && slots.includes(sPrev)) {
+                    const otherSlots = slots.filter(s => s !== sPrev).sort((a,b) => airmassCosts[name][a] - airmassCosts[name][b]);
+                    sortedSlots = [sPrev, ...otherSlots];
+                } else {
+                    sortedSlots = [...slots].sort((a,b) => airmassCosts[name][a] - airmassCosts[name][b]);
+                }
                 
                 for (let i = 0; i < sortedSlots.length; i++) {
                     const s = sortedSlots[i];

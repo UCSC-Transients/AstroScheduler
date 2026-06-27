@@ -48,6 +48,7 @@ def run_schedule_logic(data: dict) -> dict:
     disabled_standards = set(data.get('disabled_standards', []))
     selected_standards = data.get('selected_standards', [])
     auto_standards = bool(data.get('auto_standards', True))
+    standards_overrides = data.get('standards_overrides')
     rt_constraints = data.get('realtime_constraints', {})
     extinction = float(rt_constraints.get('extinction', 0.0))
     
@@ -78,7 +79,7 @@ def run_schedule_logic(data: dict) -> dict:
             continue
             
         status = t_data.get('status')
-        if status in ["Skipped", "Unobservable", "Failed", "Punted"]:
+        if status in ["Skipped", "Unobservable", "Failed", "Punted", "Observed"]:
             continue
 
         targets.append(Target(
@@ -138,7 +139,8 @@ def run_schedule_logic(data: dict) -> dict:
         disabled_standards=disabled_standards,
         selected_standards=selected_standards,
         auto_standards=auto_standards,
-        realtime_constraints=rt_constraints
+        realtime_constraints=rt_constraints,
+        standards_overrides=standards_overrides
     )
 
 

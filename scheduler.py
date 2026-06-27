@@ -10,6 +10,10 @@ from typing import List, Dict, Tuple, Optional, Any, Set
 
 try:
     import astropy
+    from astropy.utils.iers import conf as iers_conf
+    iers_conf.auto_download = False
+    iers_conf.auto_max_age = None
+    
     import astropy.units as u
     from astropy.time import Time
     from astropy.coordinates import EarthLocation, SkyCoord, get_moon, AltAz
@@ -546,23 +550,45 @@ class Scheduler:
             for i in range(self.num_chunks)
         ]
         
-    def get_airmass_for_target(self, target: Target, dt_utc: datetime.datetime) -> float:
-        """Compute target airmass at dt_utc."""
+        self._loc = None
+        self._obs = None
+        self._time_cache = {}
         if HAS_ASTRO_LIBS:
             try:
-                loc = EarthLocation(lat=self.observatory.latitude*u.deg, lon=self.observatory.longitude*u.deg, height=self.observatory.elevation*u.m)
-                obs = Observer(location=loc)
-                t = Time(dt_utc)
-                ft = FixedTarget(coord=SkyCoord(ra=target.ra*u.hourangle, dec=target.dec*u.deg), name=target.name)
-                altaz = obs.altaz(t, ft)
-                alt = altaz.alt.degree
-                if alt <= 0:
-                    return 999.0
-                return altaz.secz.value
+                self._loc = EarthLocation(lat=self.observatory.latitude*u.deg, lon=self.observatory.longitude*u.deg, height=self.observatory.elevation*u.m)
+                self._obs = Observer(location=self._loc)
             except Exception:
                 pass
-        alt, _ = get_alt_az(dt_utc, self.observatory.latitude, self.observatory.longitude, target.ra, target.dec)
-        return get_airmass(alt)
+        
+    def get_airmass_for_target(self, target: Target, dt_utc: datetime.datetime) -> float:
+        """Compute target airmass at dt_utc."""
+        if not hasattr(target, '_airmass_cache'):
+            target._airmass_cache = {}
+        if dt_utc in target._airmass_cache:
+            return target._airmass_cache[dt_utc]
+
+        val = 999.0
+        if HAS_ASTRO_LIBS and self._obs is not None:
+            try:
+                if dt_utc not in self._time_cache:
+                    self._time_cache[dt_utc] = Time(dt_utc)
+                t = self._time_cache[dt_utc]
+                if not hasattr(target, '_fixed_target'):
+                    target._fixed_target = FixedTarget(coord=SkyCoord(ra=target.ra*u.hourangle, dec=target.dec*u.deg), name=target.name)
+                altaz = self._obs.altaz(t, target._fixed_target)
+                alt = altaz.alt.degree
+                if alt <= 0:
+                    val = 999.0
+                else:
+                    val = altaz.secz.value
+            except Exception:
+                pass
+        else:
+            alt, _ = get_alt_az(dt_utc, self.observatory.latitude, self.observatory.longitude, target.ra, target.dec)
+            val = get_airmass(alt)
+
+        target._airmass_cache[dt_utc] = val
+        return val
 
     def is_chunk_valid(self, target: Target, chunk_idx: int, is_manual: bool = False) -> bool:
         """Check if a target can be observed in a given chunk."""
@@ -1374,7 +1400,7 @@ class Scheduler:
                 dur_chunks = durations[t.name]
                 slots = []
                 costs = {}
-                for s_idx in range(self.num_chunks - dur_chunks + 1):
+                for s_idx in range(0, self.num_chunks - dur_chunks + 1):
                     block_valid = True
                     airmasses = []
                     for c_idx in range(s_idx, s_idx + dur_chunks):
@@ -1409,9 +1435,22 @@ class Scheduler:
                 airmass_costs[t.name] = costs
                     
             # Search
+            # Check if a target has any precedence constraints
+            has_constraint = {}
+            for tg in targets_to_schedule:
+                hc = False
+                if tg.schedule_before:
+                    hc = True
+                else:
+                    for other in targets_to_schedule:
+                        if other.schedule_before and tg.name in other.schedule_before:
+                            hc = True
+                            break
+                has_constraint[tg.name] = hc
+
             targets_sorted_for_solve = sorted(
                 targets_to_schedule,
-                key=lambda x: (x.priority, -durations[x.name])
+                key=lambda x: (not has_constraint[x.name], x.priority, -durations[x.name])
             )
             
             S_active_names = {t.name for t in S_active}
@@ -1423,8 +1462,15 @@ class Scheduler:
             def check_overlap(s1: int, d1: int, s2: int, d2: int) -> bool:
                 return not (s1 + d1 <= s2 or s2 + d2 <= s1)
                 
+            search_iterations = 0
+            max_search_iterations = 10000
+            
             def search(idx: int, schedule: Dict[str, int], cost: float):
-                nonlocal best_schedule, best_cost
+                nonlocal best_schedule, best_cost, search_iterations
+                
+                search_iterations += 1
+                if search_iterations > max_search_iterations:
+                    return
                 
                 if idx == len(targets_sorted_for_solve):
                     if cost < best_cost:
@@ -1447,7 +1493,12 @@ class Scheduler:
                     return
                     
                 slots = valid_slots[t_name]
-                sorted_slots = sorted(slots, key=lambda s: airmass_costs[t_name][s])
+                s_prev = current_schedule.get(t_name)
+                if s_prev is not None and s_prev in slots:
+                    other_slots = [s for s in slots if s != s_prev]
+                    sorted_slots = [s_prev] + sorted(other_slots, key=lambda s: airmass_costs[t_name][s])
+                else:
+                    sorted_slots = sorted(slots, key=lambda s: airmass_costs[t_name][s])
                 
                 for s in sorted_slots:
                     overlap = False
