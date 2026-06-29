@@ -79,7 +79,7 @@ def run_schedule_logic(data: dict) -> dict:
             continue
             
         status = t_data.get('status')
-        if status in ["Skipped", "Unobservable", "Failed", "Punted", "Observed"]:
+        if status in ["Skipped", "Failed", "Punted", "Observed"]:
             continue
 
         targets.append(Target(

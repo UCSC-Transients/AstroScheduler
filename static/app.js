@@ -574,7 +574,7 @@ function renderTargetsTable() {
         } else if (unobservable.includes(t.name)) {
             statusClass = "status-unobservable";
             statusDotColor = "#ef4444";
-            statusText = "Unschedulable";
+            statusText = "Unobservable";
         } else if (isScheduled) {
             statusClass = "status-scheduled";
             statusDotColor = "#eab308";
@@ -582,7 +582,7 @@ function renderTargetsTable() {
         }
 
         const circleColor = isScheduled ? '#eab308' : (unobservable.includes(t.name) ? '#ef4444' : '#f97316');
-        const circleTitle = isScheduled ? 'Scheduled' : (unobservable.includes(t.name) ? 'Unschedulable' : 'Not Scheduled');
+        const circleTitle = isScheduled ? 'Scheduled' : (unobservable.includes(t.name) ? 'Unobservable' : 'Not Scheduled');
         const statusCircle = `<span title="${circleTitle}" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${circleColor};"></span>`;
 
         const scheduledStartStr = scheduledBlock ? formatTimeForTimezone(scheduledBlock.start_time, currentTimezone) : (t.manual_start_time || '');
@@ -1121,7 +1121,7 @@ function renderStandardsTable() {
         const isObs = isStandardStarObservable(raDecParsed, null, obs);
         
         let rowClass = "";
-        let statusText = "Standby";
+        let statusText = "Not Scheduled";
         let statusClass = "status-unobservable";
         let checkDisabledAttr = "";
         
@@ -1213,24 +1213,41 @@ function isStandardStarObservable(s, solar_times, observatory) {
     const dateInput = document.getElementById("obs-date").value;
     const dateParts = dateInput.split('-');
     const localNoon = new Date(dateParts[0], dateParts[1] - 1, dateParts[2], 12, 0, 0);
-    const offsetHours = 8.109;
+    const offsetHours = -observatory.lon / 15.0;
     const utcNoon = new Date(localNoon.getTime() + offsetHours * 60 * 60 * 1000);
     const st = solar_times || getSolarTimesFallback(utcNoon, observatory.lat, observatory.lon, observatory.elevation);
     
-    // Check every 30 minutes from sunset + 30 minutes to sunrise - 30 minutes
-    let t = st.sunset.getTime() + 30 * 60 * 1000;
-    const tEnd = st.sunrise.getTime() - 30 * 60 * 1000;
+    // Checked standard stars can only be scheduled from sunset + 30m to sunrise - 30m
+    const limitStart = st.sunset.getTime() + 30 * 60 * 1000;
+    const limitEnd = st.sunrise.getTime() - 30 * 60 * 1000;
+    
+    // Standard star duration is typically 5 minutes (300 seconds)
+    const durMs = 5 * 60 * 1000;
+    
+    // Check every 10 minutes from limitStart to limitEnd - durMs
+    let t = limitStart;
+    const tEnd = limitEnd - durMs;
     
     while (t <= tEnd) {
-        const dt = new Date(t);
-        if (isShaneVisible(s, dt, observatory)) {
+        let blockValid = true;
+        // Check if visible for the entire 5 minutes starting at t
+        for (let offsetMs = 0; offsetMs <= durMs; offsetMs += 60 * 1000) {
+            const dt = new Date(t + offsetMs);
+            if (!isShaneVisible(s, dt, observatory)) {
+                blockValid = false;
+                break;
+            }
             const altAz = getAltAz(dt, observatory.lat, observatory.lon, s.ra, s.dec);
             const airmass = getAirmass(altAz.alt);
-            if (airmass > 0 && airmass <= 2.5) {
-                return true;
+            if (airmass <= 0 || airmass > 2.5) {
+                blockValid = false;
+                break;
             }
         }
-        t += 30 * 60 * 1000;
+        if (blockValid) {
+            return true;
+        }
+        t += 10 * 60 * 1000;
     }
     
     return false;
@@ -2963,29 +2980,36 @@ function runLocalJSSolver(payload) {
         return true;
     }
     
-    function isChunkValid(t, cIdx, isManual = false) {
+    function isChunkValid(t, cIdx, isManual = false, ignoreSchedulingLimits = false) {
         const dt = chunkTimes[cIdx];
         
         // Twilight check
         if (!isManual) {
-            if (!t.allow_twilight) {
-                if (dt < solarTimes.twilight_evening_18 || dt > solarTimes.twilight_morning_18) {
+            if (ignoreSchedulingLimits) {
+                // Just check if it's within the night (sunset to sunrise)
+                if (dt < sunset || dt > sunrise) {
                     return false;
                 }
             } else {
-                const rt = payload.realtime_constraints || {};
-                const isStandard = (t.priority === 0.0);
-                if (isStandard) {
-                    const limitStart = rt.manual_limits_enabled ? sunset : new Date(sunset.getTime() + 30 * 60 * 1000);
-                    const limitEnd = rt.manual_limits_enabled ? sunrise : new Date(sunrise.getTime() - 30 * 60 * 1000);
-                    if (dt < limitStart || dt > limitEnd) {
+                if (!t.allow_twilight) {
+                    if (dt < solarTimes.twilight_evening_18 || dt > solarTimes.twilight_morning_18) {
                         return false;
                     }
                 } else {
-                    const limitStart = new Date(solarTimes.twilight_evening_12);
-                    const limitEnd = new Date(solarTimes.twilight_morning_12);
-                    if (dt < limitStart || dt > limitEnd) {
-                        return false;
+                    const rt = payload.realtime_constraints || {};
+                    const isStandard = (t.priority === 0.0);
+                    if (isStandard) {
+                        const limitStart = rt.manual_limits_enabled ? sunset : new Date(sunset.getTime() + 30 * 60 * 1000);
+                        const limitEnd = rt.manual_limits_enabled ? sunrise : new Date(sunrise.getTime() - 30 * 60 * 1000);
+                        if (dt < limitStart || dt > limitEnd) {
+                            return false;
+                        }
+                    } else {
+                        const limitStart = new Date(solarTimes.twilight_evening_12);
+                        const limitEnd = new Date(solarTimes.twilight_morning_12);
+                        if (dt < limitStart || dt > limitEnd) {
+                            return false;
+                        }
                     }
                 }
             }
@@ -2999,11 +3023,15 @@ function runLocalJSSolver(payload) {
         if (isManual) {
             if (airmass <= 0) return false;
         } else {
-            const limitAirmass = t.high_airmass ? 2.2 : 1.7;
-            if (airmass <= 0 || airmass > limitAirmass) return false;
+            if (ignoreSchedulingLimits) {
+                if (airmass <= 0 || airmass > 2.92) return false;
+            } else {
+                const limitAirmass = t.high_airmass ? 2.2 : 1.7;
+                if (airmass <= 0 || airmass > limitAirmass) return false;
+            }
         }
         
-        if (!isManual) {
+        if (!isManual && !ignoreSchedulingLimits) {
             // Real-time limits
             const rt = payload.realtime_constraints || {};
             if (rt.ha_limit !== undefined && rt.ha_limit !== null && rt.ha_limit !== "") {
@@ -3326,10 +3354,10 @@ function runLocalJSSolver(payload) {
         
         // Find twilight chunks
         const twilChunks = [];
-        const eveTwilStart = new Date(sunset.getTime() + 30 * 60 * 1000);
+        const eveTwilStart = hasManual ? sunset : new Date(sunset.getTime() + 30 * 60 * 1000);
         const eveTwilEnd = new Date(sunset.getTime() + 90 * 60 * 1000);
         const mornTwilStart = new Date(sunrise.getTime() - 90 * 60 * 1000);
-        const mornTwilEnd = new Date(sunrise.getTime() - 30 * 60 * 1000);
+        const mornTwilEnd = hasManual ? sunrise : new Date(sunrise.getTime() - 30 * 60 * 1000);
         
         for (let c = 0; c < numChunks; c++) {
             const ct = chunkTimes[c];
@@ -3510,10 +3538,40 @@ function runLocalJSSolver(payload) {
         
         const unobservable = [];
         const observable = [];
+        const initialConflicts = [];
         
         targetsList.forEach(t => {
-            let hasAnyValid = false;
+            // 1. Check physical observability (ignoring reserved)
+            let hasPhysicalChunk = false;
             const manualChunk = manualStartChunks[t.name];
+            if (manualChunk !== null) {
+                const durChunks = durations[t.name];
+                let blockValid = true;
+                for (let c = manualChunk; c < manualChunk + durChunks; c++) {
+                    if (c >= numChunks || !isChunkValid(t, c, true, true)) {
+                        blockValid = false;
+                        break;
+                    }
+                }
+                if (blockValid) {
+                    hasPhysicalChunk = true;
+                }
+            } else {
+                for (let c = 0; c < numChunks; c++) {
+                    if (isChunkValid(t, c, false, true)) {
+                        hasPhysicalChunk = true;
+                        break;
+                    }
+                }
+            }
+            
+            if (!hasPhysicalChunk) {
+                unobservable.push(t.name);
+                return;
+            }
+            
+            // 2. Check scheduling availability (considering reserved)
+            let hasAvailChunk = false;
             if (manualChunk !== null) {
                 const durChunks = durations[t.name];
                 let blockValid = true;
@@ -3524,18 +3582,19 @@ function runLocalJSSolver(payload) {
                     }
                 }
                 if (blockValid) {
-                    hasAnyValid = true;
+                    hasAvailChunk = true;
                 }
             } else {
                 for (let c = 0; c < numChunks; c++) {
                     if (!reserved.has(c) && isChunkValid(t, c, false)) {
-                        hasAnyValid = true;
+                        hasAvailChunk = true;
                         break;
                     }
                 }
             }
-            if (!hasAnyValid) {
-                unobservable.push(t.name);
+            
+            if (!hasAvailChunk) {
+                initialConflicts.push(t.name);
             } else {
                 observable.push(t);
             }
@@ -3555,7 +3614,7 @@ function runLocalJSSolver(payload) {
         });
         
         let currentSchedule = {}; // name -> startChunk
-        const conflicts = [];
+        const conflicts = [...initialConflicts];
         const manuallyScheduled = new Set();
         
         // Pre-schedule manual start science targets immediately and reserve their chunks

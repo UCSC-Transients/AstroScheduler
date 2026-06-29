@@ -645,6 +645,48 @@ class TestScheduler(unittest.TestCase):
         self.assertIn("TargetA", res['conflicts'])
         self.assertNotIn("TargetA", res['unobservable'])
 
+    def test_feige34_observability_on_2026_06_27(self):
+        """Test that Feige 34 is observable/schedulable on 2026-06-27."""
+        observatory = Observatory("Lick Observatory", 37.3414, -121.6429, 1283)
+        telescope = ShaneTelescope()
+        date_local = datetime.date(2026, 6, 27)
+        scheduler = Scheduler(observatory, telescope, date_local)
+        
+        # Load standard stars database to see if Feige 34 is scheduled
+        res = scheduler.solve([], auto_standards=True)
+        standard_blocks = [b for b in res['blocks'] if b['priority'] == 0.0]
+        
+        # Check if Feige 34 is in the scheduled blocks
+        scheduled_names = {b['target_name'] for b in standard_blocks}
+        self.assertIn("Feige 34", scheduled_names)
+
+    def test_high_airmass_conflict_not_unobservable(self):
+        """Test that target with airmass > 1.7 but <= 2.92 goes to conflicts, NOT unobservable."""
+        observatory = Observatory("Lick Observatory", 37.3414, -121.6429, 1283)
+        telescope = ShaneTelescope()
+        date_local = datetime.date(2026, 6, 18)
+        scheduler = Scheduler(observatory, telescope, date_local)
+
+        # Target B transits at lower elevation, airmass never below 1.7 but below 2.92
+        # Lat = 37.34. If Dec = -15, transit altitude = 90 - (37.34 - (-15)) = 37.66
+        # Airmass at transit = 1 / sin(37.66) = 1.63 (which goes below 1.7).
+        # Let's use Dec = -21 => transit alt = 90 - (37.34 - (-21)) = 31.66 => airmass = 1 / sin(31.66) = 1.9
+        target_b = Target(
+            name="TargetB",
+            ra=180.0,
+            dec=-21.0,
+            magnitude=12.0,
+            priority=1.0,
+            allow_twilight=True,
+            high_airmass=False # Defaults to False, so airmass limit is 1.7
+        )
+
+        res = scheduler._solve_internal([target_b], set())
+        
+        # TargetB should be in conflicts (because it violates scheduling limit 1.7, but is physically observable up to 2.92)
+        self.assertIn("TargetB", res['conflicts'])
+        self.assertNotIn("TargetB", res['unobservable'])
+
 
 if __name__ == '__main__':
     unittest.main()

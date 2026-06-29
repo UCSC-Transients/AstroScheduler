@@ -590,38 +590,43 @@ class Scheduler:
         target._airmass_cache[dt_utc] = val
         return val
 
-    def is_chunk_valid(self, target: Target, chunk_idx: int, is_manual: bool = False) -> bool:
+    def is_chunk_valid(self, target: Target, chunk_idx: int, is_manual: bool = False, ignore_scheduling_limits: bool = False) -> bool:
         """Check if a target can be observed in a given chunk."""
         t = self.chunk_times[chunk_idx]
 
         # 1. Twilight check
         if not is_manual:
-            # Standard: 18-degree twilight limit
-            t_eve_18 = self.solar_times['twilight_evening_18']
-            t_morn_18 = self.solar_times['twilight_morning_18']
-
-            if not target.allow_twilight:
-                # Must be strictly within 18-deg twilight
-                if not (t_eve_18 <= t <= t_morn_18):
+            if ignore_scheduling_limits:
+                # Just check if it's within the night (sunset to sunrise)
+                if not (self.solar_times['sunset'] <= t <= self.solar_times['sunrise']):
                     return False
             else:
-                is_standard = (target.priority == 0.0)
-                if is_standard:
-                    # Allowed as early as 30 minutes after sunset, up to 30 minutes before sunrise
-                    has_manual = bool(self.realtime_constraints and self.realtime_constraints.get('manual_limits_enabled'))
-                    limit_start = self.solar_times['sunset']
-                    if not has_manual:
-                        limit_start += datetime.timedelta(minutes=30)
-                    limit_end = self.solar_times['sunrise']
-                    if not has_manual:
-                        limit_end -= datetime.timedelta(minutes=30)
+                # Standard: 18-degree twilight limit
+                t_eve_18 = self.solar_times['twilight_evening_18']
+                t_morn_18 = self.solar_times['twilight_morning_18']
+
+                if not target.allow_twilight:
+                    # Must be strictly within 18-deg twilight
+                    if not (t_eve_18 <= t <= t_morn_18):
+                        return False
                 else:
-                    # Non-standard twilight targets must not extend beyond 12-degree twilight
-                    limit_start = self.solar_times['twilight_evening_12']
-                    limit_end = self.solar_times['twilight_morning_12']
-                
-                if not (limit_start <= t <= limit_end):
-                    return False
+                    is_standard = (target.priority == 0.0)
+                    if is_standard:
+                        # Allowed as early as 30 minutes after sunset, up to 30 minutes before sunrise
+                        has_manual = bool(self.realtime_constraints and self.realtime_constraints.get('manual_limits_enabled'))
+                        limit_start = self.solar_times['sunset']
+                        if not has_manual:
+                            limit_start += datetime.timedelta(minutes=30)
+                        limit_end = self.solar_times['sunrise']
+                        if not has_manual:
+                            limit_end -= datetime.timedelta(minutes=30)
+                    else:
+                        # Non-standard twilight targets must not extend beyond 12-degree twilight
+                        limit_start = self.solar_times['twilight_evening_12']
+                        limit_end = self.solar_times['twilight_morning_12']
+                    
+                    if not (limit_start <= t <= limit_end):
+                        return False
 
         # 2. Telescope pointing limits (Dec, Hour Angle)
         if not is_manual:
@@ -634,9 +639,14 @@ class Scheduler:
             if airmass <= 0:
                 return False
         else:
-            airmass_limit = 2.2 if target.high_airmass else 1.7
-            if airmass <= 0 or airmass > airmass_limit:
-                return False
+            if ignore_scheduling_limits:
+                # Use absolute physical limit (alt >= 20 deg => airmass <= 2.92)
+                if airmass <= 0 or airmass > 2.92:
+                    return False
+            else:
+                airmass_limit = 2.2 if target.high_airmass else 1.7
+                if airmass <= 0 or airmass > airmass_limit:
+                    return False
 
         # 4. Real-time Pointing Limits (HA, Altitude, Dec, Az)
         if not is_manual:
@@ -654,45 +664,48 @@ class Scheduler:
                 pass
 
             # Alt limit
-            alt_limit = rt.get('alt_limit')
-            alt_max = rt.get('alt_max')
-            try:
-                alt_limit_val = float(alt_limit) if alt_limit is not None and alt_limit != "" else 20.0
-                alt_max_val = float(alt_max) if alt_max is not None and alt_max != "" else 90.0
-                alt = math.degrees(math.asin(1.0 / airmass)) if airmass > 0 else 0.0
-                if alt < alt_limit_val or alt > alt_max_val:
-                    return False
-            except (ValueError, TypeError):
-                pass
+            if not ignore_scheduling_limits:
+                alt_limit = rt.get('alt_limit')
+                alt_max = rt.get('alt_max')
+                try:
+                    alt_limit_val = float(alt_limit) if alt_limit is not None and alt_limit != "" else 20.0
+                    alt_max_val = float(alt_max) if alt_max is not None and alt_max != "" else 90.0
+                    alt = math.degrees(math.asin(1.0 / airmass)) if airmass > 0 else 0.0
+                    if alt < alt_limit_val or alt > alt_max_val:
+                        return False
+                except (ValueError, TypeError):
+                    pass
 
             # Az limit
-            az_min = rt.get('az_min')
-            az_max = rt.get('az_max')
-            try:
-                az_min_val = float(az_min) if az_min is not None and az_min != "" else 0.0
-                az_max_val = float(az_max) if az_max is not None and az_max != "" else 360.0
-                _, az = get_alt_az(t, self.observatory.latitude, self.observatory.longitude, target.ra, target.dec)
-                if az_min_val <= az_max_val:
-                    if not (az_min_val <= az <= az_max_val):
-                        return False
-                else:
-                    if az < az_min_val and az > az_max_val:
-                        return False
-            except (ValueError, TypeError):
-                pass
+            if not ignore_scheduling_limits:
+                az_min = rt.get('az_min')
+                az_max = rt.get('az_max')
+                try:
+                    az_min_val = float(az_min) if az_min is not None and az_min != "" else 0.0
+                    az_max_val = float(az_max) if az_max is not None and az_max != "" else 360.0
+                    _, az = get_alt_az(t, self.observatory.latitude, self.observatory.longitude, target.ra, target.dec)
+                    if az_min_val <= az_max_val:
+                        if not (az_min_val <= az <= az_max_val):
+                            return False
+                    else:
+                        if az < az_min_val and az > az_max_val:
+                            return False
+                except (ValueError, TypeError):
+                    pass
 
             # HA limit
-            ha_limit_east = rt.get('ha_limit_east')
-            ha_limit_west = rt.get('ha_limit_west')
-            try:
-                limit_east = float(ha_limit_east) if ha_limit_east is not None and ha_limit_east != "" else self.telescope.ha_limit_east
-                limit_west = float(ha_limit_west) if ha_limit_west is not None and ha_limit_west != "" else self.telescope.ha_limit_west
-                lst = get_lst(t, self.observatory.longitude)
-                ha = get_hour_angle(lst, target.ra)
-                if not (limit_east <= ha <= limit_west):
-                    return False
-            except (ValueError, TypeError):
-                pass
+            if not ignore_scheduling_limits:
+                ha_limit_east = rt.get('ha_limit_east')
+                ha_limit_west = rt.get('ha_limit_west')
+                try:
+                    limit_east = float(ha_limit_east) if ha_limit_east is not None and ha_limit_east != "" else self.telescope.ha_limit_east
+                    limit_west = float(ha_limit_west) if ha_limit_west is not None and ha_limit_west != "" else self.telescope.ha_limit_west
+                    lst = get_lst(t, self.observatory.longitude)
+                    ha = get_hour_angle(lst, target.ra)
+                    if not (limit_east <= ha <= limit_west):
+                        return False
+                except (ValueError, TypeError):
+                    pass
 
             # 5. Real-time start time limit (recalculate starting now)
             start_from = rt.get('start_from')
@@ -754,6 +767,7 @@ class Scheduler:
         """
         Main entry point for scheduling. Schedules standard stars first, then science targets.
         """
+        self.auto_standards = auto_standards
         self.realtime_constraints = realtime_constraints or {}
         
         previous_start_chunks = {}
@@ -1345,11 +1359,11 @@ class Scheduler:
             has_physical_chunk = False
             manual_chunk = manual_start_chunks[t.name]
             if manual_chunk is not None:
-                if self.is_chunk_valid(t, manual_chunk, is_manual=True):
+                if self.is_chunk_valid(t, manual_chunk, is_manual=True, ignore_scheduling_limits=True):
                     has_physical_chunk = True
             else:
                 for c_idx in range(self.num_chunks):
-                    if self.is_chunk_valid(t, c_idx):
+                    if self.is_chunk_valid(t, c_idx, ignore_scheduling_limits=True):
                         has_physical_chunk = True
                         break
             
