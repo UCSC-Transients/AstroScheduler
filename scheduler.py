@@ -614,12 +614,11 @@ class Scheduler:
                     if is_standard:
                         # Allowed as early as 30 minutes after sunset, up to 30 minutes before sunrise
                         has_manual = bool(self.realtime_constraints and self.realtime_constraints.get('manual_limits_enabled'))
-                        is_manual_standards = not getattr(self, 'auto_standards', True)
                         limit_start = self.solar_times['sunset']
-                        if not has_manual and not is_manual_standards:
+                        if not has_manual:
                             limit_start += datetime.timedelta(minutes=30)
                         limit_end = self.solar_times['sunrise']
-                        if not has_manual and not is_manual_standards:
+                        if not has_manual:
                             limit_end -= datetime.timedelta(minutes=30)
                     else:
                         # Non-standard twilight targets must not extend beyond 12-degree twilight
@@ -845,12 +844,11 @@ class Scheduler:
                 pass
                 
         # Determine evening/morning twilight boundaries for standard star scheduling
-        if getattr(self, 'manual_start_override', False) or (self.realtime_constraints and self.realtime_constraints.get('manual_limits_enabled')) or not auto_standards:
-            # If not auto_standards, allow starting from sunset/sunrise
-            eve_twil_start = self.solar_times['sunset'] if not auto_standards else self.start_night + datetime.timedelta(minutes=30)
-            eve_twil_end = self.solar_times['sunset'] + datetime.timedelta(hours=1.5)
-            morn_twil_start = self.solar_times['sunrise'] - datetime.timedelta(hours=1.5)
-            morn_twil_end = self.solar_times['sunrise'] if not auto_standards else self.end_night - datetime.timedelta(minutes=30)
+        if getattr(self, 'manual_start_override', False) or (self.realtime_constraints and self.realtime_constraints.get('manual_limits_enabled')):
+            eve_twil_start = self.start_night + datetime.timedelta(minutes=30)
+            eve_twil_end = self.start_night + datetime.timedelta(hours=1.5)
+            morn_twil_start = self.end_night - datetime.timedelta(hours=1.5)
+            morn_twil_end = self.end_night - datetime.timedelta(minutes=30)
         else:
             eve_twil_start = self.solar_times['sunset'] + datetime.timedelta(minutes=30)
             eve_twil_end = self.solar_times['twilight_evening_18'] + datetime.timedelta(minutes=30)
@@ -1126,7 +1124,7 @@ class Scheduler:
                     best_c, best_airmass = find_best_chunk(twil_chunks, 2.5)
 
                 # Pass 3: all night chunks, airmass <= 2.2
-                min_chunk = 0 if (has_manual or not self.auto_standards) else 30
+                min_chunk = 0 if has_manual else 30
                 all_chunks = [c for c in range(self.num_chunks) if c >= min_chunk]
                 if best_c is None:
                     best_c, best_airmass = find_best_chunk(all_chunks, 2.2)

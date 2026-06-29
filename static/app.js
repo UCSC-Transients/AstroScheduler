@@ -1121,7 +1121,7 @@ function renderStandardsTable() {
         const isObs = isStandardStarObservable(raDecParsed, null, obs);
         
         let rowClass = "";
-        let statusText = "Standby";
+        let statusText = "Not Scheduled";
         let statusClass = "status-unobservable";
         let checkDisabledAttr = "";
         
@@ -2982,8 +2982,8 @@ function runLocalJSSolver(payload) {
                     const rt = payload.realtime_constraints || {};
                     const isStandard = (t.priority === 0.0);
                     if (isStandard) {
-                        const limitStart = (rt.manual_limits_enabled || payload.auto_standards === false) ? sunset : new Date(sunset.getTime() + 30 * 60 * 1000);
-                        const limitEnd = (rt.manual_limits_enabled || payload.auto_standards === false) ? sunrise : new Date(sunrise.getTime() - 30 * 60 * 1000);
+                        const limitStart = rt.manual_limits_enabled ? sunset : new Date(sunset.getTime() + 30 * 60 * 1000);
+                        const limitEnd = rt.manual_limits_enabled ? sunrise : new Date(sunrise.getTime() - 30 * 60 * 1000);
                         if (dt < limitStart || dt > limitEnd) {
                             return false;
                         }
@@ -3337,10 +3337,10 @@ function runLocalJSSolver(payload) {
         
         // Find twilight chunks
         const twilChunks = [];
-        const eveTwilStart = (hasManual || payload.auto_standards === false) ? sunset : new Date(sunset.getTime() + 30 * 60 * 1000);
+        const eveTwilStart = hasManual ? sunset : new Date(sunset.getTime() + 30 * 60 * 1000);
         const eveTwilEnd = new Date(sunset.getTime() + 90 * 60 * 1000);
         const mornTwilStart = new Date(sunrise.getTime() - 90 * 60 * 1000);
-        const mornTwilEnd = (hasManual || payload.auto_standards === false) ? sunrise : new Date(sunrise.getTime() - 30 * 60 * 1000);
+        const mornTwilEnd = hasManual ? sunrise : new Date(sunrise.getTime() - 30 * 60 * 1000);
         
         for (let c = 0; c < numChunks; c++) {
             const ct = chunkTimes[c];
@@ -3395,7 +3395,7 @@ function runLocalJSSolver(payload) {
             let res = findBestChunk(twilChunks, 2.2);
             if (res.bc === null) res = findBestChunk(twilChunks, 2.5);
             
-            const minChunk = (hasManual || payload.auto_standards === false) ? 0 : 30;
+            const minChunk = hasManual ? 0 : 30;
             const allChunks = Array.from({length: numChunks}, (_, i) => i).filter(c => c >= minChunk);
             if (res.bc === null) res = findBestChunk(allChunks, 2.2);
             if (res.bc === null) res = findBestChunk(allChunks, 2.5);
