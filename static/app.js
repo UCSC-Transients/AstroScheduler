@@ -1213,13 +1213,13 @@ function isStandardStarObservable(s, solar_times, observatory) {
     const dateInput = document.getElementById("obs-date").value;
     const dateParts = dateInput.split('-');
     const localNoon = new Date(dateParts[0], dateParts[1] - 1, dateParts[2], 12, 0, 0);
-    const offsetHours = 8.109;
+    const offsetHours = -observatory.lon / 15.0;
     const utcNoon = new Date(localNoon.getTime() + offsetHours * 60 * 60 * 1000);
     const st = solar_times || getSolarTimesFallback(utcNoon, observatory.lat, observatory.lon, observatory.elevation);
     
-    // Check every 30 minutes from sunset + 30 minutes to sunrise - 30 minutes
-    let t = st.sunset.getTime() + 30 * 60 * 1000;
-    const tEnd = st.sunrise.getTime() - 30 * 60 * 1000;
+    // Check every 10 minutes from sunset to sunrise
+    let t = st.sunset.getTime();
+    const tEnd = st.sunrise.getTime();
     
     while (t <= tEnd) {
         const dt = new Date(t);
@@ -1230,7 +1230,7 @@ function isStandardStarObservable(s, solar_times, observatory) {
                 return true;
             }
         }
-        t += 30 * 60 * 1000;
+        t += 10 * 60 * 1000;
     }
     
     return false;
@@ -3510,10 +3510,40 @@ function runLocalJSSolver(payload) {
         
         const unobservable = [];
         const observable = [];
+        const initialConflicts = [];
         
         targetsList.forEach(t => {
-            let hasAnyValid = false;
+            // 1. Check physical observability (ignoring reserved)
+            let hasPhysicalChunk = false;
             const manualChunk = manualStartChunks[t.name];
+            if (manualChunk !== null) {
+                const durChunks = durations[t.name];
+                let blockValid = true;
+                for (let c = manualChunk; c < manualChunk + durChunks; c++) {
+                    if (c >= numChunks || !isChunkValid(t, c, true)) {
+                        blockValid = false;
+                        break;
+                    }
+                }
+                if (blockValid) {
+                    hasPhysicalChunk = true;
+                }
+            } else {
+                for (let c = 0; c < numChunks; c++) {
+                    if (isChunkValid(t, c, false)) {
+                        hasPhysicalChunk = true;
+                        break;
+                    }
+                }
+            }
+            
+            if (!hasPhysicalChunk) {
+                unobservable.push(t.name);
+                return;
+            }
+            
+            // 2. Check scheduling availability (considering reserved)
+            let hasAvailChunk = false;
             if (manualChunk !== null) {
                 const durChunks = durations[t.name];
                 let blockValid = true;
@@ -3524,18 +3554,19 @@ function runLocalJSSolver(payload) {
                     }
                 }
                 if (blockValid) {
-                    hasAnyValid = true;
+                    hasAvailChunk = true;
                 }
             } else {
                 for (let c = 0; c < numChunks; c++) {
                     if (!reserved.has(c) && isChunkValid(t, c, false)) {
-                        hasAnyValid = true;
+                        hasAvailChunk = true;
                         break;
                     }
                 }
             }
-            if (!hasAnyValid) {
-                unobservable.push(t.name);
+            
+            if (!hasAvailChunk) {
+                initialConflicts.push(t.name);
             } else {
                 observable.push(t);
             }
@@ -3555,7 +3586,7 @@ function runLocalJSSolver(payload) {
         });
         
         let currentSchedule = {}; // name -> startChunk
-        const conflicts = [];
+        const conflicts = [...initialConflicts];
         const manuallyScheduled = new Set();
         
         // Pre-schedule manual start science targets immediately and reserve their chunks

@@ -645,6 +645,21 @@ class TestScheduler(unittest.TestCase):
         self.assertIn("TargetA", res['conflicts'])
         self.assertNotIn("TargetA", res['unobservable'])
 
+    def test_feige34_observability_on_2026_06_27(self):
+        """Test that Feige 34 is observable/schedulable on 2026-06-27."""
+        observatory = Observatory("Lick Observatory", 37.3414, -121.6429, 1283)
+        telescope = ShaneTelescope()
+        date_local = datetime.date(2026, 6, 27)
+        scheduler = Scheduler(observatory, telescope, date_local)
+        
+        # Load standard stars database to see if Feige 34 is scheduled
+        res = scheduler.solve([], auto_standards=True)
+        standard_blocks = [b for b in res['blocks'] if b['priority'] == 0.0]
+        
+        # Check if Feige 34 is in the scheduled blocks
+        scheduled_names = {b['target_name'] for b in standard_blocks}
+        self.assertIn("Feige 34", scheduled_names)
+
 
 if __name__ == '__main__':
     unittest.main()
