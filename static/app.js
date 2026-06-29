@@ -1217,18 +1217,35 @@ function isStandardStarObservable(s, solar_times, observatory) {
     const utcNoon = new Date(localNoon.getTime() + offsetHours * 60 * 60 * 1000);
     const st = solar_times || getSolarTimesFallback(utcNoon, observatory.lat, observatory.lon, observatory.elevation);
     
-    // Check every 10 minutes from sunset to sunrise
-    let t = st.sunset.getTime();
-    const tEnd = st.sunrise.getTime();
+    // Checked standard stars can only be scheduled from sunset + 30m to sunrise - 30m
+    const limitStart = st.sunset.getTime() + 30 * 60 * 1000;
+    const limitEnd = st.sunrise.getTime() - 30 * 60 * 1000;
+    
+    // Standard star duration is typically 5 minutes (300 seconds)
+    const durMs = 5 * 60 * 1000;
+    
+    // Check every 10 minutes from limitStart to limitEnd - durMs
+    let t = limitStart;
+    const tEnd = limitEnd - durMs;
     
     while (t <= tEnd) {
-        const dt = new Date(t);
-        if (isShaneVisible(s, dt, observatory)) {
+        let blockValid = true;
+        // Check if visible for the entire 5 minutes starting at t
+        for (let offsetMs = 0; offsetMs <= durMs; offsetMs += 60 * 1000) {
+            const dt = new Date(t + offsetMs);
+            if (!isShaneVisible(s, dt, observatory)) {
+                blockValid = false;
+                break;
+            }
             const altAz = getAltAz(dt, observatory.lat, observatory.lon, s.ra, s.dec);
             const airmass = getAirmass(altAz.alt);
-            if (airmass > 0 && airmass <= 2.5) {
-                return true;
+            if (airmass <= 0 || airmass > 2.5) {
+                blockValid = false;
+                break;
             }
+        }
+        if (blockValid) {
+            return true;
         }
         t += 10 * 60 * 1000;
     }
