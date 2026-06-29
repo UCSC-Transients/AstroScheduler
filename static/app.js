@@ -574,7 +574,7 @@ function renderTargetsTable() {
         } else if (unobservable.includes(t.name)) {
             statusClass = "status-unobservable";
             statusDotColor = "#ef4444";
-            statusText = "Unschedulable";
+            statusText = "Unobservable";
         } else if (isScheduled) {
             statusClass = "status-scheduled";
             statusDotColor = "#eab308";
@@ -582,7 +582,7 @@ function renderTargetsTable() {
         }
 
         const circleColor = isScheduled ? '#eab308' : (unobservable.includes(t.name) ? '#ef4444' : '#f97316');
-        const circleTitle = isScheduled ? 'Scheduled' : (unobservable.includes(t.name) ? 'Unschedulable' : 'Not Scheduled');
+        const circleTitle = isScheduled ? 'Scheduled' : (unobservable.includes(t.name) ? 'Unobservable' : 'Not Scheduled');
         const statusCircle = `<span title="${circleTitle}" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${circleColor};"></span>`;
 
         const scheduledStartStr = scheduledBlock ? formatTimeForTimezone(scheduledBlock.start_time, currentTimezone) : (t.manual_start_time || '');
@@ -2963,29 +2963,36 @@ function runLocalJSSolver(payload) {
         return true;
     }
     
-    function isChunkValid(t, cIdx, isManual = false) {
+    function isChunkValid(t, cIdx, isManual = false, ignoreSchedulingLimits = false) {
         const dt = chunkTimes[cIdx];
         
         // Twilight check
         if (!isManual) {
-            if (!t.allow_twilight) {
-                if (dt < solarTimes.twilight_evening_18 || dt > solarTimes.twilight_morning_18) {
+            if (ignoreSchedulingLimits) {
+                // Just check if it's within the night (sunset to sunrise)
+                if (dt < sunset || dt > sunrise) {
                     return false;
                 }
             } else {
-                const rt = payload.realtime_constraints || {};
-                const isStandard = (t.priority === 0.0);
-                if (isStandard) {
-                    const limitStart = rt.manual_limits_enabled ? sunset : new Date(sunset.getTime() + 30 * 60 * 1000);
-                    const limitEnd = rt.manual_limits_enabled ? sunrise : new Date(sunrise.getTime() - 30 * 60 * 1000);
-                    if (dt < limitStart || dt > limitEnd) {
+                if (!t.allow_twilight) {
+                    if (dt < solarTimes.twilight_evening_18 || dt > solarTimes.twilight_morning_18) {
                         return false;
                     }
                 } else {
-                    const limitStart = new Date(solarTimes.twilight_evening_12);
-                    const limitEnd = new Date(solarTimes.twilight_morning_12);
-                    if (dt < limitStart || dt > limitEnd) {
-                        return false;
+                    const rt = payload.realtime_constraints || {};
+                    const isStandard = (t.priority === 0.0);
+                    if (isStandard) {
+                        const limitStart = (rt.manual_limits_enabled || payload.auto_standards === false) ? sunset : new Date(sunset.getTime() + 30 * 60 * 1000);
+                        const limitEnd = (rt.manual_limits_enabled || payload.auto_standards === false) ? sunrise : new Date(sunrise.getTime() - 30 * 60 * 1000);
+                        if (dt < limitStart || dt > limitEnd) {
+                            return false;
+                        }
+                    } else {
+                        const limitStart = new Date(solarTimes.twilight_evening_12);
+                        const limitEnd = new Date(solarTimes.twilight_morning_12);
+                        if (dt < limitStart || dt > limitEnd) {
+                            return false;
+                        }
                     }
                 }
             }
@@ -2999,11 +3006,15 @@ function runLocalJSSolver(payload) {
         if (isManual) {
             if (airmass <= 0) return false;
         } else {
-            const limitAirmass = t.high_airmass ? 2.2 : 1.7;
-            if (airmass <= 0 || airmass > limitAirmass) return false;
+            if (ignoreSchedulingLimits) {
+                if (airmass <= 0 || airmass > 2.92) return false;
+            } else {
+                const limitAirmass = t.high_airmass ? 2.2 : 1.7;
+                if (airmass <= 0 || airmass > limitAirmass) return false;
+            }
         }
         
-        if (!isManual) {
+        if (!isManual && !ignoreSchedulingLimits) {
             // Real-time limits
             const rt = payload.realtime_constraints || {};
             if (rt.ha_limit !== undefined && rt.ha_limit !== null && rt.ha_limit !== "") {
@@ -3326,10 +3337,10 @@ function runLocalJSSolver(payload) {
         
         // Find twilight chunks
         const twilChunks = [];
-        const eveTwilStart = new Date(sunset.getTime() + 30 * 60 * 1000);
+        const eveTwilStart = (hasManual || payload.auto_standards === false) ? sunset : new Date(sunset.getTime() + 30 * 60 * 1000);
         const eveTwilEnd = new Date(sunset.getTime() + 90 * 60 * 1000);
         const mornTwilStart = new Date(sunrise.getTime() - 90 * 60 * 1000);
-        const mornTwilEnd = new Date(sunrise.getTime() - 30 * 60 * 1000);
+        const mornTwilEnd = (hasManual || payload.auto_standards === false) ? sunrise : new Date(sunrise.getTime() - 30 * 60 * 1000);
         
         for (let c = 0; c < numChunks; c++) {
             const ct = chunkTimes[c];
@@ -3384,7 +3395,7 @@ function runLocalJSSolver(payload) {
             let res = findBestChunk(twilChunks, 2.2);
             if (res.bc === null) res = findBestChunk(twilChunks, 2.5);
             
-            const minChunk = hasManual ? 0 : 30;
+            const minChunk = (hasManual || payload.auto_standards === false) ? 0 : 30;
             const allChunks = Array.from({length: numChunks}, (_, i) => i).filter(c => c >= minChunk);
             if (res.bc === null) res = findBestChunk(allChunks, 2.2);
             if (res.bc === null) res = findBestChunk(allChunks, 2.5);
@@ -3520,7 +3531,7 @@ function runLocalJSSolver(payload) {
                 const durChunks = durations[t.name];
                 let blockValid = true;
                 for (let c = manualChunk; c < manualChunk + durChunks; c++) {
-                    if (c >= numChunks || !isChunkValid(t, c, true)) {
+                    if (c >= numChunks || !isChunkValid(t, c, true, true)) {
                         blockValid = false;
                         break;
                     }
@@ -3530,7 +3541,7 @@ function runLocalJSSolver(payload) {
                 }
             } else {
                 for (let c = 0; c < numChunks; c++) {
-                    if (isChunkValid(t, c, false)) {
+                    if (isChunkValid(t, c, false, true)) {
                         hasPhysicalChunk = true;
                         break;
                     }

@@ -342,7 +342,24 @@ input:focus, select:focus {
 }
 
 /* TABLES */
-.table-wrapper, .schedule-table-wrapper {
+.table-wrapper {
+    overflow-x: auto;
+    overflow-y: auto;
+    max-height: 400px;
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    background: rgba(15, 23, 42, 0.4);
+    margin-top: 15px;
+}
+
+.table-wrapper thead th {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: rgba(15, 23, 42, 0.95) !important;
+}
+
+.schedule-table-wrapper {
     overflow-x: auto;
     border: 1px solid var(--border-color);
     border-radius: 12px;
