@@ -128,6 +128,14 @@ document.addEventListener("DOMContentLoaded", async () => {
         const tzSelect = document.getElementById("tz-select");
         if (tzSelect) tzSelect.value = storedTZ;
     }
+    const timeHeader = document.getElementById("schedule-time-header");
+    if (timeHeader) {
+        if (currentTimezone === 'UTC' || currentTimezone.startsWith('UTC')) {
+            timeHeader.innerText = "Time (UT)";
+        } else {
+            timeHeader.innerText = "Time (Local)";
+        }
+    }
     lastObsDate = document.getElementById("obs-date").value;
 
     // Issue #28: Trigger reschedule when date changes, and adjust locked times to match the new night
@@ -1046,6 +1054,16 @@ function formatLST(lstVal) {
 function changeTimezone(val) {
     currentTimezone = val;
     localStorage.setItem("currentTimezone", currentTimezone);
+    
+    const timeHeader = document.getElementById("schedule-time-header");
+    if (timeHeader) {
+        if (currentTimezone === 'UTC' || currentTimezone.startsWith('UTC')) {
+            timeHeader.innerText = "Time (UT)";
+        } else {
+            timeHeader.innerText = "Time (Local)";
+        }
+    }
+    
     renderTargetsTable();
     if (lastScheduleResult) {
         updateScheduleUI(lastScheduleResult);
@@ -1690,6 +1708,16 @@ function updateScheduleUI(result) {
 
     lastScheduleResult = result;
     const { blocks, conflicts, unobservable, empty_blocks, moon_info, moon_plot, airmass_plots, solar_times } = result;
+    
+    // Update the time column header text depending on selected display timezone
+    const timeHeader = document.getElementById("schedule-time-header");
+    if (timeHeader) {
+        if (currentTimezone === 'UTC' || currentTimezone.startsWith('UTC')) {
+            timeHeader.innerText = "Time (UT)";
+        } else {
+            timeHeader.innerText = "Time (Local)";
+        }
+    }
     
     document.getElementById("moon-phase-val").innerText = `${(moon_info.phase * 100).toFixed(0)}% illuminated`;
     document.getElementById("moon-ra-val").innerText = moon_info.ra.toFixed(1);
