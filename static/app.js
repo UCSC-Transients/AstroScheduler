@@ -966,35 +966,63 @@ function parseTimeInputToISO(timeStr, dateStr, tz) {
     if (!parsed) return null;
     const { hh, mm } = parsed;
     
+    const observatory = { lat: 37.3414, lon: -121.6429, elevation: 1283 };
     const dateParts = dateStr.split('-');
     const year = parseInt(dateParts[0], 10);
     const month = parseInt(dateParts[1], 10) - 1;
     const day = parseInt(dateParts[2], 10);
+    const localNoon = new Date(year, month, day, 12, 0, 0);
+    const offsetHours = -observatory.lon / 15.0;
+    const utcNoon = new Date(localNoon.getTime() + offsetHours * 60 * 60 * 1000);
     
-    let date;
-    if (tz === 'UTC') {
-        date = new Date(Date.UTC(year, month, day, hh, mm));
-    } else if (tz === 'browser') {
-        date = new Date(year, month, day, hh, mm);
-    } else if (tz === 'obs') {
-        const temp = new Date(Date.UTC(year, month, day, hh, mm));
-        try {
-            const formatter = new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", timeZoneName: "longOffset" });
-            const formatted = formatter.format(temp);
-            const match = formatted.match(/GMT([-+]\d+)/);
-            const offsetHours = match ? parseInt(match[1], 10) : -7;
-            date = new Date(Date.UTC(year, month, day, hh - offsetHours, mm));
-        } catch (e) {
-            date = new Date(Date.UTC(year, month, day, hh + 7, mm));
+    const st = (lastScheduleResult && lastScheduleResult.solar_times) ? {
+        sunset: new Date(lastScheduleResult.solar_times.sunset),
+        sunrise: new Date(lastScheduleResult.solar_times.sunrise)
+    } : getSolarTimesFallback(utcNoon, observatory.lat, observatory.lon, observatory.elevation);
+    
+    const midpoint = new Date((st.sunset.getTime() + st.sunrise.getTime()) / 2);
+    
+    const refDate = st.sunset;
+    const refYear = refDate.getUTCFullYear();
+    const refMonth = refDate.getUTCMonth();
+    const refDay = refDate.getUTCDate();
+    
+    let bestDate = null;
+    let minDiff = Infinity;
+    
+    for (let dOffset = -2; dOffset <= 2; dOffset++) {
+        let date;
+        const candidateDay = refDay + dOffset;
+        if (tz === 'UTC') {
+            date = new Date(Date.UTC(refYear, refMonth, candidateDay, hh, mm));
+        } else if (tz === 'browser') {
+            date = new Date(refYear, refMonth, candidateDay, hh, mm);
+        } else if (tz === 'obs') {
+            const temp = new Date(Date.UTC(refYear, refMonth, candidateDay, hh, mm));
+            let offset = -7;
+            try {
+                const formatter = new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", timeZoneName: "longOffset" });
+                const formatted = formatter.format(temp);
+                const match = formatted.match(/GMT([-+]\d+)/);
+                offset = match ? parseInt(match[1], 10) : -7;
+            } catch (e) {}
+            date = new Date(Date.UTC(refYear, refMonth, candidateDay, hh - offset, mm));
+        } else if (tz && tz.startsWith('UTC')) {
+            const offsetStr = tz.replace('UTC', '');
+            const offset = parseFloat(offsetStr) || 0;
+            date = new Date(Date.UTC(refYear, refMonth, candidateDay, hh - offset, mm));
+        } else {
+            date = new Date(Date.UTC(refYear, refMonth, candidateDay, hh, mm));
         }
-    } else if (tz && tz.startsWith('UTC')) {
-        const offsetStr = tz.replace('UTC', '');
-        const offset = parseFloat(offsetStr) || 0;
-        date = new Date(Date.UTC(year, month, day, hh - offset, mm));
-    } else {
-        date = new Date(Date.UTC(year, month, day, hh, mm));
+        
+        const diff = Math.abs(date.getTime() - midpoint.getTime());
+        if (diff < minDiff) {
+            minDiff = diff;
+            bestDate = date;
+        }
     }
-    return date.toISOString();
+    
+    return bestDate ? bestDate.toISOString() : null;
 }
 
 function formatLST(lstVal) {
@@ -2219,6 +2247,9 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
         airmassChart.destroy();
     }
     
+    originalXMin = null;
+    originalXMax = null;
+    
     const datasets = [];
     const colorPalette = [
         '#ef4444', '#f59e0b', '#10b981', '#06b6d4', 
@@ -2476,6 +2507,8 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
             scales: {
                 x: {
                     type: 'linear',
+                    min: new Date(solar_times.sunset).getTime(),
+                    max: new Date(solar_times.sunrise).getTime(),
                     grid: { color: 'rgba(255, 255, 255, 0.05)' },
                     ticks: {
                         callback: function(value, index, ticks) {
@@ -2494,6 +2527,8 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
                 x2: {
                     type: 'linear',
                     position: 'top',
+                    min: new Date(solar_times.sunset).getTime(),
+                    max: new Date(solar_times.sunrise).getTime(),
                     grid: { drawOnChartArea: false },
                     ticks: {
                         callback: function(value, index, ticks) {
@@ -2665,6 +2700,17 @@ function resetChartZoom() {
             airmassChart.options.scales.x2.min = originalXMin;
             airmassChart.options.scales.x2.max = originalXMax;
         }
+        
+        // Reset Y-axis scale to default
+        airmassChart.options.scales.y.min = 1.0;
+        let maxAirmass = 1.7;
+        currentBlocksList.forEach(b => {
+            if (b.airmass_median && b.airmass_median > maxAirmass) maxAirmass = b.airmass_median;
+            if (b.airmass_start && b.airmass_start > maxAirmass) maxAirmass = b.airmass_start;
+            if (b.airmass_end && b.airmass_end > maxAirmass) maxAirmass = b.airmass_end;
+        });
+        airmassChart.options.scales.y.max = Math.max(1.7, maxAirmass + 0.1);
+        
         airmassChart.update();
         
         originalXMin = null;
