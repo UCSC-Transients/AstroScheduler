@@ -392,6 +392,10 @@ input:focus, select:focus {
     background: rgba(15, 23, 42, 0.6);
 }
 
+.data-table tr {
+    border-left: 3px solid transparent;
+}
+
 .data-table tr:hover {
     background: rgba(255, 255, 255, 0.02);
 }

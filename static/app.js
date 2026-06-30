@@ -120,6 +120,22 @@ document.addEventListener("DOMContentLoaded", async () => {
         const dd = String(today.getDate()).padStart(2, '0');
         document.getElementById("obs-date").value = `${yyyy}-${mm}-${dd}`;
     }
+    
+    // Restore timezone from localStorage if present
+    const storedTZ = localStorage.getItem("currentTimezone");
+    if (storedTZ) {
+        currentTimezone = storedTZ;
+        const tzSelect = document.getElementById("tz-select");
+        if (tzSelect) tzSelect.value = storedTZ;
+    }
+    const timeHeader = document.getElementById("schedule-time-header");
+    if (timeHeader) {
+        if (currentTimezone === 'UTC' || currentTimezone.startsWith('UTC')) {
+            timeHeader.innerText = "Time (UT)";
+        } else {
+            timeHeader.innerText = "Time (Local)";
+        }
+    }
     lastObsDate = document.getElementById("obs-date").value;
 
     // Issue #28: Trigger reschedule when date changes, and adjust locked times to match the new night
@@ -394,6 +410,7 @@ function saveAndRefresh() {
     localStorage.setItem("targetPool", JSON.stringify(targetPool));
     localStorage.setItem("autoStandardsMode", autoStandardsMode);
     localStorage.setItem("selectedStandards", JSON.stringify(Array.from(selectedStandards)));
+    localStorage.setItem("currentTimezone", currentTimezone);
     
     const standards_overrides = {};
     standardStars.forEach(s => {
@@ -585,7 +602,9 @@ function renderTargetsTable() {
         const circleTitle = isScheduled ? 'Scheduled' : (unobservable.includes(t.name) ? 'Unobservable' : 'Not Scheduled');
         const statusCircle = `<span title="${circleTitle}" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${circleColor};"></span>`;
 
-        const scheduledStartStr = scheduledBlock ? formatTimeForTimezone(scheduledBlock.start_time, currentTimezone) : (t.manual_start_time || '');
+        const scheduledStartStr = scheduledBlock 
+            ? formatTimeForTimezone(scheduledBlock.start_time, currentTimezone) 
+            : (t.manual_start_time ? formatTimeForTimezone(t.manual_start_time, currentTimezone) : '');
         const scheduledDuration = scheduledBlock ? scheduledBlock.duration_minutes : (t.manual_duration !== null && t.manual_duration !== undefined ? t.manual_duration : '');
 
         const rowClass = unobservable.includes(t.name) ? "status-row-unobservable" : "";
@@ -792,8 +811,8 @@ function toggleTargetLock(name) {
         const block = currentBlocksList.find(b => b.target_name === name);
         if (block) {
             lockedTargets.set(name, 'start');
-            target.manual_start_time = formatTimeForTimezone(block.start_time, 'UTC');
-            target.manual_end_time = formatTimeForTimezone(block.end_time, 'UTC');
+            target.manual_start_time = block.start_time;
+            target.manual_end_time = block.end_time;
             target.lock_type = 'start';
         }
     }
@@ -966,35 +985,63 @@ function parseTimeInputToISO(timeStr, dateStr, tz) {
     if (!parsed) return null;
     const { hh, mm } = parsed;
     
+    const observatory = { lat: 37.3414, lon: -121.6429, elevation: 1283 };
     const dateParts = dateStr.split('-');
     const year = parseInt(dateParts[0], 10);
     const month = parseInt(dateParts[1], 10) - 1;
     const day = parseInt(dateParts[2], 10);
+    const localNoon = new Date(year, month, day, 12, 0, 0);
+    const offsetHours = -observatory.lon / 15.0;
+    const utcNoon = new Date(localNoon.getTime() + offsetHours * 60 * 60 * 1000);
     
-    let date;
-    if (tz === 'UTC') {
-        date = new Date(Date.UTC(year, month, day, hh, mm));
-    } else if (tz === 'browser') {
-        date = new Date(year, month, day, hh, mm);
-    } else if (tz === 'obs') {
-        const temp = new Date(Date.UTC(year, month, day, hh, mm));
-        try {
-            const formatter = new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", timeZoneName: "longOffset" });
-            const formatted = formatter.format(temp);
-            const match = formatted.match(/GMT([-+]\d+)/);
-            const offsetHours = match ? parseInt(match[1], 10) : -7;
-            date = new Date(Date.UTC(year, month, day, hh - offsetHours, mm));
-        } catch (e) {
-            date = new Date(Date.UTC(year, month, day, hh + 7, mm));
+    const st = (lastScheduleResult && lastScheduleResult.solar_times) ? {
+        sunset: new Date(lastScheduleResult.solar_times.sunset),
+        sunrise: new Date(lastScheduleResult.solar_times.sunrise)
+    } : getSolarTimesFallback(utcNoon, observatory.lat, observatory.lon, observatory.elevation);
+    
+    const midpoint = new Date((st.sunset.getTime() + st.sunrise.getTime()) / 2);
+    
+    const refDate = st.sunset;
+    const refYear = refDate.getUTCFullYear();
+    const refMonth = refDate.getUTCMonth();
+    const refDay = refDate.getUTCDate();
+    
+    let bestDate = null;
+    let minDiff = Infinity;
+    
+    for (let dOffset = -2; dOffset <= 2; dOffset++) {
+        let date;
+        const candidateDay = refDay + dOffset;
+        if (tz === 'UTC') {
+            date = new Date(Date.UTC(refYear, refMonth, candidateDay, hh, mm));
+        } else if (tz === 'browser') {
+            date = new Date(refYear, refMonth, candidateDay, hh, mm);
+        } else if (tz === 'obs') {
+            const temp = new Date(Date.UTC(refYear, refMonth, candidateDay, hh, mm));
+            let offset = -7;
+            try {
+                const formatter = new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", timeZoneName: "longOffset" });
+                const formatted = formatter.format(temp);
+                const match = formatted.match(/GMT([-+]\d+)/);
+                offset = match ? parseInt(match[1], 10) : -7;
+            } catch (e) {}
+            date = new Date(Date.UTC(refYear, refMonth, candidateDay, hh - offset, mm));
+        } else if (tz && tz.startsWith('UTC')) {
+            const offsetStr = tz.replace('UTC', '');
+            const offset = parseFloat(offsetStr) || 0;
+            date = new Date(Date.UTC(refYear, refMonth, candidateDay, hh - offset, mm));
+        } else {
+            date = new Date(Date.UTC(refYear, refMonth, candidateDay, hh, mm));
         }
-    } else if (tz && tz.startsWith('UTC')) {
-        const offsetStr = tz.replace('UTC', '');
-        const offset = parseFloat(offsetStr) || 0;
-        date = new Date(Date.UTC(year, month, day, hh - offset, mm));
-    } else {
-        date = new Date(Date.UTC(year, month, day, hh, mm));
+        
+        const diff = Math.abs(date.getTime() - midpoint.getTime());
+        if (diff < minDiff) {
+            minDiff = diff;
+            bestDate = date;
+        }
     }
-    return date.toISOString();
+    
+    return bestDate ? bestDate.toISOString() : null;
 }
 
 function formatLST(lstVal) {
@@ -1006,7 +1053,21 @@ function formatLST(lstVal) {
 
 function changeTimezone(val) {
     currentTimezone = val;
-    saveAndRefresh();
+    localStorage.setItem("currentTimezone", currentTimezone);
+    
+    const timeHeader = document.getElementById("schedule-time-header");
+    if (timeHeader) {
+        if (currentTimezone === 'UTC' || currentTimezone.startsWith('UTC')) {
+            timeHeader.innerText = "Time (UT)";
+        } else {
+            timeHeader.innerText = "Time (Local)";
+        }
+    }
+    
+    renderTargetsTable();
+    if (lastScheduleResult) {
+        updateScheduleUI(lastScheduleResult);
+    }
 }
 
 function updateNightOverridePlaceholders() {
@@ -1648,6 +1709,16 @@ function updateScheduleUI(result) {
     lastScheduleResult = result;
     const { blocks, conflicts, unobservable, empty_blocks, moon_info, moon_plot, airmass_plots, solar_times } = result;
     
+    // Update the time column header text depending on selected display timezone
+    const timeHeader = document.getElementById("schedule-time-header");
+    if (timeHeader) {
+        if (currentTimezone === 'UTC' || currentTimezone.startsWith('UTC')) {
+            timeHeader.innerText = "Time (UT)";
+        } else {
+            timeHeader.innerText = "Time (Local)";
+        }
+    }
+    
     document.getElementById("moon-phase-val").innerText = `${(moon_info.phase * 100).toFixed(0)}% illuminated`;
     document.getElementById("moon-ra-val").innerText = moon_info.ra.toFixed(1);
     document.getElementById("moon-dec-val").innerText = moon_info.dec.toFixed(1);
@@ -1885,9 +1956,14 @@ function renderTimeline(blocks, solar_times, moon_plot) {
         return;
     }
     
-    const nightStart = new Date(solar_times.sunset);
-    const nightEnd = new Date(solar_times.sunrise);
-    const nightDurationMs = nightEnd.getTime() - nightStart.getTime();
+    const sunsetMs = new Date(solar_times.sunset).getTime();
+    const sunriseMs = new Date(solar_times.sunrise).getTime();
+    const chartMin = Math.floor(sunsetMs / 3600000) * 3600000;
+    const chartMax = Math.ceil(sunriseMs / 3600000) * 3600000;
+
+    const nightStart = new Date(chartMin);
+    const nightEnd = new Date(chartMax);
+    const nightDurationMs = chartMax - chartMin;
     
     // 1. Build LST axis (top)
     const lstAxisEl = document.createElement("div");
@@ -1895,12 +1971,12 @@ function renderTimeline(blocks, solar_times, moon_plot) {
     lstAxisEl.style.position = "relative";
     lstAxisEl.style.height = "18px";
     lstAxisEl.style.width = "100%";
-    lstAxisEl.style.marginBottom = "4px";
+    lstAxisEl.style.marginBottom = "20px";
     
-    for (let i = 0; i <= 5; i++) {
-        const pct = (i / 5) * 100;
-        const tickTime = new Date(nightStart.getTime() + (i / 5) * nightDurationMs);
-        const obsLon = -121.6429; // Lick Shane
+    const obsLon = -121.6429;
+    for (let t = chartMin; t <= chartMax; t += 3600000) {
+        const pct = ((t - chartMin) / nightDurationMs) * 100;
+        const tickTime = new Date(t);
         const lstVal = getLst(tickTime, obsLon);
         
         const tickEl = document.createElement("div");
@@ -1963,9 +2039,9 @@ function renderTimeline(blocks, solar_times, moon_plot) {
     const eve18Ms = new Date(solar_times.twilight_evening_18).getTime();
     const morn18Ms = new Date(solar_times.twilight_morning_18).getTime();
     
-    if (eve18Ms > nightStart.getTime()) {
-        const leftPct = 0;
-        const widthPct = ((eve18Ms - nightStart.getTime()) / nightDurationMs) * 100;
+    if (eve18Ms > sunsetMs) {
+        const leftPct = ((sunsetMs - nightStart.getTime()) / nightDurationMs) * 100;
+        const widthPct = ((eve18Ms - sunsetMs) / nightDurationMs) * 100;
         const eveTwilightEl = document.createElement("div");
         eveTwilightEl.className = "timeline-twilight-region evening";
         eveTwilightEl.style.left = `${leftPct}%`;
@@ -1973,9 +2049,9 @@ function renderTimeline(blocks, solar_times, moon_plot) {
         blocksWrapper.appendChild(eveTwilightEl);
     }
     
-    if (morn18Ms < nightEnd.getTime()) {
+    if (morn18Ms < sunriseMs) {
         const leftPct = ((morn18Ms - nightStart.getTime()) / nightDurationMs) * 100;
-        const widthPct = ((nightEnd.getTime() - morn18Ms) / nightDurationMs) * 100;
+        const widthPct = ((sunriseMs - morn18Ms) / nightDurationMs) * 100;
         const mornTwilightEl = document.createElement("div");
         mornTwilightEl.className = "timeline-twilight-region morning";
         mornTwilightEl.style.left = `${leftPct}%`;
@@ -2086,6 +2162,20 @@ function renderTimeline(blocks, solar_times, moon_plot) {
         blocksWrapper.appendChild(blockEl);
     });
     
+    // Draw vertical hourly grid lines
+    for (let t = chartMin; t <= chartMax; t += 3600000) {
+        const pct = ((t - chartMin) / nightDurationMs) * 100;
+        const lineEl = document.createElement("div");
+        lineEl.style.position = "absolute";
+        lineEl.style.left = `${pct}%`;
+        lineEl.style.top = "0";
+        lineEl.style.bottom = "0";
+        lineEl.style.borderLeft = "1px dashed rgba(255, 255, 255, 0.05)";
+        lineEl.style.zIndex = "1"; // Behind blocks but in wrapper
+        lineEl.style.pointerEvents = "none";
+        blocksWrapper.appendChild(lineEl);
+    }
+    
     // 4. Render Axis Ticks (bottom) showing UT and Local
     const axisEl = document.createElement("div");
     axisEl.className = "timeline-axis";
@@ -2094,11 +2184,20 @@ function renderTimeline(blocks, solar_times, moon_plot) {
     axisEl.style.width = "100%";
     axisEl.style.marginTop = "4px";
     
-    for (let i = 0; i <= 5; i++) {
-        const pct = (i / 5) * 100;
-        const tickTime = new Date(nightStart.getTime() + (i / 5) * nightDurationMs);
-        const utStr = formatTimeForTimezone(tickTime, 'UTC');
-        const locStr = formatTimeForTimezone(tickTime, 'obs');
+    for (let t = chartMin; t <= chartMax; t += 3600000) {
+        const pct = ((t - chartMin) / nightDurationMs) * 100;
+        const tickTime = new Date(t);
+        
+        const primaryStr = formatTimeForTimezone(tickTime, currentTimezone);
+        let secondaryStr = "";
+        
+        if (currentTimezone === 'UTC' || currentTimezone.startsWith('UTC')) {
+            const locStr = formatTimeForTimezone(tickTime, 'obs');
+            secondaryStr = `<div style="font-size:0.6rem; color:var(--text-muted);">${locStr} Loc</div>`;
+        } else {
+            const utStr = formatTimeForTimezone(tickTime, 'UTC');
+            secondaryStr = `<div style="font-size:0.6rem; color:var(--text-muted);">${utStr} UT</div>`;
+        }
         
         const tickEl = document.createElement("div");
         tickEl.className = "timeline-tick";
@@ -2107,7 +2206,7 @@ function renderTimeline(blocks, solar_times, moon_plot) {
         tickEl.style.transform = "translateX(-50%)";
         tickEl.style.fontSize = "0.7rem";
         tickEl.style.textAlign = "center";
-        tickEl.innerHTML = `<div>${utStr} UT</div><div style="font-size:0.6rem; color:var(--text-muted);">${locStr} Loc</div>`;
+        tickEl.innerHTML = `<div>${primaryStr}</div>${secondaryStr}`;
         
         axisEl.appendChild(tickEl);
     }
@@ -2219,6 +2318,9 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
         airmassChart.destroy();
     }
     
+    originalXMin = null;
+    originalXMax = null;
+    
     const datasets = [];
     const colorPalette = [
         '#ef4444', '#f59e0b', '#10b981', '#06b6d4', 
@@ -2258,20 +2360,35 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
         const fullNightPoints = plotData.map(p => {
             return {
                 x: new Date(p.time).getTime(),
-                y: (p.airmass <= 0) ? null : p.airmass
+                y: (p.airmass <= 0) ? null : p.airmass,
+                observable: !!p.observable
             };
         });
         
-        // Dotted lines with lower opacity (0.25)
+        // Dotted/dashed lines with lower opacity (0.25)
         datasets.push({
             label: `${tName} (Night Profile)`,
             data: fullNightPoints,
             borderColor: getRgba(color, 0.25),
             borderWidth: 1.5,
-            borderDash: [4, 4],
             fill: false,
             tension: 0.1,
-            pointRadius: 0
+            pointRadius: 0,
+            segment: {
+                borderDash: ctx => {
+                    const chart = ctx.chart;
+                    const datasetIndex = ctx.datasetIndex;
+                    const idx = ctx.p0DataIndex;
+                    if (chart && chart.data && chart.data.datasets && chart.data.datasets[datasetIndex]) {
+                        const data = chart.data.datasets[datasetIndex].data;
+                        const pt = data ? data[idx] : null;
+                        if (pt && pt.observable) {
+                            return [6, 4]; // Dashed line when observable
+                        }
+                    }
+                    return [2, 2]; // Dotted line when unobservable
+                }
+            }
         });
         
         if (block) {
@@ -2288,7 +2405,7 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
             });
             
             // Issue #21: Observation window lines are twice as thick (width 8)
-            datasets.push({
+             datasets.push({
                 label: tName,
                 data: scheduledPoints,
                 borderColor: color,
@@ -2296,6 +2413,7 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
                 fill: false,
                 tension: 0.1,
                 pointRadius: 0,
+                pointStyle: 'line',
                 pointHoverRadius: 4
             });
         }
@@ -2404,6 +2522,11 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
         }
     };
     
+    const sunsetMs = new Date(solar_times.sunset).getTime();
+    const sunriseMs = new Date(solar_times.sunrise).getTime();
+    const chartMin = Math.floor(sunsetMs / 3600000) * 3600000;
+    const chartMax = Math.ceil(sunriseMs / 3600000) * 3600000;
+
     airmassChart = new Chart(ctx, {
         type: 'line',
         data: { datasets },
@@ -2451,6 +2574,10 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
                     position: 'aboveLine',
                     mode: 'nearest',
                     intersect: false,
+                    usePointStyle: true,
+                    filter: function(tooltipItem) {
+                        return !tooltipItem.dataset.label.includes('(Night Profile)');
+                    },
                     callbacks: {
                         title: function(tooltipItems) {
                             if (tooltipItems.length > 0) {
@@ -2476,6 +2603,8 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
             scales: {
                 x: {
                     type: 'linear',
+                    min: chartMin,
+                    max: chartMax,
                     grid: { color: 'rgba(255, 255, 255, 0.05)' },
                     ticks: {
                         callback: function(value, index, ticks) {
@@ -2494,6 +2623,8 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
                 x2: {
                     type: 'linear',
                     position: 'top',
+                    min: chartMin,
+                    max: chartMax,
                     grid: { drawOnChartArea: false },
                     ticks: {
                         callback: function(value, index, ticks) {
@@ -2665,6 +2796,17 @@ function resetChartZoom() {
             airmassChart.options.scales.x2.min = originalXMin;
             airmassChart.options.scales.x2.max = originalXMax;
         }
+        
+        // Reset Y-axis scale to default
+        airmassChart.options.scales.y.min = 1.0;
+        let maxAirmass = 1.7;
+        currentBlocksList.forEach(b => {
+            if (b.airmass_median && b.airmass_median > maxAirmass) maxAirmass = b.airmass_median;
+            if (b.airmass_start && b.airmass_start > maxAirmass) maxAirmass = b.airmass_start;
+            if (b.airmass_end && b.airmass_end > maxAirmass) maxAirmass = b.airmass_end;
+        });
+        airmassChart.options.scales.y.max = Math.max(1.7, maxAirmass + 0.1);
+        
         airmassChart.update();
         
         originalXMin = null;
@@ -3920,6 +4062,51 @@ function drawPolarSkyMap(blocks, targetPool, solar_times) {
     const cy = size / 2;
     const rMax = (size / 2) - 25; // outer circle radius (horizon)
     
+    // Draw restricted pointing regions as grey shading
+    const isRealTime = document.getElementById("mode-realtime-btn")?.classList.contains("active");
+    let minAlt = 20;
+    let maxAlt = 90;
+    let minAz = 0;
+    let maxAz = 360;
+    
+    if (isRealTime) {
+        minAlt = parseFloat(document.getElementById("rt-alt-limit")?.value) || 20;
+        maxAlt = parseFloat(document.getElementById("rt-alt-max")?.value) || 90;
+        minAz = parseFloat(document.getElementById("rt-az-min")?.value) || 0;
+        maxAz = parseFloat(document.getElementById("rt-az-max")?.value) || 360;
+    }
+    
+    // 1. Altitude < minAlt grey ring
+    if (minAlt > 0) {
+        const rInner = rMax * ((90 - minAlt) / 90);
+        ctx.fillStyle = "rgba(255, 255, 255, 0.08)";
+        ctx.beginPath();
+        ctx.arc(cx, cy, rMax, 0, 2 * Math.PI);
+        ctx.arc(cx, cy, rInner, 0, 2 * Math.PI, true);
+        ctx.fill();
+    }
+    
+    // 2. Altitude > maxAlt grey circle
+    if (maxAlt < 90) {
+        const rOuter = rMax * ((90 - maxAlt) / 90);
+        ctx.fillStyle = "rgba(255, 255, 255, 0.08)";
+        ctx.beginPath();
+        ctx.arc(cx, cy, rOuter, 0, 2 * Math.PI);
+        ctx.fill();
+    }
+    
+    // 3. Azimuth outside [minAz, maxAz] grey sector
+    if (minAz > 0 || maxAz < 360) {
+        ctx.fillStyle = "rgba(255, 255, 255, 0.08)";
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        const startAngle = (maxAz - 90) * Math.PI / 180;
+        const endAngle = (minAz - 90) * Math.PI / 180;
+        ctx.arc(cx, cy, rMax, startAngle, endAngle);
+        ctx.closePath();
+        ctx.fill();
+    }
+
     // Draw outer horizon circle
     ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
     ctx.lineWidth = 2;

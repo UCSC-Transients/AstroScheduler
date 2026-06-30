@@ -1,33 +1,19 @@
-# Pull Request: Standard Stars Observability and Target Classification Refinements
+# Pull Request: Timeline, Schedule Table, and Chart Alignment Fixes
 
-This Pull Request addresses the remaining issues with standard star manual scheduling boundaries, physical unobservability classification, tag naming consistency, and target list vertical scrolling.
+This Pull Request addresses regressions with timeline table headers alignment, manual start time editing, table layout hover bouncing, and chart zoom/tick/pointing limits synchronization.
 
-## Resolved Issues
+## Resolved Regressions and Features
 
-- [x] #14 Solver: Schedule selected standard stars independently if complete pairs are missing
-- [x] #49 Workflow: Schedulable standard stars greyed out
-- [x] Rename "Unschedulable" status tag to "Unobservable" for consistency
-- [x] Change standard star "Standby" status to "Not Scheduled" for consistency
-- [x] Fix logic bug in `app.py` where targets marked as `"Unobservable"` in the payload were skipped by the backend solver in subsequent runs, preventing recalculation or scheduling when parameters (e.g. date) changed
-- [x] Align `isStandardStarObservable` in the frontend to check if a continuous 5-minute block fits inside the `sunset + 30m` twilight constraint. This prevents checking standard stars that set before they can be fully observed
-- [x] Restore vertical scrollbar and sticky headers to the target list table, showing 10 items (800px max-height) without scrolling
-
-## Technical Details
-
-### 1. Re-Evaluating Unobservable Targets (Logic Bug Fix)
-Refactored the `/api/schedule` endpoint in [app.py](file:///Users/rfoley/scheduler/app.py) to not skip targets with calculated status `"Unobservable"`. Previously, once a target was flagged unobservable, it would be skipped by the backend on all subsequent runs, keeping it permanently unobservable even if the date or constraints changed. This resolves the issues with `2026nqo`, `2026lnx`, etc. being stuck as unobservable.
-
-### 2. Standard Star Observability & Manual Limits (#49)
-- Updated `isStandardStarObservable` in [static/app.js](file:///Users/rfoley/scheduler/static/app.js) to:
-  1. Restrict checks to the twilight bounds (`sunset + 30m` to `sunrise - 30m`) matching the scheduler constraints.
-  2. Verify that the star is visible for a continuous 5-minute block. This correctly handles `Feige 34` on `2026-06-27` (which is visible at `sunset + 30m` but sets at `sunset + 31m` - meaning a 5-minute block cannot fit, making it unobservable under original twilight rules).
-
-### 3. Status Tag & Styling Polish
-- Changed "Standby" status text for standard stars to "Not Scheduled" in [static/app.js](file:///Users/rfoley/scheduler/static/app.js).
-- Changed "Unschedulable" labels to "Unobservable" in [static/app.js](file:///Users/rfoley/scheduler/static/app.js) for consistency.
-- Increased `.table-wrapper` `max-height` to `800px` in [static/style.css](file:///Users/rfoley/scheduler/static/style.css) so the target table displays 10 items without scrolling.
-
-## Verification
-- Added a unit test `test_feige34_observability_on_2026_06_27` to verify standard star scheduling near sunset.
-- Added a unit test `test_high_airmass_conflict_not_unobservable` to verify airmass constraint partitioning.
-- Verified that all 25 tests pass successfully.
+- [x] **Timeline Start Time Editing & Display timezone desync**: Save/load `currentTimezone` in `localStorage`, and update UI on change timezone without calling backend. Renamed labels in index.html to Display Timezone and Night Limits Timezone. Format `t.manual_start_time` dynamically using display timezone when fallback is used.
+- [x] **Store locked start/end times as ISO strings**: Prevent desync by storing raw UTC ISO strings directly in target object manual properties rather than formatting as HH:MM when locking.
+- [x] **Timezone change schedule refit**: Avoid schedule refit on display timezone changes; just re-render UI.
+- [x] **Alt/Az Restricted Pointing Region**: Draw grey ring/sector on polar map based on altitude and azimuth limits.
+- [x] **Dashed/Dotted Airmass Tracks**: Calculate and return `observable` flag from backend and style airmass profiles using Chart.js segment styling (dashed when observable, dotted when not).
+- [x] **Chart Crash Fix**: Safely retrieve dataset's data array via `ctx.chart.data.datasets[ctx.datasetIndex].data` in the segment border-dash callback to prevent Chart.js crashes.
+- [x] **Airmass Tooltip Cleanup**: Filter out night profile series from tooltip and use point style horizontal line markers.
+- [x] **Timeline Plot Tick & LST Alignment**: Pad timeline start/end to whole hours, draw vertical hourly grid lines, and render bottom UT/Local ticks and top LST ticks at whole hours. Ticks now show the active Display Timezone prominently as the primary label.
+- [x] **Dynamic column header text**: Dynamically updates schedule table time column header text to "Time (UT)" or "Time (Local)" depending on selected display timezone.
+- [x] **LST Vertical Offset**: Increased margin-bottom of `lstAxisEl` to `20px` to prevent vertical overlap with twilight/sunset/sunrise marker labels.
+- [x] **Table Layout Bouncing**: Added `border-left: 3px solid transparent;` to `.data-table tr` in style.css.
+- [x] **Timeline Table Alignment (Off-by-one)**: Added empty `<th>` to `#schedule-table` `thead` to align with lock column.
+- [x] **Airmass Chart Zoom & Reset**: Reset `originalXMin` / `originalXMax` on chart recreation, and reset Y-axis scale to dynamic defaults in `resetChartZoom`.
