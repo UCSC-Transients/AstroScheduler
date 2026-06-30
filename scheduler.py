@@ -1267,9 +1267,11 @@ class Scheduler:
             curve = []
             for c_idx in range(self.num_chunks):
                 dt = self.chunk_times[c_idx]
+                is_obs = self.is_chunk_valid(t, c_idx)
                 curve.append({
                     'time': dt.isoformat(),
-                    'airmass': round(self.get_airmass_for_target(t, dt), 3)
+                    'airmass': round(self.get_airmass_for_target(t, dt), 3),
+                    'observable': is_obs
                 })
             airmass_plots[t.name] = curve
             
@@ -1278,9 +1280,11 @@ class Scheduler:
             curve = []
             for c_idx in range(self.num_chunks):
                 dt = self.chunk_times[c_idx]
+                is_obs = self.is_chunk_valid(block.target, c_idx)
                 curve.append({
                     'time': dt.isoformat(),
-                    'airmass': round(self.get_airmass_for_target(block.target, dt), 3)
+                    'airmass': round(self.get_airmass_for_target(block.target, dt), 3),
+                    'observable': is_obs
                 })
             airmass_plots[block.target.name] = curve
             

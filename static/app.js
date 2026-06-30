@@ -120,6 +120,14 @@ document.addEventListener("DOMContentLoaded", async () => {
         const dd = String(today.getDate()).padStart(2, '0');
         document.getElementById("obs-date").value = `${yyyy}-${mm}-${dd}`;
     }
+    
+    // Restore timezone from localStorage if present
+    const storedTZ = localStorage.getItem("currentTimezone");
+    if (storedTZ) {
+        currentTimezone = storedTZ;
+        const tzSelect = document.getElementById("tz-select");
+        if (tzSelect) tzSelect.value = storedTZ;
+    }
     lastObsDate = document.getElementById("obs-date").value;
 
     // Issue #28: Trigger reschedule when date changes, and adjust locked times to match the new night
@@ -394,6 +402,7 @@ function saveAndRefresh() {
     localStorage.setItem("targetPool", JSON.stringify(targetPool));
     localStorage.setItem("autoStandardsMode", autoStandardsMode);
     localStorage.setItem("selectedStandards", JSON.stringify(Array.from(selectedStandards)));
+    localStorage.setItem("currentTimezone", currentTimezone);
     
     const standards_overrides = {};
     standardStars.forEach(s => {
@@ -1034,7 +1043,11 @@ function formatLST(lstVal) {
 
 function changeTimezone(val) {
     currentTimezone = val;
-    saveAndRefresh();
+    localStorage.setItem("currentTimezone", currentTimezone);
+    renderTargetsTable();
+    if (lastScheduleResult) {
+        updateScheduleUI(lastScheduleResult);
+    }
 }
 
 function updateNightOverridePlaceholders() {
@@ -1913,9 +1926,14 @@ function renderTimeline(blocks, solar_times, moon_plot) {
         return;
     }
     
-    const nightStart = new Date(solar_times.sunset);
-    const nightEnd = new Date(solar_times.sunrise);
-    const nightDurationMs = nightEnd.getTime() - nightStart.getTime();
+    const sunsetMs = new Date(solar_times.sunset).getTime();
+    const sunriseMs = new Date(solar_times.sunrise).getTime();
+    const chartMin = Math.floor(sunsetMs / 3600000) * 3600000;
+    const chartMax = Math.ceil(sunriseMs / 3600000) * 3600000;
+
+    const nightStart = new Date(chartMin);
+    const nightEnd = new Date(chartMax);
+    const nightDurationMs = chartMax - chartMin;
     
     // 1. Build LST axis (top)
     const lstAxisEl = document.createElement("div");
@@ -1925,10 +1943,10 @@ function renderTimeline(blocks, solar_times, moon_plot) {
     lstAxisEl.style.width = "100%";
     lstAxisEl.style.marginBottom = "4px";
     
-    for (let i = 0; i <= 5; i++) {
-        const pct = (i / 5) * 100;
-        const tickTime = new Date(nightStart.getTime() + (i / 5) * nightDurationMs);
-        const obsLon = -121.6429; // Lick Shane
+    const obsLon = -121.6429;
+    for (let t = chartMin; t <= chartMax; t += 3600000) {
+        const pct = ((t - chartMin) / nightDurationMs) * 100;
+        const tickTime = new Date(t);
         const lstVal = getLst(tickTime, obsLon);
         
         const tickEl = document.createElement("div");
@@ -1991,9 +2009,9 @@ function renderTimeline(blocks, solar_times, moon_plot) {
     const eve18Ms = new Date(solar_times.twilight_evening_18).getTime();
     const morn18Ms = new Date(solar_times.twilight_morning_18).getTime();
     
-    if (eve18Ms > nightStart.getTime()) {
-        const leftPct = 0;
-        const widthPct = ((eve18Ms - nightStart.getTime()) / nightDurationMs) * 100;
+    if (eve18Ms > sunsetMs) {
+        const leftPct = ((sunsetMs - nightStart.getTime()) / nightDurationMs) * 100;
+        const widthPct = ((eve18Ms - sunsetMs) / nightDurationMs) * 100;
         const eveTwilightEl = document.createElement("div");
         eveTwilightEl.className = "timeline-twilight-region evening";
         eveTwilightEl.style.left = `${leftPct}%`;
@@ -2001,9 +2019,9 @@ function renderTimeline(blocks, solar_times, moon_plot) {
         blocksWrapper.appendChild(eveTwilightEl);
     }
     
-    if (morn18Ms < nightEnd.getTime()) {
+    if (morn18Ms < sunriseMs) {
         const leftPct = ((morn18Ms - nightStart.getTime()) / nightDurationMs) * 100;
-        const widthPct = ((nightEnd.getTime() - morn18Ms) / nightDurationMs) * 100;
+        const widthPct = ((sunriseMs - morn18Ms) / nightDurationMs) * 100;
         const mornTwilightEl = document.createElement("div");
         mornTwilightEl.className = "timeline-twilight-region morning";
         mornTwilightEl.style.left = `${leftPct}%`;
@@ -2114,6 +2132,20 @@ function renderTimeline(blocks, solar_times, moon_plot) {
         blocksWrapper.appendChild(blockEl);
     });
     
+    // Draw vertical hourly grid lines
+    for (let t = chartMin; t <= chartMax; t += 3600000) {
+        const pct = ((t - chartMin) / nightDurationMs) * 100;
+        const lineEl = document.createElement("div");
+        lineEl.style.position = "absolute";
+        lineEl.style.left = `${pct}%`;
+        lineEl.style.top = "0";
+        lineEl.style.bottom = "0";
+        lineEl.style.borderLeft = "1px dashed rgba(255, 255, 255, 0.05)";
+        lineEl.style.zIndex = "1"; // Behind blocks but in wrapper
+        lineEl.style.pointerEvents = "none";
+        blocksWrapper.appendChild(lineEl);
+    }
+    
     // 4. Render Axis Ticks (bottom) showing UT and Local
     const axisEl = document.createElement("div");
     axisEl.className = "timeline-axis";
@@ -2122,9 +2154,9 @@ function renderTimeline(blocks, solar_times, moon_plot) {
     axisEl.style.width = "100%";
     axisEl.style.marginTop = "4px";
     
-    for (let i = 0; i <= 5; i++) {
-        const pct = (i / 5) * 100;
-        const tickTime = new Date(nightStart.getTime() + (i / 5) * nightDurationMs);
+    for (let t = chartMin; t <= chartMax; t += 3600000) {
+        const pct = ((t - chartMin) / nightDurationMs) * 100;
+        const tickTime = new Date(t);
         const utStr = formatTimeForTimezone(tickTime, 'UTC');
         const locStr = formatTimeForTimezone(tickTime, 'obs');
         
@@ -2289,20 +2321,31 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
         const fullNightPoints = plotData.map(p => {
             return {
                 x: new Date(p.time).getTime(),
-                y: (p.airmass <= 0) ? null : p.airmass
+                y: (p.airmass <= 0) ? null : p.airmass,
+                observable: !!p.observable
             };
         });
         
-        // Dotted lines with lower opacity (0.25)
+        // Dotted/dashed lines with lower opacity (0.25)
         datasets.push({
             label: `${tName} (Night Profile)`,
             data: fullNightPoints,
             borderColor: getRgba(color, 0.25),
             borderWidth: 1.5,
-            borderDash: [4, 4],
             fill: false,
             tension: 0.1,
-            pointRadius: 0
+            pointRadius: 0,
+            segment: {
+                borderDash: ctx => {
+                    const idx = ctx.p0DataIndex;
+                    const pt = ctx.type === 'segment' ? ctx.dataset.data[idx] : null;
+                    if (pt && pt.observable) {
+                        return [6, 4]; // Dashed line when observable
+                    } else {
+                        return [2, 2]; // Dotted line when unobservable
+                    }
+                }
+            }
         });
         
         if (block) {
@@ -2319,7 +2362,7 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
             });
             
             // Issue #21: Observation window lines are twice as thick (width 8)
-            datasets.push({
+             datasets.push({
                 label: tName,
                 data: scheduledPoints,
                 borderColor: color,
@@ -2327,6 +2370,7 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
                 fill: false,
                 tension: 0.1,
                 pointRadius: 0,
+                pointStyle: 'line',
                 pointHoverRadius: 4
             });
         }
@@ -2487,6 +2531,10 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
                     position: 'aboveLine',
                     mode: 'nearest',
                     intersect: false,
+                    usePointStyle: true,
+                    filter: function(tooltipItem) {
+                        return !tooltipItem.dataset.label.includes('(Night Profile)');
+                    },
                     callbacks: {
                         title: function(tooltipItems) {
                             if (tooltipItems.length > 0) {
@@ -3971,6 +4019,51 @@ function drawPolarSkyMap(blocks, targetPool, solar_times) {
     const cy = size / 2;
     const rMax = (size / 2) - 25; // outer circle radius (horizon)
     
+    // Draw restricted pointing regions as grey shading
+    const isRealTime = document.getElementById("mode-realtime-btn")?.classList.contains("active");
+    let minAlt = 20;
+    let maxAlt = 90;
+    let minAz = 0;
+    let maxAz = 360;
+    
+    if (isRealTime) {
+        minAlt = parseFloat(document.getElementById("rt-alt-limit")?.value) || 20;
+        maxAlt = parseFloat(document.getElementById("rt-alt-max")?.value) || 90;
+        minAz = parseFloat(document.getElementById("rt-az-min")?.value) || 0;
+        maxAz = parseFloat(document.getElementById("rt-az-max")?.value) || 360;
+    }
+    
+    // 1. Altitude < minAlt grey ring
+    if (minAlt > 0) {
+        const rInner = rMax * ((90 - minAlt) / 90);
+        ctx.fillStyle = "rgba(255, 255, 255, 0.08)";
+        ctx.beginPath();
+        ctx.arc(cx, cy, rMax, 0, 2 * Math.PI);
+        ctx.arc(cx, cy, rInner, 0, 2 * Math.PI, true);
+        ctx.fill();
+    }
+    
+    // 2. Altitude > maxAlt grey circle
+    if (maxAlt < 90) {
+        const rOuter = rMax * ((90 - maxAlt) / 90);
+        ctx.fillStyle = "rgba(255, 255, 255, 0.08)";
+        ctx.beginPath();
+        ctx.arc(cx, cy, rOuter, 0, 2 * Math.PI);
+        ctx.fill();
+    }
+    
+    // 3. Azimuth outside [minAz, maxAz] grey sector
+    if (minAz > 0 || maxAz < 360) {
+        ctx.fillStyle = "rgba(255, 255, 255, 0.08)";
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        const startAngle = (maxAz - 90) * Math.PI / 180;
+        const endAngle = (minAz - 90) * Math.PI / 180;
+        ctx.arc(cx, cy, rMax, startAngle, endAngle);
+        ctx.closePath();
+        ctx.fill();
+    }
+
     // Draw outer horizon circle
     ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
     ctx.lineWidth = 2;
