@@ -594,7 +594,9 @@ function renderTargetsTable() {
         const circleTitle = isScheduled ? 'Scheduled' : (unobservable.includes(t.name) ? 'Unobservable' : 'Not Scheduled');
         const statusCircle = `<span title="${circleTitle}" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${circleColor};"></span>`;
 
-        const scheduledStartStr = scheduledBlock ? formatTimeForTimezone(scheduledBlock.start_time, currentTimezone) : (t.manual_start_time || '');
+        const scheduledStartStr = scheduledBlock 
+            ? formatTimeForTimezone(scheduledBlock.start_time, currentTimezone) 
+            : (t.manual_start_time ? formatTimeForTimezone(t.manual_start_time, currentTimezone) : '');
         const scheduledDuration = scheduledBlock ? scheduledBlock.duration_minutes : (t.manual_duration !== null && t.manual_duration !== undefined ? t.manual_duration : '');
 
         const rowClass = unobservable.includes(t.name) ? "status-row-unobservable" : "";
@@ -801,8 +803,8 @@ function toggleTargetLock(name) {
         const block = currentBlocksList.find(b => b.target_name === name);
         if (block) {
             lockedTargets.set(name, 'start');
-            target.manual_start_time = formatTimeForTimezone(block.start_time, 'UTC');
-            target.manual_end_time = formatTimeForTimezone(block.end_time, 'UTC');
+            target.manual_start_time = block.start_time;
+            target.manual_end_time = block.end_time;
             target.lock_type = 'start';
         }
     }
@@ -2157,8 +2159,17 @@ function renderTimeline(blocks, solar_times, moon_plot) {
     for (let t = chartMin; t <= chartMax; t += 3600000) {
         const pct = ((t - chartMin) / nightDurationMs) * 100;
         const tickTime = new Date(t);
-        const utStr = formatTimeForTimezone(tickTime, 'UTC');
-        const locStr = formatTimeForTimezone(tickTime, 'obs');
+        
+        const primaryStr = formatTimeForTimezone(tickTime, currentTimezone);
+        let secondaryStr = "";
+        
+        if (currentTimezone === 'UTC' || currentTimezone.startsWith('UTC')) {
+            const locStr = formatTimeForTimezone(tickTime, 'obs');
+            secondaryStr = `<div style="font-size:0.6rem; color:var(--text-muted);">${locStr} Loc</div>`;
+        } else {
+            const utStr = formatTimeForTimezone(tickTime, 'UTC');
+            secondaryStr = `<div style="font-size:0.6rem; color:var(--text-muted);">${utStr} UT</div>`;
+        }
         
         const tickEl = document.createElement("div");
         tickEl.className = "timeline-tick";
@@ -2167,7 +2178,7 @@ function renderTimeline(blocks, solar_times, moon_plot) {
         tickEl.style.transform = "translateX(-50%)";
         tickEl.style.fontSize = "0.7rem";
         tickEl.style.textAlign = "center";
-        tickEl.innerHTML = `<div>${utStr} UT</div><div style="font-size:0.6rem; color:var(--text-muted);">${locStr} Loc</div>`;
+        tickEl.innerHTML = `<div>${primaryStr}</div>${secondaryStr}`;
         
         axisEl.appendChild(tickEl);
     }
