@@ -3102,6 +3102,10 @@ function runLocalJSSolver(payload) {
         }
     }
     
+    // Floor sunset to whole minute — matches Python backend; block.start_time values
+    // are clean HH:MM:00 UTC and resolve exactly to chunks.
+    sunset = new Date(Math.floor(sunset.getTime() / 60000) * 60000);
+    sunrise = new Date(Math.floor(sunrise.getTime() / 60000) * 60000);
     const totalDurationMs = sunrise.getTime() - sunset.getTime();
     // Issue #29: 1-minute chunks (was 5-minute)
     const numChunks = Math.floor(totalDurationMs / (60 * 1000));

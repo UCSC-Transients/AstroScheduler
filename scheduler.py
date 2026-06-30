@@ -539,9 +539,11 @@ class Scheduler:
         self.solar_times = night_params['solar_times']
         self.moon = night_params['moon']
         
-        # Discretize night into 1-minute chunks from sunset to sunrise
-        self.start_night = self.solar_times['sunset']
-        self.end_night = self.solar_times['sunrise']
+        # Discretize night into 1-minute chunks from sunset to sunrise.
+        # Floor start to whole minute so block.start_time values are clean HH:MM:00 UTC.
+        raw_sunset = self.solar_times['sunset']
+        self.start_night = raw_sunset.replace(second=0, microsecond=0)
+        self.end_night = self.solar_times['sunrise'].replace(second=0, microsecond=0)
         total_seconds = (self.end_night - self.start_night).total_seconds()
         self.num_chunks = int(total_seconds // 60)
         
@@ -759,10 +761,9 @@ class Scheduler:
             if diff < min_diff:
                 min_diff = diff
                 best_idx = idx
-        # Use 90s tolerance — chunk_times start at exact sunset (not a whole minute),
-        # so a time like 07:40:00 UTC may be up to 59s from the nearest chunk.
-        # Times outside the night are >90s from any chunk and correctly return None.
-        if min_diff <= 90:
+        # 60s tolerance. chunk_times are now floored to whole minutes so any stored
+        # ISO block.start_time will match a chunk exactly (diff == 0).
+        if min_diff <= 60:
             return best_idx
         return None
 
@@ -833,7 +834,9 @@ class Scheduler:
                     self.start_night = local_start.astimezone(pytz.UTC).replace(tzinfo=None)
                     self.end_night = local_end.astimezone(pytz.UTC).replace(tzinfo=None)
                     
-                # Recompute chunks
+                # Recompute chunks (floor to whole minute for clean block times)
+                self.start_night = self.start_night.replace(second=0, microsecond=0)
+                self.end_night = self.end_night.replace(second=0, microsecond=0)
                 total_seconds = (self.end_night - self.start_night).total_seconds()
                 self.num_chunks = int(total_seconds // 60)
                 self.chunk_times = [
