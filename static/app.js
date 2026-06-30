@@ -1055,6 +1055,7 @@ function changeTimezone(val) {
     currentTimezone = val;
     localStorage.setItem("currentTimezone", currentTimezone);
     
+    // Update the schedule table time column header text
     const timeHeader = document.getElementById("schedule-time-header");
     if (timeHeader) {
         if (currentTimezone === 'UTC' || currentTimezone.startsWith('UTC')) {
@@ -1064,9 +1065,22 @@ function changeTimezone(val) {
         }
     }
     
+    // Re-render targets table (shows manual start times)
     renderTargetsTable();
-    if (lastScheduleResult) {
-        updateScheduleUI(lastScheduleResult);
+    
+    // Re-render the schedule table body only — no backend call, just reformat times
+    if (lastScheduleResult && currentBlocksList.length > 0) {
+        const { blocks, solar_times, moon_plot } = lastScheduleResult;
+        // Update schedule table rows' time inputs in-place
+        blocks.forEach(b => {
+            const startInputs = document.querySelectorAll(`#sched-row-${b.target_name} input[type="text"]`);
+            if (startInputs.length >= 2) {
+                startInputs[0].value = formatTimeForTimezone(b.start_time, currentTimezone);
+                startInputs[1].value = formatTimeForTimezone(b.end_time, currentTimezone);
+            }
+        });
+        // Re-render timeline (shows UT/Local/LST ticks)
+        renderTimeline(blocks, solar_times, moon_plot);
     }
 }
 
@@ -3195,6 +3209,28 @@ function runLocalJSSolver(payload) {
         timeStr = timeStr.trim();
         if (!timeStr) return null;
         
+        // Try to parse as ISO date string first (e.g. "2026-06-19T07:40:00.000Z")
+        const isoDate = new Date(timeStr);
+        if (!isNaN(isoDate.getTime())) {
+            // Find nearest chunk within 90 seconds
+            let bestIdx = null;
+            let minDiff = Infinity;
+            for (let i = 0; i < chunkTimes.length; i++) {
+                const diff = Math.abs(chunkTimes[i].getTime() - isoDate.getTime());
+                if (diff < minDiff) {
+                    minDiff = diff;
+                    bestIdx = i;
+                }
+            }
+            if (bestIdx !== null && minDiff <= 90000) {
+                return bestIdx;
+            }
+            // If ISO time is valid but outside 90s tolerance, still return best match
+            // (manual times stored as ISO should always resolve to a chunk)
+            return bestIdx;
+        }
+        
+        // Fall back to HH:MM matching
         if (timeStr.includes(":")) {
             const parts = timeStr.split(":");
             const hh = parseInt(parts[0], 10);
@@ -3203,7 +3239,6 @@ function runLocalJSSolver(payload) {
             
             for (let i = 0; i < chunkTimes.length; i++) {
                 const ct = chunkTimes[i];
-                // Issue #29: exact minute match (tolerance 0)
                 if (ct.getUTCHours() === hh && ct.getUTCMinutes() === mm) {
                     return i;
                 }

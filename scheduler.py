@@ -759,7 +759,10 @@ class Scheduler:
             if diff < min_diff:
                 min_diff = diff
                 best_idx = idx
-        if min_diff <= 60:
+        # Use 90s tolerance — chunk_times start at exact sunset (not a whole minute),
+        # so a time like 07:40:00 UTC may be up to 59s from the nearest chunk.
+        # Times outside the night are >90s from any chunk and correctly return None.
+        if min_diff <= 90:
             return best_idx
         return None
 
