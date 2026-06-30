@@ -1941,7 +1941,7 @@ function renderTimeline(blocks, solar_times, moon_plot) {
     lstAxisEl.style.position = "relative";
     lstAxisEl.style.height = "18px";
     lstAxisEl.style.width = "100%";
-    lstAxisEl.style.marginBottom = "4px";
+    lstAxisEl.style.marginBottom = "20px";
     
     const obsLon = -121.6429;
     for (let t = chartMin; t <= chartMax; t += 3600000) {
@@ -2337,13 +2337,17 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
             pointRadius: 0,
             segment: {
                 borderDash: ctx => {
+                    const chart = ctx.chart;
+                    const datasetIndex = ctx.datasetIndex;
                     const idx = ctx.p0DataIndex;
-                    const pt = ctx.type === 'segment' ? ctx.dataset.data[idx] : null;
-                    if (pt && pt.observable) {
-                        return [6, 4]; // Dashed line when observable
-                    } else {
-                        return [2, 2]; // Dotted line when unobservable
+                    if (chart && chart.data && chart.data.datasets && chart.data.datasets[datasetIndex]) {
+                        const data = chart.data.datasets[datasetIndex].data;
+                        const pt = data ? data[idx] : null;
+                        if (pt && pt.observable) {
+                            return [6, 4]; // Dashed line when observable
+                        }
                     }
+                    return [2, 2]; // Dotted line when unobservable
                 }
             }
         });
