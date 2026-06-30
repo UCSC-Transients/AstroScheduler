@@ -2435,6 +2435,11 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
         }
     };
     
+    const sunsetMs = new Date(solar_times.sunset).getTime();
+    const sunriseMs = new Date(solar_times.sunrise).getTime();
+    const chartMin = Math.floor(sunsetMs / 3600000) * 3600000;
+    const chartMax = Math.ceil(sunriseMs / 3600000) * 3600000;
+
     airmassChart = new Chart(ctx, {
         type: 'line',
         data: { datasets },
@@ -2507,8 +2512,8 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
             scales: {
                 x: {
                     type: 'linear',
-                    min: new Date(solar_times.sunset).getTime(),
-                    max: new Date(solar_times.sunrise).getTime(),
+                    min: chartMin,
+                    max: chartMax,
                     grid: { color: 'rgba(255, 255, 255, 0.05)' },
                     ticks: {
                         callback: function(value, index, ticks) {
@@ -2527,8 +2532,8 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
                 x2: {
                     type: 'linear',
                     position: 'top',
-                    min: new Date(solar_times.sunset).getTime(),
-                    max: new Date(solar_times.sunrise).getTime(),
+                    min: chartMin,
+                    max: chartMax,
                     grid: { drawOnChartArea: false },
                     ticks: {
                         callback: function(value, index, ticks) {
