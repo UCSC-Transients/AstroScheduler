@@ -12,6 +12,7 @@ This Pull Request addresses regressions with timeline table headers alignment, m
 - [x] **Chart Crash Fix**: Safely retrieve dataset's data array via `ctx.chart.data.datasets[ctx.datasetIndex].data` in the segment border-dash callback to prevent Chart.js crashes.
 - [x] **Airmass Tooltip Cleanup**: Filter out night profile series from tooltip and use point style horizontal line markers.
 - [x] **Timeline Plot Tick & LST Alignment**: Pad timeline start/end to whole hours, draw vertical hourly grid lines, and render bottom UT/Local ticks and top LST ticks at whole hours. Ticks now show the active Display Timezone prominently as the primary label.
+- [x] **Dynamic column header text**: Dynamically updates schedule table time column header text to "Time (UT)" or "Time (Local)" depending on selected display timezone.
 - [x] **LST Vertical Offset**: Increased margin-bottom of `lstAxisEl` to `20px` to prevent vertical overlap with twilight/sunset/sunrise marker labels.
 - [x] **Table Layout Bouncing**: Added `border-left: 3px solid transparent;` to `.data-table tr` in style.css.
 - [x] **Timeline Table Alignment (Off-by-one)**: Added empty `<th>` to `#schedule-table` `thead` to align with lock column.
