@@ -1,33 +1,22 @@
-# Pull Request: Standard Stars Observability and Target Classification Refinements
+# Pull Request: Timeline, Schedule Table, and Chart Alignment Fixes
 
-This Pull Request addresses the remaining issues with standard star manual scheduling boundaries, physical unobservability classification, tag naming consistency, and target list vertical scrolling.
+This Pull Request addresses regressions with timeline table headers alignment, manual start time editing, table layout hover bouncing, and chart zoom/tick synchronization.
 
-## Resolved Issues
+## Resolved Regressions
 
-- [x] #14 Solver: Schedule selected standard stars independently if complete pairs are missing
-- [x] #49 Workflow: Schedulable standard stars greyed out
-- [x] Rename "Unschedulable" status tag to "Unobservable" for consistency
-- [x] Change standard star "Standby" status to "Not Scheduled" for consistency
-- [x] Fix logic bug in `app.py` where targets marked as `"Unobservable"` in the payload were skipped by the backend solver in subsequent runs, preventing recalculation or scheduling when parameters (e.g. date) changed
-- [x] Align `isStandardStarObservable` in the frontend to check if a continuous 5-minute block fits inside the `sunset + 30m` twilight constraint. This prevents checking standard stars that set before they can be fully observed
-- [x] Restore vertical scrollbar and sticky headers to the target list table, showing 10 items (800px max-height) without scrolling
+- [x] **Timeline Start Time Editing**: Fix `parseTimeInputToISO` in [static/app.js](file:///Users/rfoley/scheduler/static/app.js). Parse candidates anchored to midpoint of scheduled night. Prevents timezone/date boundary 24-hour shift mismatch.
+- [x] **Table Layout Bouncing**: Added `border-left: 3px solid transparent;` to `.data-table tr` in [static/style.css](file:///Users/rfoley/scheduler/static/style.css). Keeps spacing static when hover border-left color updates.
+- [x] **Timeline Table Alignment (Off-by-one)**: Added empty `<th>` to `#schedule-table` `thead` in [templates/index.html](file:///Users/rfoley/scheduler/templates/index.html) to align with lock column. Adjusted colspan of empty row.
+- [x] **Lock Icon**: Verified lock button is open (`🔓`) or closed (`🔒`) based on `isLocked` state in [static/app.js](file:///Users/rfoley/scheduler/static/app.js) (Issue #47).
+- [x] **Airmass Chart Ticks**: Restored ticks to exactly `XX:00` UT on airmass plot by rounding sunset/sunrise boundaries to the nearest whole UTC hour before/after. Ticks now land exactly on whole hours (`XX:00` UT) and LST matches them.
+- [x] **Airmass Chart Zoom & Reset**: Reset `originalXMin` / `originalXMax` on chart recreation, and reset Y-axis scale to dynamic defaults in `resetChartZoom` in [static/app.js](file:///Users/rfoley/scheduler/static/app.js).
 
-## Technical Details
+---
 
-### 1. Re-Evaluating Unobservable Targets (Logic Bug Fix)
-Refactored the `/api/schedule` endpoint in [app.py](file:///Users/rfoley/scheduler/app.py) to not skip targets with calculated status `"Unobservable"`. Previously, once a target was flagged unobservable, it would be skipped by the backend on all subsequent runs, keeping it permanently unobservable even if the date or constraints changed. This resolves the issues with `2026nqo`, `2026lnx`, etc. being stuck as unobservable.
-
-### 2. Standard Star Observability & Manual Limits (#49)
-- Updated `isStandardStarObservable` in [static/app.js](file:///Users/rfoley/scheduler/static/app.js) to:
-  1. Restrict checks to the twilight bounds (`sunset + 30m` to `sunrise - 30m`) matching the scheduler constraints.
-  2. Verify that the star is visible for a continuous 5-minute block. This correctly handles `Feige 34` on `2026-06-27` (which is visible at `sunset + 30m` but sets at `sunset + 31m` - meaning a 5-minute block cannot fit, making it unobservable under original twilight rules).
-
-### 3. Status Tag & Styling Polish
-- Changed "Standby" status text for standard stars to "Not Scheduled" in [static/app.js](file:///Users/rfoley/scheduler/static/app.js).
-- Changed "Unschedulable" labels to "Unobservable" in [static/app.js](file:///Users/rfoley/scheduler/static/app.js) for consistency.
-- Increased `.table-wrapper` `max-height` to `800px` in [static/style.css](file:///Users/rfoley/scheduler/static/style.css) so the target table displays 10 items without scrolling.
-
-## Verification
-- Added a unit test `test_feige34_observability_on_2026_06_27` to verify standard star scheduling near sunset.
-- Added a unit test `test_high_airmass_conflict_not_unobservable` to verify airmass constraint partitioning.
-- Verified that all 25 tests pass successfully.
+## Created GitHub Issues
+- **Issue #57**: Plot: Add grey region on Alt/Az plot corresponding to restricted pointing region
+- **Issue #58**: Plot: Differentiate observable and unobservable parts of airmass tracks using dashed/dotted lines
+- **Issue #59**: UI: Clean up airmass plot tooltip and series styling
+- **Issue #60**: Plot: Improve timeline x-axis ticks and vertical grid lines alignment
+- **Issue #61**: UI: Avoid schedule refit on timezone change and adjust night start/end limits
+- **Issue #62**: Plot: Improve airmass plot zooming robustness and zoom/reset constraints
