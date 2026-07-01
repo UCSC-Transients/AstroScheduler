@@ -687,6 +687,82 @@ class TestScheduler(unittest.TestCase):
         self.assertIn("TargetB", res['conflicts'])
         self.assertNotIn("TargetB", res['unobservable'])
 
+    def test_chunk_times_floored_to_whole_minute(self):
+        """chunk_times must all have second==0 and microsecond==0."""
+        observatory = Observatory("Lick Observatory", 37.3414, -121.6429, 1283)
+        telescope = ShaneTelescope()
+        date_local = datetime.date(2026, 6, 18)
+        scheduler = Scheduler(observatory, telescope, date_local)
+
+        for i, ct in enumerate(scheduler.chunk_times):
+            self.assertEqual(ct.second, 0, f"chunk {i} has non-zero seconds: {ct}")
+            self.assertEqual(ct.microsecond, 0, f"chunk {i} has non-zero microseconds: {ct}")
+
+    def test_block_start_times_are_whole_minute_utc(self):
+        """Scheduled block start_time ISO strings must be whole-minute UTC (seconds=00)."""
+        observatory = Observatory("Lick Observatory", 37.3414, -121.6429, 1283)
+        telescope = ShaneTelescope()
+        date_local = datetime.date(2026, 6, 18)
+        scheduler = Scheduler(observatory, telescope, date_local)
+
+        targets = [
+            Target(name="T1", ra=180.0, dec=30.0, magnitude=14.0, priority=1.0),
+            Target(name="T2", ra=200.0, dec=10.0, magnitude=14.0, priority=2.0),
+        ]
+        result = scheduler.solve(targets)
+        for block in result['blocks']:
+            st = block['start_time']
+            dt = datetime.datetime.fromisoformat(st.replace('Z', '+00:00'))
+            self.assertEqual(dt.second, 0, f"Block {block['target_name']} start_time seconds != 0: {st}")
+            self.assertEqual(dt.microsecond, 0, f"Block {block['target_name']} start_time microseconds != 0: {st}")
+
+    def test_manual_start_time_roundtrip(self):
+        """Set manual_start_time to a chunk ISO string — block must land at exactly that chunk."""
+        observatory = Observatory("Lick Observatory", 37.3414, -121.6429, 1283)
+        telescope = ShaneTelescope()
+        date_local = datetime.date(2026, 6, 18)
+        scheduler = Scheduler(observatory, telescope, date_local)
+
+        target_chunk = 60  # 1 hour after floored sunset
+        manual_iso = scheduler.chunk_times[target_chunk].isoformat()
+
+        target = Target(
+            name="ManualT",
+            ra=180.0,
+            dec=30.0,
+            magnitude=14.0,
+            priority=1.0,
+            manual_start_time=manual_iso,
+        )
+        result = scheduler.solve([target])
+        matching = [b for b in result['blocks'] if b['target_name'] == 'ManualT']
+        self.assertEqual(len(matching), 1, "ManualT not scheduled")
+        block_start = matching[0]['start_time']
+        block_dt = datetime.datetime.fromisoformat(block_start.replace('Z', '+00:00')).replace(tzinfo=None)
+        expected_dt = scheduler.chunk_times[target_chunk].replace(tzinfo=None)
+        self.assertEqual(block_dt, expected_dt,
+            f"Manual start mismatch: got {block_dt}, expected {expected_dt}")
+
+    def test_get_chunk_idx_rejects_before_night(self):
+        """get_chunk_idx_from_time_str returns None for times >60s before sunset."""
+        observatory = Observatory("Lick Observatory", 37.3414, -121.6429, 1283)
+        telescope = ShaneTelescope()
+        date_local = datetime.date(2026, 6, 18)
+        scheduler = Scheduler(observatory, telescope, date_local)
+
+        before_sunset = (scheduler.start_night - datetime.timedelta(minutes=2)).isoformat()
+        self.assertIsNone(scheduler.get_chunk_idx_from_time_str(before_sunset))
+
+    def test_get_chunk_idx_rejects_after_night(self):
+        """get_chunk_idx_from_time_str returns None for times >60s after sunrise."""
+        observatory = Observatory("Lick Observatory", 37.3414, -121.6429, 1283)
+        telescope = ShaneTelescope()
+        date_local = datetime.date(2026, 6, 18)
+        scheduler = Scheduler(observatory, telescope, date_local)
+
+        after_sunrise = (scheduler.end_night + datetime.timedelta(minutes=2)).isoformat()
+        self.assertIsNone(scheduler.get_chunk_idx_from_time_str(after_sunrise))
+
 
 if __name__ == '__main__':
     unittest.main()
