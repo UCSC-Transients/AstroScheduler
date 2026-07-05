@@ -409,7 +409,7 @@ function loadSampleTargets() {
     saveAndRefresh();
 }
 
-function saveAndRefresh() {
+function saveAndRefresh(skipReschedule = false) {
     localStorage.setItem("targetPool", JSON.stringify(targetPool));
     localStorage.setItem("autoStandardsMode", autoStandardsMode);
     localStorage.setItem("selectedStandards", JSON.stringify(Array.from(selectedStandards)));
@@ -431,7 +431,9 @@ function saveAndRefresh() {
     
     syncLockedTargets();
     renderTargetsTable();
-    triggerScheduling();
+    if (!skipReschedule) {
+        triggerScheduling();
+    }
 };
 
 
@@ -836,7 +838,7 @@ function toggleTargetLock(name) {
         }
     }
     
-    saveAndRefresh();
+    saveAndRefresh(true);
 }
 
 function updateTargetCheckbox(name, field, checked) {

@@ -183,13 +183,27 @@ def test_bugs():
             # Click the lock button on Vega in the schedule table
             vega_row = page.locator("#schedule-table tbody tr", has_text="Vega").first
             lock_btn = vega_row.locator("button").first
-            trigger_and_wait(page, lambda: lock_btn.click())
+            lock_btn.click()
+            page.wait_for_timeout(1000)
             
             # Verify lock state
             assert "🔒" in lock_btn.inner_text(), "Locking Vega failed!"
             
             alpha_in_sched = page.locator("#schedule-table tbody tr", has_text="Alpha Centauri").count()
             assert alpha_in_sched > 0, "Locking Vega caused Alpha Centauri to drop from schedule!"
+            
+            # With Vega locked, change exposure time in the schedule table (which should trigger a refit)
+            duration_input = vega_row.locator("input[type=number]").first
+            duration_input.fill("45")
+            trigger_and_wait(page, lambda: duration_input.evaluate("node => node.dispatchEvent(new Event('change'))"))
+            
+            # Verify exposure time is updated and Vega stays locked
+            vega_row_updated = page.locator("#schedule-table tbody tr", has_text="Vega").first
+            duration_input_updated = vega_row_updated.locator("input[type=number]").first
+            assert duration_input_updated.input_value() == "45", "Vega exposure time was not updated!"
+            
+            lock_btn_updated = vega_row_updated.locator("button").first
+            assert "🔒" in lock_btn_updated.inner_text(), "Vega did not stay locked after exposure time change!"
             
             browser.close()
     finally:

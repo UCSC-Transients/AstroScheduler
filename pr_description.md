@@ -20,7 +20,9 @@ This Pull Request addresses regressions with timeline table headers alignment, m
 - [x] **Manual Night Limits UTC Date Alignment**: Solvers automatically align manual boundary hours (`08:00 UT`, etc.) to the closest sunset/sunrise date rather than raw hour replacements, preventing out-of-bounds schedules.
 - [x] **Twilight Constraints Clamping**: All astronomical and nautical twilights are constrained (clamped) to the manual night start/end boundaries, forcing the scheduler to respect manual limits for all science targets.
 - [x] **Immediate Target Lock Feedback**: Flipped lock state icon (`🔒` / `🔓`) in DOM instantly to keep UI responsive before refit request completes.
+- [x] **Target Locking No-Refit**: Toggling a target's lock state updates its constraint and icon instantly but skips the full rescheduling/refitting cycle to prevent shifting other scheduled targets. Changing a locked target's exposure time still triggers a full reschedule correctly.
 - [x] **Fallback Solver Bounds Crash**: Fixed client-side fallback solver index crash when night end limit is short.
 - [x] **Astropy Airmass Fallback**: Automatically falls back to analytical geometric airmass calculation if Astropy raises polar motion/IERS coordinate exceptions.
 - [x] **Robust Integration Tests**: Automated Uvicorn server lifecycle and synchronized all Playwright test steps using absolute expectation waiting to prevent asynchronous race conditions.
+
 
