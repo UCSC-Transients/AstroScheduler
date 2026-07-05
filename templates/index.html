@@ -56,8 +56,8 @@
                                 <label for="tz-select">Display Timezone</label>
                                 <select id="tz-select" onchange="changeTimezone(this.value)">
                                     <option value="browser">Browser Default</option>
-                                    <option value="obs" selected>Observatory Local (Pacific Time)</option>
-                                    <option value="UTC">UTC</option>
+                                    <option value="obs">Observatory Local (Pacific Time)</option>
+                                    <option value="UTC" selected>UTC</option>
                                     <option value="UTC-10">UTC-10 (HST)</option>
                                     <option value="UTC-9">UTC-9 (AKST)</option>
                                     <option value="UTC-8">UTC-8 (PST)</option>
@@ -92,7 +92,7 @@
                             </div>
                             <div class="form-group" style="flex: 1.2;">
                                 <label for="manual-night-tz">Night Limits Timezone</label>
-                                <select id="manual-night-tz" style="width: 100%;" onchange="updateNightOverridePlaceholders(); triggerScheduling();">
+                                <select id="manual-night-tz" style="width: 100%;" onchange="syncTimezones(this.value);">
                                     <option value="UTC" selected>UT</option>
                                     <option value="obs">Local</option>
                                 </select>
@@ -239,7 +239,7 @@
                                 <thead>
                                     <tr>
                                         <th style="width: 30px; text-align: center;"></th>
-                                        <th style="width: 160px;">Time (UT)</th>
+                                        <th id="log-time-header" style="width: 160px;">Time (UT)</th>
                                         <th style="width: 140px;">Target Name</th>
                                         <th style="width: 80px; text-align: center;">Duration (m)</th>
                                         <th style="width: 110px; text-align: center;">Airmass Range</th>

@@ -28,7 +28,10 @@ function formatDec(decDeg) {
 
 function parseCoordinate(val, isRa = false) {
     if (typeof val === 'number') {
-        return isRa ? val / 15.0 : val;
+        if (isRa) {
+            return val > 24.0 ? val / 15.0 : val;
+        }
+        return val;
     }
     const s = String(val).trim();
     if (!s) return NaN;
@@ -58,7 +61,10 @@ function parseCoordinate(val, isRa = false) {
     
     const valFloat = parseFloat(s);
     if (isNaN(valFloat)) return NaN;
-    return isRa ? valFloat / 15.0 : valFloat;
+    if (isRa) {
+        return valFloat > 24.0 ? valFloat / 15.0 : valFloat;
+    }
+    return valFloat;
 }
 
 // Global Application State
@@ -66,7 +72,7 @@ let targetPool = [];
 let airmassChart = null;
 let currentBlocksList = [];
 let lastScheduleResult = null;
-let currentTimezone = 'obs';
+let currentTimezone = 'UTC';
 let standardStars = [];
 let disabledStandards = new Set();
 // Stars auto-disabled after scheduling because they were not picked by the scheduler
@@ -129,13 +135,10 @@ document.addEventListener("DOMContentLoaded", async () => {
         if (tzSelect) tzSelect.value = storedTZ;
     }
     const timeHeader = document.getElementById("schedule-time-header");
-    if (timeHeader) {
-        if (currentTimezone === 'UTC' || currentTimezone.startsWith('UTC')) {
-            timeHeader.innerText = "Time (UT)";
-        } else {
-            timeHeader.innerText = "Time (Local)";
-        }
-    }
+    const logHeader = document.getElementById("log-time-header");
+    const label = (currentTimezone === 'UTC' || currentTimezone.startsWith('UTC')) ? "Time (UT)" : "Time (Local)";
+    if (timeHeader) timeHeader.innerText = label;
+    if (logHeader) logHeader.innerText = label;
     lastObsDate = document.getElementById("obs-date").value;
 
     // Issue #28: Trigger reschedule when date changes, and adjust locked times to match the new night
@@ -401,7 +404,7 @@ function loadSampleTargets() {
         { name: "Cygnus X-1", ra: 19.972, dec: 35.20, magnitude: 8.9, priority: 2.0, sn_mode: "high_sn", allow_twilight: false, high_airmass: false, comment: "High mass X-ray binary", manual_start_time: null, manual_duration: null, schedule_before: [] },
         { name: "M27 Dumbbell", ra: 19.993, dec: 22.72, magnitude: 7.5, priority: 1.0, sn_mode: "high_sn", allow_twilight: false, high_airmass: false, comment: "Bright planetary nebula", manual_start_time: null, manual_duration: null, schedule_before: [] },
         { name: "Albireo", ra: 19.512, dec: 27.96, magnitude: 3.1, priority: 1.0, sn_mode: "normal", allow_twilight: false, high_airmass: false, comment: "Double star separation check", manual_start_time: null, manual_duration: null, schedule_before: [] },
-        { name: "Alpha Centauri", ra: 14.656, dec: -60.83, magnitude: -0.27, priority: 3.0, sn_mode: "classification", allow_twilight: false, high_airmass: false, comment: "Wrong hemisphere", manual_start_time: null, manual_duration: null, schedule_before: [] }
+        { name: "Alpha Centauri", ra: 18.0, dec: 40.0, magnitude: 4.5, priority: 3.0, sn_mode: "classification", allow_twilight: false, high_airmass: false, comment: "Observable priority 3 target", manual_start_time: null, manual_duration: null, schedule_before: [] }
     ];
     saveAndRefresh();
 }
@@ -723,7 +726,7 @@ function updateTargetManualStart(name, val) {
         lockedTargets.delete(name);
     } else {
         const dateStr = document.getElementById("obs-date").value;
-        const iso = parseTimeInputToISO(val, dateStr, currentTimezone);
+        const iso = parseTimeInputToISO(val, dateStr, currentTimezone, true);
         if (iso) {
             target.manual_start_time = iso;
         } else {
@@ -754,7 +757,7 @@ function updateTargetManualEnd(name, val) {
         lockedTargets.delete(name);
     } else {
         const dateStr = document.getElementById("obs-date").value;
-        const iso = parseTimeInputToISO(val, dateStr, currentTimezone);
+        const iso = parseTimeInputToISO(val, dateStr, currentTimezone, false);
         if (iso) {
             target.manual_end_time = iso;
         } else {
@@ -802,7 +805,9 @@ function updateTargetManualDuration(name, val) {
 function toggleTargetLock(name) {
     const target = targetPool.find(t => t.name === name) || standardStars.find(s => s.name === name);
     if (!target) return;
-    if (lockedTargets.has(name)) {
+    
+    const wasLocked = lockedTargets.has(name);
+    if (wasLocked) {
         lockedTargets.delete(name);
         target.manual_start_time = null;
         target.manual_end_time = null;
@@ -816,6 +821,21 @@ function toggleTargetLock(name) {
             target.lock_type = 'start';
         }
     }
+    
+    // Immediately update the lock icon in the schedule table UI for instant feedback
+    const schedRow = document.getElementById(`sched-row-${name}`);
+    if (schedRow) {
+        const btn = schedRow.querySelector("td button");
+        if (btn) {
+            const isNowLocked = !wasLocked;
+            btn.textContent = isNowLocked ? '🔒' : '🔓';
+            btn.title = isNowLocked ? 'Click to unlock' : 'Click to lock start time';
+            btn.style.opacity = isNowLocked ? '1' : '0.35';
+            btn.style.color = isNowLocked ? '#f59e0b' : 'inherit';
+            schedRow.style.background = isNowLocked ? 'rgba(245,158,11,0.05)' : '';
+        }
+    }
+    
     saveAndRefresh();
 }
 
@@ -937,7 +957,7 @@ function formatTimeForTimezone(isoStr, tz) {
     return isoStr.substring(11, 16);
 }
 
-function parseHourMinute(timeStr, isStart = false) {
+function parseHourMinute(timeStr, isStart = false, isLocalTz = false) {
     if (!timeStr) return null;
     const clean = timeStr.trim().toLowerCase();
     
@@ -971,7 +991,7 @@ function parseHourMinute(timeStr, isStart = false) {
     } else if (isAm) {
         if (hh === 12) hh = 0;
     } else {
-        if (isStart && hh > 0 && hh < 12) {
+        if (isStart && isLocalTz && hh > 0 && hh < 12) {
             hh += 12;
         }
     }
@@ -979,9 +999,9 @@ function parseHourMinute(timeStr, isStart = false) {
     return { hh, mm };
 }
 
-function parseTimeInputToISO(timeStr, dateStr, tz) {
+function parseTimeInputToISO(timeStr, dateStr, tz, isStart = false) {
     if (!timeStr) return null;
-    const parsed = parseHourMinute(timeStr, false);
+    const parsed = parseHourMinute(timeStr, isStart, tz !== 'UTC');
     if (!parsed) return null;
     const { hh, mm } = parsed;
     
@@ -1055,15 +1075,19 @@ function changeTimezone(val) {
     currentTimezone = val;
     localStorage.setItem("currentTimezone", currentTimezone);
     
+    // Sync manual-night-tz dropdown without triggering change event
+    const manualTz = document.getElementById("manual-night-tz");
+    if (manualTz && manualTz.value !== val) {
+        const targetVal = (val === 'UTC' || val.startsWith('UTC')) ? 'UTC' : 'obs';
+        manualTz.value = targetVal;
+    }
+    
     // Update the schedule table time column header text
     const timeHeader = document.getElementById("schedule-time-header");
-    if (timeHeader) {
-        if (currentTimezone === 'UTC' || currentTimezone.startsWith('UTC')) {
-            timeHeader.innerText = "Time (UT)";
-        } else {
-            timeHeader.innerText = "Time (Local)";
-        }
-    }
+    const logHeader = document.getElementById("log-time-header");
+    const label = (currentTimezone === 'UTC' || currentTimezone.startsWith('UTC')) ? "Time (UT)" : "Time (Local)";
+    if (timeHeader) timeHeader.innerText = label;
+    if (logHeader) logHeader.innerText = label;
     
     // Re-render targets table (shows manual start times)
     renderTargetsTable();
@@ -1071,17 +1095,34 @@ function changeTimezone(val) {
     // Re-render the schedule table body only — no backend call, just reformat times
     if (lastScheduleResult && currentBlocksList.length > 0) {
         const { blocks, solar_times, moon_plot } = lastScheduleResult;
-        // Update schedule table rows' time inputs in-place
+        // Update schedule table rows' time inputs in-place using getElementById (safe for spaces and +)
         blocks.forEach(b => {
-            const startInputs = document.querySelectorAll(`#sched-row-${b.target_name} input[type="text"]`);
-            if (startInputs.length >= 2) {
-                startInputs[0].value = formatTimeForTimezone(b.start_time, currentTimezone);
-                startInputs[1].value = formatTimeForTimezone(b.end_time, currentTimezone);
+            const rowEl = document.getElementById(`sched-row-${b.target_name}`);
+            if (rowEl) {
+                const inputs = rowEl.getElementsByTagName("input");
+                const textInputs = Array.from(inputs).filter(input => input.type === "text");
+                if (textInputs.length >= 2) {
+                    textInputs[0].value = formatTimeForTimezone(b.start_time, currentTimezone);
+                    textInputs[1].value = formatTimeForTimezone(b.end_time, currentTimezone);
+                }
             }
         });
         // Re-render timeline (shows UT/Local/LST ticks)
         renderTimeline(blocks, solar_times, moon_plot);
     }
+    updateNightOverridePlaceholders();
+}
+
+function syncTimezones(val) {
+    const tzSelect = document.getElementById("tz-select");
+    if (tzSelect && tzSelect.value !== val) {
+        tzSelect.value = val;
+    }
+    const manualTz = document.getElementById("manual-night-tz");
+    if (manualTz && manualTz.value !== val) {
+        manualTz.value = val;
+    }
+    changeTimezone(val);
 }
 
 function updateNightOverridePlaceholders() {
@@ -1723,15 +1764,11 @@ function updateScheduleUI(result) {
     lastScheduleResult = result;
     const { blocks, conflicts, unobservable, empty_blocks, moon_info, moon_plot, airmass_plots, solar_times } = result;
     
-    // Update the time column header text depending on selected display timezone
     const timeHeader = document.getElementById("schedule-time-header");
-    if (timeHeader) {
-        if (currentTimezone === 'UTC' || currentTimezone.startsWith('UTC')) {
-            timeHeader.innerText = "Time (UT)";
-        } else {
-            timeHeader.innerText = "Time (Local)";
-        }
-    }
+    const logHeader = document.getElementById("log-time-header");
+    const label = (currentTimezone === 'UTC' || currentTimezone.startsWith('UTC')) ? "Time (UT)" : "Time (Local)";
+    if (timeHeader) timeHeader.innerText = label;
+    if (logHeader) logHeader.innerText = label;
     
     document.getElementById("moon-phase-val").innerText = `${(moon_info.phase * 100).toFixed(0)}% illuminated`;
     document.getElementById("moon-ra-val").innerText = moon_info.ra.toFixed(1);
@@ -3065,8 +3102,30 @@ function runLocalJSSolver(payload) {
         }
 
         if (tzMode === 'UTC') {
-            sunset = new Date(Date.UTC(solarTimes.sunset.getUTCFullYear(), solarTimes.sunset.getUTCMonth(), solarTimes.sunset.getUTCDate(), shh, smm, 0, 0));
-            sunrise = new Date(Date.UTC(solarTimes.sunrise.getUTCFullYear(), solarTimes.sunrise.getUTCMonth(), solarTimes.sunrise.getUTCDate(), ehh, emm, 0, 0));
+            let minDiffStart = Infinity;
+            let bestSunset = null;
+            for (let dOffset = -1; dOffset <= 1; dOffset++) {
+                const candidate = new Date(Date.UTC(solarTimes.sunset.getUTCFullYear(), solarTimes.sunset.getUTCMonth(), solarTimes.sunset.getUTCDate() + dOffset, shh, smm, 0, 0));
+                const diff = Math.abs(candidate.getTime() - solarTimes.sunset.getTime());
+                if (diff < minDiffStart) {
+                    minDiffStart = diff;
+                    bestSunset = candidate;
+                }
+            }
+            sunset = bestSunset;
+
+            let minDiffEnd = Infinity;
+            let bestSunrise = null;
+            for (let dOffset = -1; dOffset <= 1; dOffset++) {
+                const candidate = new Date(Date.UTC(solarTimes.sunrise.getUTCFullYear(), solarTimes.sunrise.getUTCMonth(), solarTimes.sunrise.getUTCDate() + dOffset, ehh, emm, 0, 0));
+                const diff = Math.abs(candidate.getTime() - solarTimes.sunrise.getTime());
+                if (diff < minDiffEnd) {
+                    minDiffEnd = diff;
+                    bestSunrise = candidate;
+                }
+            }
+            sunrise = bestSunrise;
+
             if (sunrise < sunset) {
                 sunrise = new Date(sunrise.getTime() + 24 * 60 * 60 * 1000);
             }
@@ -3099,6 +3158,12 @@ function runLocalJSSolver(payload) {
         }
         if (solarTimes.twilight_morning_18 > sunrise) {
             solarTimes.twilight_morning_18 = sunrise;
+        }
+        if (solarTimes.twilight_evening_12 < sunset) {
+            solarTimes.twilight_evening_12 = sunset;
+        }
+        if (solarTimes.twilight_morning_12 > sunrise) {
+            solarTimes.twilight_morning_12 = sunrise;
         }
     }
     
@@ -3226,12 +3291,15 @@ function runLocalJSSolver(payload) {
                     bestIdx = i;
                 }
             }
-            if (bestIdx !== null && minDiff <= 90000) {
-                return bestIdx;
+            const maxBoundStart = new Date(sunset.getTime() - 60000);
+            const maxBoundEnd = new Date(sunrise.getTime() + 60000);
+            if (bestIdx !== null && isoDate >= maxBoundStart && isoDate <= maxBoundEnd) {
+                const diff = Math.abs(chunkTimes[bestIdx].getTime() - isoDate.getTime());
+                if (diff <= 90000) {
+                    return bestIdx;
+                }
             }
-            // If ISO time is valid but outside 90s tolerance, still return best match
-            // (manual times stored as ISO should always resolve to a chunk)
-            return bestIdx;
+            return null;
         }
         
         // Fall back to HH:MM matching
@@ -4058,7 +4126,7 @@ function runLocalJSSolver(payload) {
             blocksList.push({
                 target_name: name,
                 start_time: chunkTimes[startIdx].toISOString(),
-                end_time: chunkTimes[startIdx + durChunks].toISOString(),
+                end_time: (startIdx + durChunks < numChunks) ? chunkTimes[startIdx + durChunks].toISOString() : sunrise.toISOString(),
                 duration_minutes: durChunks,
                 airmass_start: startAir,
                 airmass_end: endAir,

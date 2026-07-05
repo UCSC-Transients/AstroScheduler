@@ -47,7 +47,9 @@ def parse_coordinate(val: Any, is_ra: bool = False) -> float:
     """
     if isinstance(val, (int, float)):
         val_float = float(val)
-        return val_float / 15.0 if is_ra else val_float
+        if is_ra:
+            return val_float / 15.0 if val_float > 24.0 else val_float
+        return val_float
 
     # Convert to string and clean
     s = str(val).strip()
@@ -85,7 +87,9 @@ def parse_coordinate(val: Any, is_ra: bool = False) -> float:
     # Try parsing as float directly
     try:
         val_float = float(s)
-        return val_float / 15.0 if is_ra else val_float
+        if is_ra:
+            return val_float / 15.0 if val_float > 24.0 else val_float
+        return val_float
     except ValueError:
         raise ValueError(f"Could not parse coordinate: {val}")
 
@@ -570,6 +574,7 @@ class Scheduler:
             return target._airmass_cache[dt_utc]
 
         val = 999.0
+        astropy_ok = False
         if HAS_ASTRO_LIBS and self._obs is not None:
             try:
                 if dt_utc not in self._time_cache:
@@ -583,9 +588,11 @@ class Scheduler:
                     val = 999.0
                 else:
                     val = altaz.secz.value
+                astropy_ok = True
             except Exception:
                 pass
-        else:
+                
+        if not astropy_ok:
             alt, _ = get_alt_az(dt_utc, self.observatory.latitude, self.observatory.longitude, target.ra, target.dec)
             val = get_airmass(alt)
 
@@ -774,17 +781,8 @@ class Scheduler:
         self.auto_standards = auto_standards
         self.realtime_constraints = realtime_constraints or {}
         
-        previous_start_chunks = {}
-        if previous_schedule:
-            for item in previous_schedule:
-                t_name = item.get('target_name')
-                start_time_str = item.get('start_time')
-                if t_name and start_time_str:
-                    c_idx = self.get_chunk_idx_from_time_str(start_time_str)
-                    if c_idx is not None:
-                        previous_start_chunks[t_name] = c_idx
-        
         rt = self.realtime_constraints
+        print(f"SCHEDULER SOLVE realtime_constraints={rt}", flush=True)
         if rt.get('manual_limits_enabled'):
             try:
                 start_str = rt.get('manual_limit_start', '')
@@ -817,8 +815,18 @@ class Scheduler:
                 ehh, emm = end_res if end_res else (sunrise_hh, sunrise_mm)
                 
                 if tz_mode == 'UTC':
-                    cand_start = sunset_utc.replace(hour=shh, minute=smm, second=0, microsecond=0)
-                    cand_end = sunrise_utc.replace(hour=ehh, minute=emm, second=0, microsecond=0)
+                    cand_starts = [
+                        sunset_utc.replace(hour=shh, minute=smm, second=0, microsecond=0) + datetime.timedelta(days=d)
+                        for d in [-1, 0, 1]
+                    ]
+                    cand_start = min(cand_starts, key=lambda dt: abs((dt - sunset_utc).total_seconds()))
+
+                    cand_ends = [
+                        sunrise_utc.replace(hour=ehh, minute=emm, second=0, microsecond=0) + datetime.timedelta(days=d)
+                        for d in [-1, 0, 1]
+                    ]
+                    cand_end = min(cand_ends, key=lambda dt: abs((dt - sunrise_utc).total_seconds()))
+                    
                     if cand_end < cand_start:
                         cand_end += datetime.timedelta(days=1)
                     self.start_night = cand_start
@@ -831,8 +839,8 @@ class Scheduler:
                     if ehh < shh:
                         end_day = self.date_local + datetime.timedelta(days=1)
                     local_end = pacific.localize(datetime.datetime(end_day.year, end_day.month, end_day.day, ehh, emm))
-                    self.start_night = local_start.astimezone(pytz.UTC).replace(tzinfo=None)
-                    self.end_night = local_end.astimezone(pytz.UTC).replace(tzinfo=None)
+                    self.start_night = local_start.astimezone(datetime.timezone.utc)
+                    self.end_night = local_end.astimezone(datetime.timezone.utc)
                     
                 # Recompute chunks (floor to whole minute for clean block times)
                 self.start_night = self.start_night.replace(second=0, microsecond=0)
@@ -846,8 +854,28 @@ class Scheduler:
                 # Update solar times boundaries
                 self.solar_times['sunset'] = self.start_night
                 self.solar_times['sunrise'] = self.end_night
+                # Constrain twilights to manual night boundaries
+                for k in ['twilight_evening_18', 'twilight_evening_12']:
+                    if k in self.solar_times:
+                        self.solar_times[k] = max(self.solar_times[k], self.start_night)
+                for k in ['twilight_morning_18', 'twilight_morning_12']:
+                    if k in self.solar_times:
+                        self.solar_times[k] = min(self.solar_times[k], self.end_night)
+                print(f"SCHEDULER RECOMPUTED BOUNDS: start={self.start_night}, end={self.end_night}, num_chunks={self.num_chunks}", flush=True)
             except Exception as e:
-                pass
+                import traceback
+                print("MANUAL BOUNDS ERROR:")
+                traceback.print_exc()
+                
+        previous_start_chunks = {}
+        if previous_schedule:
+            for item in previous_schedule:
+                t_name = item.get('target_name')
+                start_time_str = item.get('start_time')
+                if t_name and start_time_str:
+                    c_idx = self.get_chunk_idx_from_time_str(start_time_str)
+                    if c_idx is not None:
+                        previous_start_chunks[t_name] = c_idx
                 
         # Determine evening/morning twilight boundaries for standard star scheduling
         if getattr(self, 'manual_start_override', False) or (self.realtime_constraints and self.realtime_constraints.get('manual_limits_enabled')):

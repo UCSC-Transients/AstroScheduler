@@ -159,6 +159,7 @@ if HAS_FASTAPI:
     async def api_schedule(request: Request):
         try:
             data = await request.json()
+            print("API REQUEST RECEIVED:", {k: v for k, v in data.items() if k != 'targets'}, flush=True)
             result = run_schedule_logic(data)
             return JSONResponse(content=result)
         except Exception as e:

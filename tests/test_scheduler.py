@@ -22,7 +22,7 @@ class TestScheduler(unittest.TestCase):
     def test_coordinate_parsing(self):
         # RA parsing (is_ra=True)
         # Decimal hours directly (treated as degrees -> 18.5 / 15.0 = 1.2333 hours)
-        self.assertAlmostEqual(parse_coordinate("18.5", is_ra=True), 1.2333333333333334)
+        self.assertAlmostEqual(parse_coordinate("18.5", is_ra=True), 18.5)
         # Sexagesimal hours: 18:30:00 -> 18.5
         self.assertAlmostEqual(parse_coordinate("18:30:00", is_ra=True), 18.5)
         self.assertAlmostEqual(parse_coordinate("18 30 00", is_ra=True), 18.5)
