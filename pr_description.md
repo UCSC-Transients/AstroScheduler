@@ -23,6 +23,10 @@ This Pull Request addresses regressions with timeline table headers alignment, m
 - [x] **Target Locking No-Refit**: Toggling a target's lock state updates its constraint and icon instantly but skips the full rescheduling/refitting cycle to prevent shifting other scheduled targets. Changing a locked target's exposure time still triggers a full reschedule correctly.
 - [x] **Fallback Solver Bounds Crash**: Fixed client-side fallback solver index crash when night end limit is short.
 - [x] **Astropy Airmass Fallback**: Automatically falls back to analytical geometric airmass calculation if Astropy raises polar motion/IERS coordinate exceptions.
-- [x] **Robust Integration Tests**: Automated Uvicorn server lifecycle and synchronized all Playwright test steps using absolute expectation waiting to prevent asynchronous race conditions.
+- [x] **Solver Greedy Pass and Priority 3 Disappearance Fix**: Added a fast greedy initialization pass to establish a cost upper bound and fallback schedule in both Python and local JS solvers. Prevents priority 3.0 targets from disappearing when search limits are reached.
+- [x] **Solver Search Iterations Limit Reduction**: Reduced search iterations limits (Python to 20,000, JS to 10,000) to ensure immediate page loading and solver responsiveness.
+- [x] **Fixed JS Fallback ReferenceError**: Fixed `ReferenceError` on undefined `previousStartChunks` in the client-side local JS fallback solver.
+- [x] **Robust Integration Tests**: Automated Uvicorn server lifecycle and verified all features and lock transitions (including user's 15-target list on 2026-06-19 observing night) using synchronized Playwright tests.
+
 
 
