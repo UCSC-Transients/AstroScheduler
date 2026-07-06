@@ -27,6 +27,11 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
+    - name: Install Playwright Browsers
+      run: |
+        python -m playwright install --with-deps chromium
+
     - name: Run tests
       run: |
-        python -m unittest discover -s tests
+        PYTHONPATH=. pytest
+

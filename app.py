@@ -126,6 +126,9 @@ def run_schedule_logic(data: dict) -> dict:
             pass
 
     if night_start_override or night_end_override:
+        # Floor to whole minute for clean block.start_time values
+        scheduler.start_night = scheduler.start_night.replace(second=0, microsecond=0)
+        scheduler.end_night = scheduler.end_night.replace(second=0, microsecond=0)
         total_seconds = (scheduler.end_night - scheduler.start_night).total_seconds()
         if total_seconds > 0:
             scheduler.num_chunks = int(total_seconds // 60)
@@ -156,6 +159,7 @@ if HAS_FASTAPI:
     async def api_schedule(request: Request):
         try:
             data = await request.json()
+            print("API REQUEST RECEIVED:", {k: v for k, v in data.items() if k != 'targets'}, flush=True)
             result = run_schedule_logic(data)
             return JSONResponse(content=result)
         except Exception as e:

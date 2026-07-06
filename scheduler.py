@@ -47,7 +47,9 @@ def parse_coordinate(val: Any, is_ra: bool = False) -> float:
     """
     if isinstance(val, (int, float)):
         val_float = float(val)
-        return val_float / 15.0 if is_ra else val_float
+        if is_ra:
+            return val_float / 15.0 if val_float > 24.0 else val_float
+        return val_float
 
     # Convert to string and clean
     s = str(val).strip()
@@ -85,7 +87,9 @@ def parse_coordinate(val: Any, is_ra: bool = False) -> float:
     # Try parsing as float directly
     try:
         val_float = float(s)
-        return val_float / 15.0 if is_ra else val_float
+        if is_ra:
+            return val_float / 15.0 if val_float > 24.0 else val_float
+        return val_float
     except ValueError:
         raise ValueError(f"Could not parse coordinate: {val}")
 
@@ -539,9 +543,11 @@ class Scheduler:
         self.solar_times = night_params['solar_times']
         self.moon = night_params['moon']
         
-        # Discretize night into 1-minute chunks from sunset to sunrise
-        self.start_night = self.solar_times['sunset']
-        self.end_night = self.solar_times['sunrise']
+        # Discretize night into 1-minute chunks from sunset to sunrise.
+        # Floor start to whole minute so block.start_time values are clean HH:MM:00 UTC.
+        raw_sunset = self.solar_times['sunset']
+        self.start_night = raw_sunset.replace(second=0, microsecond=0)
+        self.end_night = self.solar_times['sunrise'].replace(second=0, microsecond=0)
         total_seconds = (self.end_night - self.start_night).total_seconds()
         self.num_chunks = int(total_seconds // 60)
         
@@ -568,6 +574,7 @@ class Scheduler:
             return target._airmass_cache[dt_utc]
 
         val = 999.0
+        astropy_ok = False
         if HAS_ASTRO_LIBS and self._obs is not None:
             try:
                 if dt_utc not in self._time_cache:
@@ -581,9 +588,11 @@ class Scheduler:
                     val = 999.0
                 else:
                     val = altaz.secz.value
+                astropy_ok = True
             except Exception:
                 pass
-        else:
+                
+        if not astropy_ok:
             alt, _ = get_alt_az(dt_utc, self.observatory.latitude, self.observatory.longitude, target.ra, target.dec)
             val = get_airmass(alt)
 
@@ -759,6 +768,8 @@ class Scheduler:
             if diff < min_diff:
                 min_diff = diff
                 best_idx = idx
+        # 60s tolerance. chunk_times are now floored to whole minutes so any stored
+        # ISO block.start_time will match a chunk exactly (diff == 0).
         if min_diff <= 60:
             return best_idx
         return None
@@ -770,17 +781,8 @@ class Scheduler:
         self.auto_standards = auto_standards
         self.realtime_constraints = realtime_constraints or {}
         
-        previous_start_chunks = {}
-        if previous_schedule:
-            for item in previous_schedule:
-                t_name = item.get('target_name')
-                start_time_str = item.get('start_time')
-                if t_name and start_time_str:
-                    c_idx = self.get_chunk_idx_from_time_str(start_time_str)
-                    if c_idx is not None:
-                        previous_start_chunks[t_name] = c_idx
-        
         rt = self.realtime_constraints
+        print(f"SCHEDULER SOLVE realtime_constraints={rt}", flush=True)
         if rt.get('manual_limits_enabled'):
             try:
                 start_str = rt.get('manual_limit_start', '')
@@ -813,8 +815,18 @@ class Scheduler:
                 ehh, emm = end_res if end_res else (sunrise_hh, sunrise_mm)
                 
                 if tz_mode == 'UTC':
-                    cand_start = sunset_utc.replace(hour=shh, minute=smm, second=0, microsecond=0)
-                    cand_end = sunrise_utc.replace(hour=ehh, minute=emm, second=0, microsecond=0)
+                    cand_starts = [
+                        sunset_utc.replace(hour=shh, minute=smm, second=0, microsecond=0) + datetime.timedelta(days=d)
+                        for d in [-1, 0, 1]
+                    ]
+                    cand_start = min(cand_starts, key=lambda dt: abs((dt - sunset_utc).total_seconds()))
+
+                    cand_ends = [
+                        sunrise_utc.replace(hour=ehh, minute=emm, second=0, microsecond=0) + datetime.timedelta(days=d)
+                        for d in [-1, 0, 1]
+                    ]
+                    cand_end = min(cand_ends, key=lambda dt: abs((dt - sunrise_utc).total_seconds()))
+                    
                     if cand_end < cand_start:
                         cand_end += datetime.timedelta(days=1)
                     self.start_night = cand_start
@@ -827,10 +839,12 @@ class Scheduler:
                     if ehh < shh:
                         end_day = self.date_local + datetime.timedelta(days=1)
                     local_end = pacific.localize(datetime.datetime(end_day.year, end_day.month, end_day.day, ehh, emm))
-                    self.start_night = local_start.astimezone(pytz.UTC).replace(tzinfo=None)
-                    self.end_night = local_end.astimezone(pytz.UTC).replace(tzinfo=None)
+                    self.start_night = local_start.astimezone(datetime.timezone.utc)
+                    self.end_night = local_end.astimezone(datetime.timezone.utc)
                     
-                # Recompute chunks
+                # Recompute chunks (floor to whole minute for clean block times)
+                self.start_night = self.start_night.replace(second=0, microsecond=0)
+                self.end_night = self.end_night.replace(second=0, microsecond=0)
                 total_seconds = (self.end_night - self.start_night).total_seconds()
                 self.num_chunks = int(total_seconds // 60)
                 self.chunk_times = [
@@ -840,8 +854,28 @@ class Scheduler:
                 # Update solar times boundaries
                 self.solar_times['sunset'] = self.start_night
                 self.solar_times['sunrise'] = self.end_night
+                # Constrain twilights to manual night boundaries
+                for k in ['twilight_evening_18', 'twilight_evening_12']:
+                    if k in self.solar_times:
+                        self.solar_times[k] = max(self.solar_times[k], self.start_night)
+                for k in ['twilight_morning_18', 'twilight_morning_12']:
+                    if k in self.solar_times:
+                        self.solar_times[k] = min(self.solar_times[k], self.end_night)
+                print(f"SCHEDULER RECOMPUTED BOUNDS: start={self.start_night}, end={self.end_night}, num_chunks={self.num_chunks}", flush=True)
             except Exception as e:
-                pass
+                import traceback
+                print("MANUAL BOUNDS ERROR:")
+                traceback.print_exc()
+                
+        previous_start_chunks = {}
+        if previous_schedule:
+            for item in previous_schedule:
+                t_name = item.get('target_name')
+                start_time_str = item.get('start_time')
+                if t_name and start_time_str:
+                    c_idx = self.get_chunk_idx_from_time_str(start_time_str)
+                    if c_idx is not None:
+                        previous_start_chunks[t_name] = c_idx
                 
         # Determine evening/morning twilight boundaries for standard star scheduling
         if getattr(self, 'manual_start_override', False) or (self.realtime_constraints and self.realtime_constraints.get('manual_limits_enabled')):
@@ -1267,9 +1301,11 @@ class Scheduler:
             curve = []
             for c_idx in range(self.num_chunks):
                 dt = self.chunk_times[c_idx]
+                is_obs = self.is_chunk_valid(t, c_idx)
                 curve.append({
                     'time': dt.isoformat(),
-                    'airmass': round(self.get_airmass_for_target(t, dt), 3)
+                    'airmass': round(self.get_airmass_for_target(t, dt), 3),
+                    'observable': is_obs
                 })
             airmass_plots[t.name] = curve
             
@@ -1278,9 +1314,11 @@ class Scheduler:
             curve = []
             for c_idx in range(self.num_chunks):
                 dt = self.chunk_times[c_idx]
+                is_obs = self.is_chunk_valid(block.target, c_idx)
                 curve.append({
                     'time': dt.isoformat(),
-                    'airmass': round(self.get_airmass_for_target(block.target, dt), 3)
+                    'airmass': round(self.get_airmass_for_target(block.target, dt), 3),
+                    'observable': is_obs
                 })
             airmass_plots[block.target.name] = curve
             
@@ -1517,12 +1555,68 @@ class Scheduler:
             S_active_names = {t.name for t in S_active}
             new_active_names = {t.name for t in new_active}
             
-            best_schedule: Optional[Dict[str, int]] = None
-            best_cost = float('inf')
+            initial_schedule = {k: v for k, v in current_schedule.items() if k in manually_scheduled}
             
             def check_overlap(s1: int, d1: int, s2: int, d2: int) -> bool:
                 return not (s1 + d1 <= s2 or s2 + d2 <= s1)
                 
+            # 1. Greedy initialization to establish a high-quality upper bound and speed up search
+            greedy_sched = initial_schedule.copy()
+            greedy_cost = 0.0
+            for t in targets_sorted_for_solve:
+                t_name = t.name
+                t_dur = durations[t_name]
+                slots = valid_slots[t_name]
+                
+                s_prev = current_schedule.get(t_name)
+                if s_prev is None and previous_start_chunks is not None:
+                    s_prev = previous_start_chunks.get(t_name)
+                    
+                if s_prev is not None and s_prev in slots:
+                    sorted_slots = [s_prev] + sorted([s for s in slots if s != s_prev], key=lambda s: airmass_costs[t_name][s])
+                else:
+                    sorted_slots = sorted(slots, key=lambda s: airmass_costs[t_name][s])
+                    
+                placed = False
+                for s in sorted_slots:
+                    overlap = False
+                    for p_name, p_start in greedy_sched.items():
+                        if check_overlap(s, t_dur, p_start, durations[p_name]):
+                            overlap = True
+                            break
+                    if overlap:
+                        continue
+                        
+                    precedence_ok = True
+                    for p_name, p_start in greedy_sched.items():
+                        p_dur = durations[p_name]
+                        if p_name in t.schedule_before:
+                            if not (s + t_dur <= p_start):
+                                precedence_ok = False
+                                break
+                        p_obj = next((tg for tg in targets if tg.name == p_name), None)
+                        if p_obj is not None and t_name in p_obj.schedule_before:
+                            if not (p_start + p_dur <= s):
+                                precedence_ok = False
+                                break
+                    if not precedence_ok:
+                        continue
+                        
+                    greedy_sched[t_name] = s
+                    greedy_cost += airmass_costs[t_name][s]
+                    placed = True
+                    break
+                    
+                if not placed:
+                    if t_name in new_active_names:
+                        greedy_cost += 100000.0
+                        
+            # Only use greedy schedule as fallback if it scheduled all S_active targets (which are mandatory)
+            has_all_s_active = all(name in greedy_sched for name in S_active_names)
+            
+            best_schedule = greedy_sched if has_all_s_active else None
+            best_cost = greedy_cost if has_all_s_active else float('inf')
+            
             # Precompute minimum possible costs for suffix-based pruning
             min_costs = [min(airmass_costs[t.name].values()) if airmass_costs[t.name] else 0.0 for t in targets_sorted_for_solve]
             suffix_min_costs = []
@@ -1534,7 +1628,7 @@ class Scheduler:
             suffix_min_costs.append(0.0) # For idx == len(targets_sorted_for_solve)
             
             search_iterations = 0
-            max_search_iterations = 300000
+            max_search_iterations = 20000
             
             def search(idx: int, schedule: Dict[str, int], cost: float):
                 nonlocal best_schedule, best_cost, search_iterations
