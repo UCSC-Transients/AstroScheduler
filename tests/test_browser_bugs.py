@@ -205,6 +205,33 @@ def test_bugs():
             lock_btn_updated = vega_row_updated.locator("button").first
             assert "🔒" in lock_btn_updated.inner_text(), "Vega did not stay locked after exposure time change!"
             
+            # 8. Add target 2026pbk (priority 3), lock it, change exposure to 20m, start to 06:48, and verify priority 3 targets remain scheduled
+            page.locator("input#t-name").fill("2026pbk")
+            page.locator("input#t-ra").fill("18:00:00")
+            page.locator("input#t-dec").fill("+40:00:00")
+            page.locator("input#t-mag").fill("12.0")
+            page.locator("select#t-prio").select_option("3")
+            page.locator("select#t-sn").select_option("classification")
+            
+            trigger_and_wait(page, lambda: page.locator("#target-form button[type=submit]").click())
+            
+            pbk_row = page.locator("#schedule-table tbody tr", has_text="2026pbk").first
+            pbk_lock_btn = pbk_row.locator("button").first
+            pbk_lock_btn.click()
+            page.wait_for_timeout(1000)
+            
+            pbk_dur_input = pbk_row.locator("input[type=number]").first
+            pbk_dur_input.fill("20")
+            trigger_and_wait(page, lambda: pbk_dur_input.evaluate("node => node.dispatchEvent(new Event('change'))"))
+            
+            pbk_row_updated = page.locator("#schedule-table tbody tr", has_text="2026pbk").first
+            pbk_start_input = pbk_row_updated.locator("input[type=text]").nth(0)
+            pbk_start_input.fill("06:48")
+            trigger_and_wait(page, lambda: pbk_start_input.evaluate("node => node.dispatchEvent(new Event('change'))"))
+            
+            alpha_in_sched_final = page.locator("#schedule-table tbody tr", has_text="Alpha Centauri").count()
+            assert alpha_in_sched_final > 0, "Changing locked priority 3 target exposure/start caused Alpha Centauri to disappear!"
+            
             browser.close()
     finally:
         server_process.terminate()
