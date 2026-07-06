@@ -8,3 +8,5 @@ This Pull Request addresses the scheduler hang, timeout issues, and priority 3 t
 - [x] **Solver Search Iterations Limit Reduction**: Reduced search iterations limits (Python to 20,000, JS to 10,000) to ensure immediate page loading and solver responsiveness.
 - [x] **Fixed JS Fallback ReferenceError**: Fixed `ReferenceError` on undefined `previousStartChunks` in the client-side local JS fallback solver.
 - [x] **Robust Integration Tests**: Automated Uvicorn server lifecycle and verified all features and lock transitions (including user's 15-target list on 2026-06-19 observing night) using synchronized Playwright tests.
+- [x] **Add conftest.py and set PYTHONPATH in GitHub Actions workflow**: Fixed CI `ModuleNotFoundError` during pytest test discovery.
+
