@@ -4005,10 +4005,7 @@ function runLocalJSSolver(payload) {
                 const tDur = durations[tName];
                 const slots = validSlots[tName] || [];
                 
-                let sPrev = currentSchedule[tName];
-                if (sPrev === undefined && previousStartChunks) {
-                    sPrev = previousStartChunks[tName];
-                }
+                const sPrev = currentSchedule[tName];
                 
                 let sortedSlots;
                 if (sPrev !== undefined && slots.includes(sPrev)) {
