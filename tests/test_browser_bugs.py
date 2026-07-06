@@ -236,3 +236,93 @@ def test_bugs():
     finally:
         server_process.terminate()
         server_process.wait()
+
+def test_user_target_list_solving():
+    # Start local HTTP server on port 8056 for this integration test
+    server_process = subprocess.Popen(
+        [sys.executable, "-u", "app.py"],
+        env=dict(os.environ, PORT="8056", PYTHONUNBUFFERED="1")
+    )
+    time.sleep(3) # Let Uvicorn boot
+    
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.on("console", lambda msg: print("BROWSER CONSOLE:", msg.text))
+            page.on("pageerror", lambda err: print("BROWSER ERROR:", err))
+            
+            # Navigate and wait for the initial automatic schedule request
+            with page.expect_response(lambda r: "/api/schedule" in r.url and r.status == 200, timeout=30000):
+                page.goto("http://127.0.0.1:8056")
+            page.wait_for_timeout(500)
+            
+            # Dismiss confirmation dialog for clearing targets
+            page.on("dialog", lambda dialog: dialog.accept())
+            page.locator("button#clear-targets-btn").click()
+            page.wait_for_timeout(1000)
+
+            # Force date to 2026-06-19
+            date_input = page.locator("#obs-date")
+            date_input.fill("2026-06-19")
+            date_input.evaluate("node => node.dispatchEvent(new Event('change'))")
+            page.wait_for_timeout(1000)
+            
+            # Add all 15 targets from user's actual targets
+            targets_data = [
+                ("2026pjc", "23 06 55.00", "-00 39 39.45", "19.50"),
+                ("2026nhr", "13 53 38.98", "+24 49 13.91", "20.42"),
+                ("2026pbk", "14 47 24.04", "+50 28 01.03", "19.88"),
+                ("2026pdd", "22 56 41.78", "+19 18 28.32", "19.26"),
+                ("2026pel", "16 41 15.56", "+39 17 13.56", "17.26"),
+                ("2026nlu", "23 25 00.95", "+14 58 54.47", "18.04"),
+                ("2025rbs", "22 37 03.64", "+34 25 07.95", "18.59"),
+                ("2026lda", "22 14 40.69", "+05 04 50.83", "17.71"),
+                ("2026osq", "21 11 25.33", "+14 14 29.57", "17.19"),
+                ("2026nym", "20 58 27.43", "+00 20 26.95", "19.76"),
+                ("2026mho", "20 07 38.31", "-21 07 06.24", "15.82"),
+                ("2026pir", "17 33 39.74", "+04 22 36.66", "16.84"),
+                ("2026kyv", "17 33 03.67", "-03 45 29.01", "18.38"),
+                ("2026nab", "16 20 28.85", "+36 44 11.37", "19.42"),
+                ("2026ejy", "16 10 00.27", "+00 42 20.66", "16.62")
+            ]
+            
+            for name, ra, dec, mag in targets_data:
+                page.locator("input#t-name").fill(name)
+                page.locator("input#t-ra").fill(ra)
+                page.locator("input#t-dec").fill(dec)
+                page.locator("input#t-mag").fill(mag)
+                page.locator("select#t-prio").select_option("3")
+                page.locator("select#t-sn").select_option("classification")
+                trigger_and_wait(page, lambda: page.locator("#target-form button[type=submit]").click())
+            
+            # Enter manual start and duration in targets-table for 2026pbk
+            pbk_row = page.locator("#target-row-2026pbk")
+            dur_input = pbk_row.locator("input[type=number]").nth(2)
+            dur_input.fill("20")
+            trigger_and_wait(page, lambda: dur_input.evaluate("node => node.dispatchEvent(new Event('change'))"))
+            
+            pbk_row_updated = page.locator("#target-row-2026pbk")
+            start_input = pbk_row_updated.locator("input[type=text]").nth(0)
+            start_input.fill("06:48")
+            trigger_and_wait(page, lambda: start_input.evaluate("node => node.dispatchEvent(new Event('change'))"))
+            
+            # Count scheduled targets in the schedule table
+            rows = page.locator("#schedule-table tbody tr")
+            scheduled_count = rows.count()
+            
+            # Count scheduled science targets (prio 3)
+            scheduled_science = 0
+            for i in range(scheduled_count):
+                row_text = rows.nth(i).inner_text()
+                is_science = not any(calib in row_text for calib in ["BD+", "Feige", "HZ ", "HD19445"])
+                if is_science:
+                    scheduled_science += 1
+            
+            # Verify other priority 3 targets did not disappear
+            assert scheduled_science > 1, f"All priority 3 targets disappeared! Only {scheduled_science} science target scheduled."
+            
+            browser.close()
+    finally:
+        server_process.terminate()
+        server_process.wait()

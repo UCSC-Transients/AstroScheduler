@@ -4081,7 +4081,7 @@ function runLocalJSSolver(payload) {
             let bestSchedule = hasAllSActive ? Object.assign({}, greedySched) : null;
             let bestCost = hasAllSActive ? greedyCost : Infinity;
             let searchIterations = 0;
-            const maxSearchIterations = 100000;
+            const maxSearchIterations = 10000;
             
             function overlap(s1, d1, s2, d2) {
                 return !(s1 + d1 <= s2 || s2 + d2 <= s1);

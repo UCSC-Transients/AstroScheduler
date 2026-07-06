@@ -1628,7 +1628,7 @@ class Scheduler:
             suffix_min_costs.append(0.0) # For idx == len(targets_sorted_for_solve)
             
             search_iterations = 0
-            max_search_iterations = 300000
+            max_search_iterations = 20000
             
             def search(idx: int, schedule: Dict[str, int], cost: float):
                 nonlocal best_schedule, best_cost, search_iterations
