@@ -1,5 +1,135 @@
 // AstroScheduler Frontend Logic with Client-Side Solver Fallback
 
+// Kast Spectrograph Constants
+const BLUE_ERASE = 5.0;
+const RED_ERASE = 20.0;
+const BLUE_READOUT = 30.0;
+const RED_READOUT = 22.0;
+const SLEW_ACQ_OVERHEAD_MIN = 5.0;
+
+const KAST_SCIENCE_LOOKUP = {
+    13.0: { blue_exp: 637.0, blue_num: 1, red_exp: 300.0, red_num: 2 },
+    13.5: { blue_exp: 637.0, blue_num: 1, red_exp: 300.0, red_num: 2 },
+    14.0: { blue_exp: 637.0, blue_num: 1, red_exp: 300.0, red_num: 2 },
+    14.5: { blue_exp: 637.0, blue_num: 1, red_exp: 300.0, red_num: 2 },
+    15.0: { blue_exp: 637.0, blue_num: 1, red_exp: 300.0, red_num: 2 },
+    15.5: { blue_exp: 937.0, blue_num: 1, red_exp: 450.0, red_num: 2 },
+    16.0: { blue_exp: 937.0, blue_num: 1, red_exp: 450.0, red_num: 2 },
+    16.5: { blue_exp: 937.0, blue_num: 1, red_exp: 450.0, red_num: 2 },
+    17.0: { blue_exp: 1237.0, blue_num: 1, red_exp: 600.0, red_num: 2 },
+    17.5: { blue_exp: 1570.0, blue_num: 1, red_exp: 500.0, red_num: 3 },
+    18.0: { blue_exp: 1845.0, blue_num: 1, red_exp: 600.0, red_num: 3 },
+    18.5: { blue_exp: 1230.0, blue_num: 2, red_exp: 600.0, red_num: 4 },
+    19.0: { blue_exp: 1560.0, blue_num: 2, red_exp: 600.0, red_num: 5 },
+    19.5: { blue_exp: 1845.0, blue_num: 2, red_exp: 600.0, red_num: 6 },
+    20.0: { blue_exp: 2145.0, blue_num: 2, red_exp: 600.0, red_num: 7 }
+};
+
+const KAST_STANDARD_LOOKUP = {
+    "Feige 34": { blue_exp: 180.0, blue_num: 1, red_exp: 100.0, red_num: 1 },
+    "BD+284211": { blue_exp: 180.0, blue_num: 1, red_exp: 100.0, red_num: 1 },
+    "Feige 110": { blue_exp: 240.0, blue_num: 1, red_exp: 150.0, red_num: 1 },
+    "G191B2B": { blue_exp: 240.0, blue_num: 1, red_exp: 150.0, red_num: 1 },
+    "G191-B2B": { blue_exp: 240.0, blue_num: 1, red_exp: 150.0, red_num: 1 },
+    "HZ 44": { blue_exp: 240.0, blue_num: 1, red_exp: 150.0, red_num: 1 },
+    "HZ44": { blue_exp: 240.0, blue_num: 1, red_exp: 150.0, red_num: 1 },
+    "BD+332642": { blue_exp: 180.0, blue_num: 1, red_exp: 100.0, red_num: 1 },
+    "HD19445": { blue_exp: 40.0, blue_num: 1, red_exp: 10.0, red_num: 1 },
+    "HD84937": { blue_exp: 60.0, blue_num: 1, red_exp: 20.0, red_num: 1 },
+    "BD+262606": { blue_exp: 135.0, blue_num: 1, red_exp: 40.0, red_num: 1 },
+    "BD+174708": { blue_exp: 135.0, blue_num: 1, red_exp: 35.0, red_num: 1 }
+};
+
+function splitExposureKast(totalExposureSeconds) {
+    const tSeq = totalExposureSeconds;
+    
+    // Blue: max 1899s. Blue erase: 5s, Blue readout: 30s.
+    let numBlue = Math.ceil((tSeq + 30.0) / 1934.0);
+    if (numBlue < 1) numBlue = 1;
+    const exptimeBlue = (tSeq + 30.0) / numBlue - 35.0;
+    
+    // Red: max 600s. Red erase: 20s, Red readout: 22s.
+    let numRed = Math.ceil((tSeq + 22.0) / 642.0);
+    if (numRed < 1) numRed = 1;
+    const exptimeRed = (tSeq + 22.0) / numRed - 42.0;
+    
+    return {
+        red_exptime: Math.max(0.0, exptimeRed),
+        red_num: numRed,
+        blue_exptime: Math.max(0.0, exptimeBlue),
+        blue_num: numBlue
+    };
+}
+
+function getTargetExposureDetailsJS(t) {
+    if (t.red_exptime !== null && t.red_exptime !== undefined &&
+        t.red_num !== null && t.red_num !== undefined &&
+        t.blue_exptime !== null && t.blue_exptime !== undefined &&
+        t.blue_num !== null && t.blue_num !== undefined) {
+        
+        const T_R = t.red_num * (t.red_exptime + 20.0) + (t.red_num - 1) * 22.0;
+        const T_B = t.blue_num * (t.blue_exptime + 5.0) + (t.blue_num - 1) * 30.0;
+        const T_seq = Math.max(T_R, T_B);
+        return {
+            red_exptime: t.red_exptime,
+            red_num: t.red_num,
+            blue_exptime: t.blue_exptime,
+            blue_num: t.blue_num,
+            total_time: Math.round(T_seq),
+            duration_minutes: 5 + Math.ceil(T_seq / 60.0)
+        };
+    }
+    
+    const std = KAST_STANDARD_LOOKUP[t.name];
+    if (std) {
+        const T_R = std.red_num * (std.red_exp + 20.0) + (std.red_num - 1) * 22.0;
+        const T_B = std.blue_num * (std.blue_exp + 5.0) + (std.blue_num - 1) * 30.0;
+        const T_seq = Math.max(T_R, T_B);
+        return {
+            red_exptime: std.red_exp,
+            red_num: std.red_num,
+            blue_exptime: std.blue_exp,
+            blue_num: std.blue_num,
+            total_time: Math.round(T_seq),
+            duration_minutes: 5 + Math.ceil(T_seq / 60.0)
+        };
+    }
+    
+    if (t.manual_duration !== null && t.manual_duration !== undefined) {
+        const T_seq = Math.max(0.0, t.manual_duration * 60.0 - 300.0);
+        const split = splitExposureKast(T_seq);
+        return {
+            red_exptime: Math.round(split.red_exptime * 10) / 10,
+            red_num: split.red_num,
+            blue_exptime: Math.round(split.blue_exptime * 10) / 10,
+            blue_num: split.blue_num,
+            total_time: Math.round(T_seq),
+            duration_minutes: Math.max(1, Math.ceil(t.manual_duration))
+        };
+    }
+    
+    const mag = t.magnitude;
+    let key = 13.0;
+    if (mag <= 15.0) key = 15.0;
+    else if (mag >= 20.0) key = 20.0;
+    else {
+        key = Math.round(mag * 2.0) / 2.0;
+    }
+    const lut = KAST_SCIENCE_LOOKUP[key] || KAST_SCIENCE_LOOKUP[15.0];
+    const T_R = lut.red_num * (lut.red_exp + 20.0) + (lut.red_num - 1) * 22.0;
+    const T_B = lut.blue_num * (lut.blue_exp + 5.0) + (lut.blue_num - 1) * 30.0;
+    const T_seq = Math.max(T_R, T_B);
+    return {
+        red_exptime: lut.red_exp,
+        red_num: lut.red_num,
+        blue_exptime: lut.blue_exp,
+        blue_num: lut.blue_num,
+        total_time: Math.round(T_seq),
+        duration_minutes: 5 + Math.ceil(T_seq / 60.0)
+    };
+}
+
+
 function formatRA(raHours) {
     if (isNaN(raHours)) return "";
     const h = Math.floor(raHours);
@@ -196,6 +326,57 @@ document.addEventListener("DOMContentLoaded", async () => {
     document.getElementById("load-sample-btn").addEventListener("click", loadSampleTargets);
     document.getElementById("clear-targets-btn").addEventListener("click", clearAllTargets);
     
+    // Add real-time linkage listeners to Add Target form exposure override fields
+    const redExpIn = document.getElementById("t-red-exptime");
+    const redNumIn = document.getElementById("t-red-num");
+    const blueExpIn = document.getElementById("t-blue-exptime");
+    const blueNumIn = document.getElementById("t-blue-num");
+
+    function handleRedChange() {
+        const E_R = parseFloat(redExpIn.value);
+        const N_R = parseInt(redNumIn.value, 10);
+        if (!isNaN(E_R) && !isNaN(N_R)) {
+            let finalER = E_R;
+            if (finalER > 600) {
+                finalER = 600;
+                redExpIn.value = 600;
+            }
+            const T_seq = N_R * (finalER + 20.0) + (N_R - 1) * 22.0;
+            let N_B = Math.ceil((T_seq + 30.0) / 1934.0);
+            if (N_B < 1) N_B = 1;
+            const E_B = (T_seq + 30.0) / N_B - 35.0;
+
+            blueNumIn.value = N_B;
+            blueExpIn.value = Math.max(0.0, E_B).toFixed(1);
+        }
+    }
+
+    function handleBlueChange() {
+        const E_B = parseFloat(blueExpIn.value);
+        const N_B = parseInt(blueNumIn.value, 10);
+        if (!isNaN(E_B) && !isNaN(N_B)) {
+            let finalEB = E_B;
+            if (finalEB >= 1900) {
+                finalEB = 1899;
+                blueExpIn.value = 1899;
+            }
+            const T_seq = N_B * (finalEB + 5.0) + (N_B - 1) * 30.0;
+            let N_R = Math.ceil((T_seq + 22.0) / 642.0);
+            if (N_R < 1) N_R = 1;
+            const E_R = (T_seq + 22.0) / N_R - 42.0;
+
+            redNumIn.value = N_R;
+            redExpIn.value = Math.max(0.0, E_R).toFixed(1);
+        }
+    }
+
+    if (redExpIn && redNumIn && blueExpIn && blueNumIn) {
+        redExpIn.addEventListener("input", handleRedChange);
+        redNumIn.addEventListener("input", handleRedChange);
+        blueExpIn.addEventListener("input", handleBlueChange);
+        blueNumIn.addEventListener("input", handleBlueChange);
+    }
+    
     // Issue #16: Load manual standards mode state
     const storedAuto = localStorage.getItem("autoStandardsMode");
     if (storedAuto !== null) {
@@ -328,6 +509,16 @@ function handleAddTarget(e) {
     const high_airmass = document.getElementById("t-airmass").checked;
     const comment = document.getElementById("t-comment").value.trim();
     
+    const redExptimeRaw = document.getElementById("t-red-exptime").value.trim();
+    const redNumRaw = document.getElementById("t-red-num").value.trim();
+    const blueExptimeRaw = document.getElementById("t-blue-exptime").value.trim();
+    const blueNumRaw = document.getElementById("t-blue-num").value.trim();
+    
+    const red_exptime = redExptimeRaw ? parseFloat(redExptimeRaw) : null;
+    const red_num = redNumRaw ? parseInt(redNumRaw, 10) : null;
+    const blue_exptime = blueExptimeRaw ? parseFloat(blueExptimeRaw) : null;
+    const blue_num = blueNumRaw ? parseInt(blueNumRaw, 10) : null;
+    
     const ra = parseCoordinate(raRaw, true);
     const dec = parseCoordinate(decRaw, false);
     
@@ -352,7 +543,11 @@ function handleAddTarget(e) {
         comment,
         manual_start_time: existing ? existing.manual_start_time : null,
         manual_duration: existing ? existing.manual_duration : null,
-        schedule_before: existing ? existing.schedule_before : []
+        schedule_before: existing ? existing.schedule_before : [],
+        red_exptime,
+        red_num,
+        blue_exptime,
+        blue_num
     };
     
     if (existingIdx >= 0) {
@@ -386,6 +581,11 @@ function editTarget(name) {
     document.getElementById("t-airmass").checked = target.high_airmass;
     document.getElementById("t-comment").value = target.comment;
     
+    document.getElementById("t-red-exptime").value = target.red_exptime !== null && target.red_exptime !== undefined ? target.red_exptime : "";
+    document.getElementById("t-red-num").value = target.red_num !== null && target.red_num !== undefined ? target.red_num : "";
+    document.getElementById("t-blue-exptime").value = target.blue_exptime !== null && target.blue_exptime !== undefined ? target.blue_exptime : "";
+    document.getElementById("t-blue-num").value = target.blue_num !== null && target.blue_num !== undefined ? target.blue_num : "";
+    
     document.getElementById("target-form").scrollIntoView({ behavior: 'smooth' });
 }
 
@@ -398,13 +598,13 @@ function clearAllTargets() {
 
 function loadSampleTargets() {
     targetPool = [
-        { name: "Vega", ra: 18.616, dec: 38.78, magnitude: 0.0, priority: 1.0, sn_mode: "classification", allow_twilight: true, high_airmass: false, comment: "Standard calibrator, bright", manual_start_time: null, manual_duration: null, schedule_before: [] },
-        { name: "M57 Ring Nebula", ra: 18.893, dec: 33.03, magnitude: 8.8, priority: 1.0, sn_mode: "normal", allow_twilight: false, high_airmass: false, comment: "Central planetary nebula core", manual_start_time: null, manual_duration: null, schedule_before: [] },
-        { name: "NGC 6791", ra: 19.348, dec: 37.77, magnitude: 9.5, priority: 2.0, sn_mode: "normal", allow_twilight: false, high_airmass: false, comment: "Old open cluster", manual_start_time: null, manual_duration: null, schedule_before: [] },
-        { name: "Cygnus X-1", ra: 19.972, dec: 35.20, magnitude: 8.9, priority: 2.0, sn_mode: "high_sn", allow_twilight: false, high_airmass: false, comment: "High mass X-ray binary", manual_start_time: null, manual_duration: null, schedule_before: [] },
-        { name: "M27 Dumbbell", ra: 19.993, dec: 22.72, magnitude: 7.5, priority: 1.0, sn_mode: "high_sn", allow_twilight: false, high_airmass: false, comment: "Bright planetary nebula", manual_start_time: null, manual_duration: null, schedule_before: [] },
-        { name: "Albireo", ra: 19.512, dec: 27.96, magnitude: 3.1, priority: 1.0, sn_mode: "normal", allow_twilight: false, high_airmass: false, comment: "Double star separation check", manual_start_time: null, manual_duration: null, schedule_before: [] },
-        { name: "Alpha Centauri", ra: 18.0, dec: 40.0, magnitude: 4.5, priority: 3.0, sn_mode: "classification", allow_twilight: false, high_airmass: false, comment: "Observable priority 3 target", manual_start_time: null, manual_duration: null, schedule_before: [] }
+        { name: "Vega", ra: 18.616, dec: 38.78, magnitude: 0.0, priority: 1.0, sn_mode: "classification", allow_twilight: true, high_airmass: false, comment: "Standard calibrator, bright", manual_start_time: null, manual_duration: null, schedule_before: [], red_exptime: null, red_num: null, blue_exptime: null, blue_num: null },
+        { name: "M57 Ring Nebula", ra: 18.893, dec: 33.03, magnitude: 8.8, priority: 1.0, sn_mode: "normal", allow_twilight: false, high_airmass: false, comment: "Central planetary nebula core", manual_start_time: null, manual_duration: null, schedule_before: [], red_exptime: null, red_num: null, blue_exptime: null, blue_num: null },
+        { name: "NGC 6791", ra: 19.348, dec: 37.77, magnitude: 9.5, priority: 2.0, sn_mode: "normal", allow_twilight: false, high_airmass: false, comment: "Old open cluster", manual_start_time: null, manual_duration: null, schedule_before: [], red_exptime: null, red_num: null, blue_exptime: null, blue_num: null },
+        { name: "Cygnus X-1", ra: 19.972, dec: 35.20, magnitude: 8.9, priority: 2.0, sn_mode: "high_sn", allow_twilight: false, high_airmass: false, comment: "High mass X-ray binary", manual_start_time: null, manual_duration: null, schedule_before: [], red_exptime: null, red_num: null, blue_exptime: null, blue_num: null },
+        { name: "M27 Dumbbell", ra: 19.993, dec: 22.72, magnitude: 7.5, priority: 1.0, sn_mode: "high_sn", allow_twilight: false, high_airmass: false, comment: "Bright planetary nebula", manual_start_time: null, manual_duration: null, schedule_before: [], red_exptime: null, red_num: null, blue_exptime: null, blue_num: null },
+        { name: "Albireo", ra: 19.512, dec: 27.96, magnitude: 3.1, priority: 1.0, sn_mode: "normal", allow_twilight: false, high_airmass: false, comment: "Double star separation check", manual_start_time: null, manual_duration: null, schedule_before: [], red_exptime: null, red_num: null, blue_exptime: null, blue_num: null },
+        { name: "Alpha Centauri", ra: 18.0, dec: 40.0, magnitude: 4.5, priority: 3.0, sn_mode: "classification", allow_twilight: false, high_airmass: false, comment: "Observable priority 3 target", manual_start_time: null, manual_duration: null, schedule_before: [], red_exptime: null, red_num: null, blue_exptime: null, blue_num: null }
     ];
     saveAndRefresh();
 }
@@ -570,6 +770,19 @@ function renderTargetsTable() {
     const unobservable = lastScheduleResult?.unobservable || [];
 
     tbody.innerHTML = sorted.map(t => {
+        const expDetails = getTargetExposureDetailsJS(t);
+        const red_exptime_val = t.red_exptime !== null && t.red_exptime !== undefined ? t.red_exptime : '';
+        const red_num_val = t.red_num !== null && t.red_num !== undefined ? t.red_num : '';
+        const blue_exptime_val = t.blue_exptime !== null && t.blue_exptime !== undefined ? t.blue_exptime : '';
+        const blue_num_val = t.blue_num !== null && t.blue_num !== undefined ? t.blue_num : '';
+        
+        const red_exptime_placeholder = t.red_exptime !== null && t.red_exptime !== undefined ? '' : expDetails.red_exptime.toFixed(0);
+        const red_num_placeholder = t.red_num !== null && t.red_num !== undefined ? '' : expDetails.red_num;
+        const blue_exptime_placeholder = t.blue_exptime !== null && t.blue_exptime !== undefined ? '' : expDetails.blue_exptime.toFixed(0);
+        const blue_num_placeholder = t.blue_num !== null && t.blue_num !== undefined ? '' : expDetails.blue_num;
+        
+        const total_time_display = expDetails.total_time;
+
         const isScheduled = scheduledNames.has(t.name);
         const scheduledBlock = currentBlocksList.find(b => b.target_name === t.name);
 
@@ -660,6 +873,29 @@ function renderTargetsTable() {
                            onclick="event.stopPropagation();" style="width: 75px; font-family: monospace; text-align: center;">
                 </td>
                 <td>
+                    <input type="number" placeholder="${red_exptime_placeholder}" min="0" step="0.1" value="${red_exptime_val}" 
+                           onchange="updateTargetField('${t.name}', 'red_exptime', this.value)" 
+                           onclick="event.stopPropagation();" style="width: 60px; text-align: center;">
+                </td>
+                <td>
+                    <input type="number" placeholder="${red_num_placeholder}" min="1" step="1" value="${red_num_val}" 
+                           onchange="updateTargetField('${t.name}', 'red_num', this.value)" 
+                           onclick="event.stopPropagation();" style="width: 45px; text-align: center;">
+                </td>
+                <td>
+                    <input type="number" placeholder="${blue_exptime_placeholder}" min="0" step="0.1" value="${blue_exptime_val}" 
+                           onchange="updateTargetField('${t.name}', 'blue_exptime', this.value)" 
+                           onclick="event.stopPropagation();" style="width: 60px; text-align: center;">
+                </td>
+                <td>
+                    <input type="number" placeholder="${blue_num_placeholder}" min="1" step="1" value="${blue_num_val}" 
+                           onchange="updateTargetField('${t.name}', 'blue_num', this.value)" 
+                           onclick="event.stopPropagation();" style="width: 45px; text-align: center;">
+                </td>
+                <td style="font-family: monospace; font-size: 0.85rem; text-align: center; color: var(--text-secondary);">
+                    ${total_time_display}
+                </td>
+                <td>
                     <input type="number" placeholder="min" min="0" value="${scheduledDuration}" 
                            onchange="updateTargetField('${t.name}', 'manual_duration', this.value)" 
                            onclick="event.stopPropagation();" style="width: 65px; text-align: center;">
@@ -702,6 +938,18 @@ function updateTargetField(name, field, val) {
         return;
     } else if (field === 'manual_end_time') {
         updateTargetManualEnd(name, val);
+        return;
+    } else if (field === 'red_exptime') {
+        updateTargetRedExp(name, val);
+        return;
+    } else if (field === 'red_num') {
+        updateTargetRedNum(name, val);
+        return;
+    } else if (field === 'blue_exptime') {
+        updateTargetBlueExp(name, val);
+        return;
+    } else if (field === 'blue_num') {
+        updateTargetBlueNum(name, val);
         return;
     } else if (field === 'ra') {
         const parsed = parseCoordinate(val, true);
@@ -786,6 +1034,14 @@ function updateTargetManualDuration(name, val) {
     const duration = val.trim() ? parseFloat(val) : null;
     target.manual_duration = duration;
     
+    // Clear manual exposure overrides so they recalculate based on manual_duration
+    if (targetPool.some(t => t.name === name)) {
+        target.red_exptime = null;
+        target.red_num = null;
+        target.blue_exptime = null;
+        target.blue_num = null;
+    }
+    
     if (duration !== null) {
         if (target.lock_type === 'end' && target.manual_end_time) {
             const endDate = new Date(target.manual_end_time);
@@ -800,6 +1056,138 @@ function updateTargetManualDuration(name, val) {
                 target.manual_end_time = endDate.toISOString();
             }
         }
+    }
+    saveAndRefresh();
+}
+
+function updateTargetRedExp(name, val) {
+    const target = targetPool.find(t => t.name === name);
+    if (!target) return;
+    
+    const E_R = val.trim() ? parseFloat(val) : null;
+    target.red_exptime = E_R;
+    
+    const N_R = target.red_num !== null ? target.red_num : getTargetExposureDetailsJS(target).red_num;
+    target.red_num = N_R;
+    
+    if (E_R !== null && N_R !== null) {
+        let finalER = E_R;
+        if (finalER > 600) {
+            finalER = 600;
+            target.red_exptime = 600;
+        }
+        const T_seq = N_R * (finalER + 20.0) + (N_R - 1) * 22.0;
+        let N_B = Math.ceil((T_seq + 30.0) / 1934.0);
+        if (N_B < 1) N_B = 1;
+        const E_B = (T_seq + 30.0) / N_B - 35.0;
+        
+        target.blue_num = N_B;
+        target.blue_exptime = Math.max(0.0, E_B);
+        target.manual_duration = null;
+    } else {
+        target.red_exptime = null;
+        target.red_num = null;
+        target.blue_exptime = null;
+        target.blue_num = null;
+    }
+    saveAndRefresh();
+}
+
+function updateTargetRedNum(name, val) {
+    const target = targetPool.find(t => t.name === name);
+    if (!target) return;
+    
+    const N_R = val.trim() ? parseInt(val, 10) : null;
+    target.red_num = N_R;
+    
+    const E_R = target.red_exptime !== null ? target.red_exptime : getTargetExposureDetailsJS(target).red_exptime;
+    target.red_exptime = E_R;
+    
+    if (E_R !== null && N_R !== null) {
+        let finalER = E_R;
+        if (finalER > 600) {
+            finalER = 600;
+            target.red_exptime = 600;
+        }
+        const T_seq = N_R * (finalER + 20.0) + (N_R - 1) * 22.0;
+        let N_B = Math.ceil((T_seq + 30.0) / 1934.0);
+        if (N_B < 1) N_B = 1;
+        const E_B = (T_seq + 30.0) / N_B - 35.0;
+        
+        target.blue_num = N_B;
+        target.blue_exptime = Math.max(0.0, E_B);
+        target.manual_duration = null;
+    } else {
+        target.red_exptime = null;
+        target.red_num = null;
+        target.blue_exptime = null;
+        target.blue_num = null;
+    }
+    saveAndRefresh();
+}
+
+function updateTargetBlueExp(name, val) {
+    const target = targetPool.find(t => t.name === name);
+    if (!target) return;
+    
+    const E_B = val.trim() ? parseFloat(val) : null;
+    target.blue_exptime = E_B;
+    
+    const N_B = target.blue_num !== null ? target.blue_num : getTargetExposureDetailsJS(target).blue_num;
+    target.blue_num = N_B;
+    
+    if (E_B !== null && N_B !== null) {
+        let finalEB = E_B;
+        if (finalEB >= 1900) {
+            finalEB = 1899;
+            target.blue_exptime = 1899;
+        }
+        const T_seq = N_B * (finalEB + 5.0) + (N_B - 1) * 30.0;
+        let N_R = Math.ceil((T_seq + 22.0) / 642.0);
+        if (N_R < 1) N_R = 1;
+        const E_R = (T_seq + 22.0) / N_R - 42.0;
+        
+        target.red_num = N_R;
+        target.red_exptime = Math.max(0.0, E_R);
+        target.manual_duration = null;
+    } else {
+        target.red_exptime = null;
+        target.red_num = null;
+        target.blue_exptime = null;
+        target.blue_num = null;
+    }
+    saveAndRefresh();
+}
+
+function updateTargetBlueNum(name, val) {
+    const target = targetPool.find(t => t.name === name);
+    if (!target) return;
+    
+    const N_B = val.trim() ? parseInt(val, 10) : null;
+    target.blue_num = N_B;
+    
+    const E_B = target.blue_exptime !== null ? target.blue_exptime : getTargetExposureDetailsJS(target).blue_exptime;
+    target.blue_exptime = E_B;
+    
+    if (E_B !== null && N_B !== null) {
+        let finalEB = E_B;
+        if (finalEB >= 1900) {
+            finalEB = 1899;
+            target.blue_exptime = 1899;
+        }
+        const T_seq = N_B * (finalEB + 5.0) + (N_B - 1) * 30.0;
+        let N_R = Math.ceil((T_seq + 22.0) / 642.0);
+        if (N_R < 1) N_R = 1;
+        const E_R = (T_seq + 22.0) / N_R - 42.0;
+        
+        target.red_num = N_R;
+        target.red_exptime = Math.max(0.0, E_R);
+        target.manual_duration = null;
+    } else {
+        target.red_exptime = null;
+        target.red_num = null;
+        target.blue_exptime = null;
+        target.blue_num = null;
     }
     saveAndRefresh();
 }
@@ -856,6 +1244,10 @@ function clearAllOverrides() {
         t.manual_duration = null;
         t.lock_type = null;
         t.schedule_before = [];
+        t.red_exptime = null;
+        t.red_num = null;
+        t.blue_exptime = null;
+        t.blue_num = null;
     });
     standardStars.forEach(s => {
         s.manual_start_time = null;
@@ -3372,10 +3764,8 @@ function runLocalJSSolver(payload) {
         if (s.manual_start_time) {
             const manualChunk = getChunkIdxFromTimeStr(s.manual_start_time);
             if (manualChunk !== null) {
-                let durChunks = 5;
-                if (s.manual_duration !== null && s.manual_duration !== undefined) {
-                    durChunks = Math.max(1, Math.ceil(s.manual_duration));
-                }
+                const details = getTargetExposureDetailsJS(s);
+                const durChunks = details.duration_minutes;
                 let blockValid = true;
                 for (let c = manualChunk; c < manualChunk + durChunks; c++) {
                     if (c >= numChunks || prelimReservedChunks.has(c) || !isChunkValid(s, c, true)) {
@@ -3388,6 +3778,8 @@ function runLocalJSSolver(payload) {
                         prelimReservedChunks.add(c);
                     }
                     const air = getAirmassForTarget(s, chunkTimes[manualChunk]);
+                    let commentPrefix = `Slew: 5m. Blue: ${details.blue_num}x${details.blue_exp.toFixed(0)}s, Red: ${details.red_num}x${details.red_exp.toFixed(0)}s.`;
+                    let blockComment = `Calib: ${s.color.charAt(0).toUpperCase() + s.color.slice(1)} / ${s.quality.charAt(0).toUpperCase() + s.quality.slice(1)}, Airmass ${air.toFixed(2)}`;
                     manualStandardBlocks.push({
                         target_name: s.name,
                         ra: s.ra,
@@ -3399,7 +3791,7 @@ function runLocalJSSolver(payload) {
                         airmass_end: air,
                         airmass_median: air,
                         priority: 0.0,
-                        comment: `Calib: ${s.color.charAt(0).toUpperCase() + s.color.slice(1)} / ${s.quality.charAt(0).toUpperCase() + s.quality.slice(1)}, Airmass ${air.toFixed(2)}`
+                        comment: `${commentPrefix} ${blockComment}`
                     });
                 }
             }
@@ -3464,26 +3856,18 @@ function runLocalJSSolver(payload) {
     
     function addStandardBlock(starObj, chunkIdx) {
         if (!starObj) return;
-        const targetObj = {
-            name: starObj.name,
-            ra: starObj.ra,
-            dec: starObj.dec,
-            magnitude: starObj.magnitude,
-            priority: 0.0,
-            allow_twilight: true,
-            high_airmass: false,
-            comment: `Calib: ${starObj.color.charAt(0).toUpperCase() + starObj.color.slice(1)} / ${starObj.quality.charAt(0).toUpperCase() + starObj.quality.slice(1)}, Airmass ${getAirmassForTarget(starObj, chunkTimes[chunkIdx]).toFixed(2)}`
-        };
-        let durChunks = 5;
-        if (starObj.manual_duration !== null && starObj.manual_duration !== undefined) {
-            durChunks = Math.max(1, Math.ceil(starObj.manual_duration));
-        }
+        const details = getTargetExposureDetailsJS(starObj);
+        const durChunks = details.duration_minutes;
+        const air = getAirmassForTarget(starObj, chunkTimes[chunkIdx]);
+        
+        let commentPrefix = `Slew: 5m. Blue: ${details.blue_num}x${details.blue_exp.toFixed(0)}s, Red: ${details.red_num}x${details.red_exp.toFixed(0)}s.`;
+        let blockComment = `Calib: ${starObj.color.charAt(0).toUpperCase() + starObj.color.slice(1)} / ${starObj.quality.charAt(0).toUpperCase() + starObj.quality.slice(1)}, Airmass ${air.toFixed(2)}`;
+        
         for (let c = chunkIdx; c < chunkIdx + durChunks; c++) {
             reservedChunks.add(c);
         }
-        const air = getAirmassForTarget(starObj, chunkTimes[chunkIdx]);
         standardBlocks.push({
-            target_name: targetObj.name,
+            target_name: starObj.name,
             ra: starObj.ra,
             dec: starObj.dec,
             start_time: chunkTimes[chunkIdx].toISOString(),
@@ -3493,7 +3877,7 @@ function runLocalJSSolver(payload) {
             airmass_end: air,
             airmass_median: air,
             priority: 0.0,
-            comment: targetObj.comment
+            comment: `${commentPrefix} ${blockComment}`
         });
     }
 
@@ -3503,11 +3887,18 @@ function runLocalJSSolver(payload) {
         let s_er = null;
         let s_mb = null;
         let s_mr = null;
+        
+        let dur_eb = 8;
+        let dur_er = 8;
+        let dur_mb = 8;
+        let dur_mr = 8;
 
         // Evening Blue (Slot 1)
         let best_eb_score = -1.0;
         blueStandards.forEach(s => {
-            if (Array.from({length: 5}, (_, i) => eveSlot1 + i).some(c => reservedChunks.has(c))) return;
+            const details = getTargetExposureDetailsJS(s);
+            const currentDur = details.duration_minutes;
+            if (Array.from({length: currentDur}, (_, i) => eveSlot1 + i).some(c => reservedChunks.has(c) || c >= numChunks)) return;
             if (!isShaneVisible(s, chunkTimes[eveSlot1])) return;
             const air = getAirmassForTarget(s, chunkTimes[eveSlot1]);
             if (air > 0 && air <= 2.2) {
@@ -3520,17 +3911,23 @@ function runLocalJSSolver(payload) {
                 if (score > best_eb_score) {
                     best_eb_score = score;
                     s_eb = s;
+                    dur_eb = currentDur;
                 }
             }
         });
         if (s_eb) {
             addStandardBlock(s_eb, eveSlot1);
+            eveSlot2 = eveSlot1 + dur_eb;
+        } else {
+            eveSlot2 = eveSlot1 + 8;
         }
 
         // Evening Red (Slot 2)
         let best_er_score = -1.0;
         redStandards.forEach(s => {
-            if (Array.from({length: 5}, (_, i) => eveSlot2 + i).some(c => reservedChunks.has(c))) return;
+            const details = getTargetExposureDetailsJS(s);
+            const currentDur = details.duration_minutes;
+            if (Array.from({length: currentDur}, (_, i) => eveSlot2 + i).some(c => reservedChunks.has(c) || c >= numChunks)) return;
             if (!isShaneVisible(s, chunkTimes[eveSlot2])) return;
             const air = getAirmassForTarget(s, chunkTimes[eveSlot2]);
             if (air > 0 && air <= 2.2) {
@@ -3550,12 +3947,52 @@ function runLocalJSSolver(payload) {
             addStandardBlock(s_er, eveSlot2);
         }
 
+        // Morning slots scheduling: mornSlot2 is red, mornSlot1 is blue.
+        const mornSequenceEnd = hasManual ? numChunks - 5 : numChunks - 30;
+
+        // Morning Red (Slot 2)
+        let best_mr_score = -1.0;
+        s_mr = null;
+        dur_mr = 8;
+        redStandards.forEach(s => {
+            const details = getTargetExposureDetailsJS(s);
+            const currentDur = details.duration_minutes;
+            const currentStart = mornSequenceEnd - currentDur;
+            if (Array.from({length: currentDur}, (_, i) => currentStart + i).some(c => reservedChunks.has(c) || c < 0)) return;
+            if (!isShaneVisible(s, chunkTimes[currentStart])) return;
+            const air = getAirmassForTarget(s, chunkTimes[currentStart]);
+            if (air > 0 && air <= 2.2) {
+                let score = s.quality === 'good' ? 100.0 : 10.0;
+                if (needHighAirmass) {
+                    if (air >= 1.5 && air <= 2.2) score += 20.0;
+                } else {
+                    if (air < 1.3) score += 20.0;
+                }
+                if (score > best_mr_score) {
+                    best_mr_score = score;
+                    s_mr = s;
+                    dur_mr = currentDur;
+                }
+            }
+        });
+        let mornStartRed;
+        if (s_mr) {
+            mornStartRed = mornSequenceEnd - dur_mr;
+            addStandardBlock(s_mr, mornStartRed);
+        } else {
+            mornStartRed = mornSequenceEnd - 8;
+        }
+
         // Morning Blue (Slot 1)
         let best_mb_score = -1.0;
+        s_mb = null;
         blueStandards.forEach(s => {
-            if (Array.from({length: 5}, (_, i) => mornSlot1 + i).some(c => reservedChunks.has(c))) return;
-            if (!isShaneVisible(s, chunkTimes[mornSlot1])) return;
-            const air = getAirmassForTarget(s, chunkTimes[mornSlot1]);
+            const details = getTargetExposureDetailsJS(s);
+            const currentDur = details.duration_minutes;
+            const currentStart = mornStartRed - currentDur;
+            if (Array.from({length: currentDur}, (_, i) => currentStart + i).some(c => reservedChunks.has(c) || c < 0)) return;
+            if (!isShaneVisible(s, chunkTimes[currentStart])) return;
+            const air = getAirmassForTarget(s, chunkTimes[currentStart]);
             if (air > 0 && air <= 2.2) {
                 let score = s.quality === 'good' ? 100.0 : 10.0;
                 if (needHighAirmass) {
@@ -3570,30 +4007,10 @@ function runLocalJSSolver(payload) {
             }
         });
         if (s_mb) {
-            addStandardBlock(s_mb, mornSlot1);
-        }
-
-        // Morning Red (Slot 2)
-        let best_mr_score = -1.0;
-        redStandards.forEach(s => {
-            if (Array.from({length: 5}, (_, i) => mornSlot2 + i).some(c => reservedChunks.has(c))) return;
-            if (!isShaneVisible(s, chunkTimes[mornSlot2])) return;
-            const air = getAirmassForTarget(s, chunkTimes[mornSlot2]);
-            if (air > 0 && air <= 2.2) {
-                let score = s.quality === 'good' ? 100.0 : 10.0;
-                if (needHighAirmass) {
-                    if (air >= 1.5 && air <= 2.2) score += 20.0;
-                } else {
-                    if (air < 1.3) score += 20.0;
-                }
-                if (score > best_mr_score) {
-                    best_mr_score = score;
-                    s_mr = s;
-                }
-            }
-        });
-        if (s_mr) {
-            addStandardBlock(s_mr, mornSlot2);
+            const details_mb = getTargetExposureDetailsJS(s_mb);
+            const dur_mb = details_mb.duration_minutes;
+            const mornStartBlue = mornStartRed - dur_mb;
+            addStandardBlock(s_mb, mornStartBlue);
         }
     } else {
         // Manual Selection Mode
@@ -3618,10 +4035,8 @@ function runLocalJSSolver(payload) {
         }
         
         manualStandards.forEach(s => {
-            let durChunks = 5;
-            if (s.manual_duration !== null && s.manual_duration !== undefined) {
-                durChunks = Math.max(1, Math.ceil(s.manual_duration));
-            }
+            const details = getTargetExposureDetailsJS(s);
+            let durChunks = details.duration_minutes;
             
             function findBestChunk(allowedChunks, maxAirmass) {
                 let bc = null;
@@ -3767,24 +4182,17 @@ function runLocalJSSolver(payload) {
     
     // Internal solve helper function
     function solveInternal(targetsList, reserved) {
-        const targetExps = {};
+        const durations = {};
+        const targetExpsInfo = {};
         targetsList.forEach(t => {
-            if (t.manual_duration !== null && t.manual_duration !== undefined) {
-                targetExps[t.name] = t.manual_duration * 60.0;
-            } else {
-                const sep = getSeparation(t.ra, t.dec, moon.ra, moon.dec);
-                targetExps[t.name] = calculateExposure(t, moon.phase, sep);
-            }
+            const details = getTargetExposureDetailsJS(t);
+            targetExpsInfo[t.name] = details;
+            durations[t.name] = details.duration_minutes;
         });
         
         const manualStartChunks = {};
         targetsList.forEach(t => {
             manualStartChunks[t.name] = getChunkIdxFromTimeStr(t.manual_start_time);
-        });
-        
-        const durations = {};
-        targetsList.forEach(t => {
-            durations[t.name] = Math.max(1, Math.ceil(targetExps[t.name] / 60));
         });
         
         const unobservable = [];
@@ -4204,6 +4612,9 @@ function runLocalJSSolver(payload) {
             const mid = Math.floor(sortedAir.length / 2);
             const medianAir = sortedAir.length % 2 !== 0 ? sortedAir[mid] : (sortedAir[mid-1] + sortedAir[mid]) / 2.0;
             
+            const expInfo = targetExpsInfo[name];
+            let commentPrefix = `Slew: 5m. Blue: ${expInfo.blue_num}x${expInfo.blue_exp.toFixed(0)}s, Red: ${expInfo.red_num}x${expInfo.red_exp.toFixed(0)}s.`;
+            let blockComment = target.comment ? `${commentPrefix} ${target.comment}` : commentPrefix;
             blocksList.push({
                 target_name: name,
                 start_time: chunkTimes[startIdx].toISOString(),
@@ -4213,7 +4624,7 @@ function runLocalJSSolver(payload) {
                 airmass_end: endAir,
                 airmass_median: medianAir,
                 priority: target.priority,
-                comment: target.comment
+                comment: blockComment
             });
         });
         
