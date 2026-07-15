@@ -2334,10 +2334,10 @@ function updateScheduleUI(result) {
                     <td>${durationCell}</td>
                     <td>${b.airmass_start.toFixed(2)} - ${b.airmass_end.toFixed(2)}</td>
                     <td><span style="font-weight:600; color:var(--accent-cyan);">${b.airmass_median.toFixed(2)}</span></td>
-                    <td style="text-align: center;">${redExpCell}</td>
-                    <td style="text-align: center;">${redNCell}</td>
-                    <td style="text-align: center;">${blueExpCell}</td>
                     <td style="text-align: center;">${blueNCell}</td>
+                    <td style="text-align: center;">${blueExpCell}</td>
+                    <td style="text-align: center;">${redNCell}</td>
+                    <td style="text-align: center;">${redExpCell}</td>
                     <td><span style="font-size: 0.85rem; color: var(--text-secondary);">${b.comment}</span></td>
                 </tr>
             `;

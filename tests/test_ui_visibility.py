@@ -145,10 +145,12 @@ def test_exposure_linkage_bugs():
             page.wait_for_timeout(1000)
             
             # Get input elements
-            red_exp_input = target_row.locator("input").nth(3)
-            red_num_input = target_row.locator("input").nth(4)
-            blue_exp_input = target_row.locator("input").nth(5)
-            blue_num_input = target_row.locator("input").nth(6)
+            # Inputs inside the row: 
+            # 0: start, 1: end, 2: duration, 3: blue_num, 4: blue_exp, 5: red_num, 6: red_exp
+            blue_num_input = target_row.locator("input").nth(3)
+            blue_exp_input = target_row.locator("input").nth(4)
+            red_num_input = target_row.locator("input").nth(5)
+            red_exp_input = target_row.locator("input").nth(6)
             
             # Read initial values/placeholders
             init_red_num = red_num_input.input_value() or red_num_input.get_attribute("placeholder") or "2"
@@ -164,18 +166,19 @@ def test_exposure_linkage_bugs():
                 red_exp_input.blur()
                 
                 # Wait for Red N value to be populated in the input field
+                # red_num is now inputs[5]
                 page.wait_for_function(
-                    "name => { const row = document.getElementById('sched-row-' + name); if (!row) return false; const inputs = row.querySelectorAll('input'); return inputs.length >= 7 && inputs[4].value !== ''; }",
+                    "name => { const row = document.getElementById('sched-row-' + name); if (!row) return false; const inputs = row.querySelectorAll('input'); return inputs.length >= 7 && inputs[5].value !== ''; }",
                     arg=target_name,
                     timeout=5000
                 )
                 
                 # Re-locate inputs after table re-render
                 target_row = page.locator(f'tr[id="sched-row-{target_name}"]')
-                red_exp_input = target_row.locator("input").nth(3)
-                red_num_input = target_row.locator("input").nth(4)
-                blue_exp_input = target_row.locator("input").nth(5)
-                blue_num_input = target_row.locator("input").nth(6)
+                blue_num_input = target_row.locator("input").nth(3)
+                blue_exp_input = target_row.locator("input").nth(4)
+                red_num_input = target_row.locator("input").nth(5)
+                red_exp_input = target_row.locator("input").nth(6)
                 
                 new_red_num = int(red_num_input.input_value())
                 new_blue_num = int(blue_num_input.input_value())
@@ -197,16 +200,17 @@ def test_exposure_linkage_bugs():
                 red_exp_input.blur()
                 
                 # Wait for Red N to be updated to 3 (as 1600s redistributed yields 3 exposures)
+                # red_num is inputs[5]
                 page.wait_for_function(
-                    "name => { const row = document.getElementById('sched-row-' + name); if (!row) return false; const inputs = row.querySelectorAll('input'); return inputs.length >= 7 && inputs[4].value === '3'; }",
+                    "name => { const row = document.getElementById('sched-row-' + name); if (!row) return false; const inputs = row.querySelectorAll('input'); return inputs.length >= 7 && inputs[5].value === '3'; }",
                     arg=target_name,
                     timeout=5000
                 )
                 
                 # Re-locate inputs
                 target_row = page.locator(f'tr[id="sched-row-{target_name}"]')
-                red_exp_input = target_row.locator("input").nth(3)
-                red_num_input = target_row.locator("input").nth(4)
+                red_num_input = target_row.locator("input").nth(5)
+                red_exp_input = target_row.locator("input").nth(6)
                 
                 final_red_exp = float(red_exp_input.input_value())
                 final_red_num = int(red_num_input.input_value())
