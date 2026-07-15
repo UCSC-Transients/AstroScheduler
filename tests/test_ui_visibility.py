@@ -129,7 +129,9 @@ def test_exposure_linkage_bugs():
             
             # Load sample targets
             page.locator("button#load-sample-btn").click()
-            page.wait_for_timeout(2000)
+            
+            # Wait dynamically for the schedule table to render
+            page.wait_for_selector("#schedule-table tr[id^='sched-row-']", timeout=15000)
             
             # Find a science target row in schedule table
             rows = page.locator("#schedule-table tbody tr")
