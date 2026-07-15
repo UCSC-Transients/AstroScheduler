@@ -388,3 +388,55 @@ def test_ui_elements_regression():
     finally:
         server_process.terminate()
         server_process.wait()
+
+
+def test_empty_target_pool_regression():
+    server_process = subprocess.Popen(
+        [sys.executable, "-u", "app.py"],
+        env=dict(os.environ, PORT="8058", PYTHONUNBUFFERED="1")
+    )
+    time.sleep(SERVER_BOOT_WAIT_SEC) # Let Uvicorn boot
+    
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            
+            page.on("console", lambda msg: print("BROWSER LOG:", msg.text))
+            page.on("pageerror", lambda err: print("BROWSER ERROR:", err))
+            
+            # Navigate initially
+            page.goto("http://127.0.0.1:8058")
+            
+            # Clear localStorage to ensure target pool is empty
+            page.evaluate("localStorage.clear();")
+            
+            # Reload page and wait for the schedule request
+            with page.expect_response(
+                lambda r: "/api/schedule" in r.url and r.status == 200,
+                timeout=SCHEDULE_RESPONSE_TIMEOUT_MS,
+            ):
+                page.reload()
+            
+            page.wait_for_timeout(1000)
+            
+            # Verify moon phase is populated and not N/A
+            moon_phase_text = page.locator("#moon-phase-val").inner_text()
+            assert "N/A" not in moon_phase_text, f"Moon phase display is broken: {moon_phase_text}"
+            
+            # Verify observing run times are shown in placeholders
+            start_placeholder = page.locator("#manual-night-start").get_attribute("placeholder")
+            end_placeholder = page.locator("#manual-night-end").get_attribute("placeholder")
+            assert start_placeholder, "Observing run start time placeholder is empty"
+            assert end_placeholder, "Observing run end time placeholder is empty"
+            assert ":" in start_placeholder, f"Invalid start time placeholder: {start_placeholder}"
+            assert ":" in end_placeholder, f"Invalid end time placeholder: {end_placeholder}"
+            
+            # Verify timeline ticks and airmass canvas exist
+            assert page.locator(".timeline-axis").count() > 0, "Timeline axis is missing"
+            assert page.locator("canvas#airmassChart").count() > 0, "Airmass chart canvas is missing"
+            
+            browser.close()
+    finally:
+        server_process.terminate()
+        server_process.wait()

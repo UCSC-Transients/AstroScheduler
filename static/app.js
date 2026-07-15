@@ -2060,13 +2060,6 @@ function triggerScheduling() {
 }
 
 async function _doSchedule() {
-    if (targetPool.length === 0) {
-        // Issue #37: Clear alerts when pool is empty
-        renderAlerts([], [], [], 0);
-        currentBlocksList = [];
-        renderTargetsTable();
-        return;
-    }
     
     const date = document.getElementById("obs-date").value;
     const disabledArray = Array.from(disabledStandards);
