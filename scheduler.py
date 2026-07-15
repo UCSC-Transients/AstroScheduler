@@ -13,6 +13,7 @@ try:
     from astropy.utils.iers import conf as iers_conf
     iers_conf.auto_download = False
     iers_conf.auto_max_age = None
+    iers_conf.iers_degraded_accuracy = 'ignore'
     
     import astropy.units as u
     from astropy.time import Time
@@ -21,6 +22,73 @@ try:
     HAS_ASTRO_LIBS = True
 except ImportError:
     HAS_ASTRO_LIBS = False
+
+
+# Kast Spectrograph Constants
+BLUE_ERASE = 5.0
+RED_ERASE = 20.0
+BLUE_READOUT = 30.0
+RED_READOUT = 22.0
+SLEW_ACQ_OVERHEAD_MIN = 7.0
+
+# Kast Science lookup table (Magnitude -> Total Exposure time (mins), Blue (s), Blue N, Red (s), Red N)
+# Magnitudes are rounded to the nearest 0.5.
+# Under 13.0, maps to 13.0. Over 20.0, maps to 20.0.
+# Map keys to nearest 0.5 magnitude
+KAST_SCIENCE_LOOKUP = {
+    13.0: {"blue_exp": 637.0, "blue_num": 1, "red_exp": 300.0, "red_num": 2},
+    13.5: {"blue_exp": 637.0, "blue_num": 1, "red_exp": 300.0, "red_num": 2},
+    14.0: {"blue_exp": 637.0, "blue_num": 1, "red_exp": 300.0, "red_num": 2},
+    14.5: {"blue_exp": 637.0, "blue_num": 1, "red_exp": 300.0, "red_num": 2},
+    15.0: {"blue_exp": 637.0, "blue_num": 1, "red_exp": 300.0, "red_num": 2},
+    15.5: {"blue_exp": 937.0, "blue_num": 1, "red_exp": 450.0, "red_num": 2},
+    16.0: {"blue_exp": 937.0, "blue_num": 1, "red_exp": 450.0, "red_num": 2},
+    16.5: {"blue_exp": 937.0, "blue_num": 1, "red_exp": 450.0, "red_num": 2},
+    17.0: {"blue_exp": 1237.0, "blue_num": 1, "red_exp": 600.0, "red_num": 2},
+    17.5: {"blue_exp": 1570.0, "blue_num": 1, "red_exp": 500.0, "red_num": 3},
+    18.0: {"blue_exp": 1845.0, "blue_num": 1, "red_exp": 600.0, "red_num": 3},
+    18.5: {"blue_exp": 1230.0, "blue_num": 2, "red_exp": 600.0, "red_num": 4},
+    19.0: {"blue_exp": 1560.0, "blue_num": 2, "red_exp": 600.0, "red_num": 5},
+    19.5: {"blue_exp": 1845.0, "blue_num": 2, "red_exp": 600.0, "red_num": 6},
+    20.0: {"blue_exp": 2145.0, "blue_num": 2, "red_exp": 600.0, "red_num": 7},
+}
+
+KAST_STANDARD_LOOKUP = {
+    "Feige 34": {"blue_exp": 180.0, "blue_num": 1, "red_exp": 100.0, "red_num": 1},
+    "BD+284211": {"blue_exp": 180.0, "blue_num": 1, "red_exp": 100.0, "red_num": 1},
+    "Feige 110": {"blue_exp": 240.0, "blue_num": 1, "red_exp": 150.0, "red_num": 1},
+    "G191B2B": {"blue_exp": 240.0, "blue_num": 1, "red_exp": 150.0, "red_num": 1},
+    "G191-B2B": {"blue_exp": 240.0, "blue_num": 1, "red_exp": 150.0, "red_num": 1},
+    "HZ 44": {"blue_exp": 240.0, "blue_num": 1, "red_exp": 150.0, "red_num": 1},
+    "HZ44": {"blue_exp": 240.0, "blue_num": 1, "red_exp": 150.0, "red_num": 1},
+    "BD+332642": {"blue_exp": 180.0, "blue_num": 1, "red_exp": 100.0, "red_num": 1},
+    "HD19445": {"blue_exp": 40.0, "blue_num": 1, "red_exp": 10.0, "red_num": 1},
+    "HD84937": {"blue_exp": 60.0, "blue_num": 1, "red_exp": 20.0, "red_num": 1},
+    "BD+262606": {"blue_exp": 135.0, "blue_num": 1, "red_exp": 40.0, "red_num": 1},
+    "BD+174708": {"blue_exp": 135.0, "blue_num": 1, "red_exp": 35.0, "red_num": 1},
+}
+
+def split_exposure_kast(total_exposure_seconds: float) -> Tuple[float, int, float, int]:
+    t_seq = total_exposure_seconds
+    
+    # Blue: max 1899s. Blue erase: 5s, Blue readout: 30s.
+    num_blue = int(math.ceil((t_seq + 30.0) / 1934.0))
+    if num_blue < 1:
+        num_blue = 1
+    exptime_blue = (t_seq + 30.0) / num_blue - 35.0
+    if exptime_blue < 0:
+        exptime_blue = 0.0
+        
+    # Red: max 600s. Red erase: 20s, Red readout: 22s.
+    num_red = int(math.ceil((t_seq + 22.0) / 642.0))
+    if num_red < 1:
+        num_red = 1
+    exptime_red = (t_seq + 22.0) / num_red - 42.0
+    if exptime_red < 0:
+        exptime_red = 0.0
+        
+    return exptime_red, num_red, exptime_blue, num_blue
+
 
 
 import re
@@ -404,7 +472,11 @@ class Target:
                  manual_start_time: Optional[str] = None,
                  manual_duration: Optional[float] = None,
                  schedule_before: Optional[List[str]] = None,
-                 status: Optional[str] = None):
+                 status: Optional[str] = None,
+                 red_exptime: Optional[float] = None,
+                 red_num: Optional[int] = None,
+                 blue_exptime: Optional[float] = None,
+                 blue_num: Optional[int] = None):
         self.name = name
         self.ra = parse_coordinate(ra, is_ra=True)  # Right Ascension in decimal hours (0 to 24)
         self.dec = parse_coordinate(dec, is_ra=False)  # Declination in decimal degrees (-90 to 90)
@@ -418,6 +490,10 @@ class Target:
         self.manual_duration = manual_duration
         self.schedule_before = schedule_before or []
         self.status = status
+        self.red_exptime = red_exptime
+        self.red_num = red_num
+        self.blue_exptime = blue_exptime
+        self.blue_num = blue_num
         
     def calculate_exposure_time(self, moon_phase: float, moon_separation: float, extinction: float = 0.0, latitude: float = 37.3414) -> float:
         """
@@ -530,6 +606,64 @@ def parse_hour_minute(time_str: str, is_start: bool = False, is_local_tz: bool =
     return hh, mm
 
 
+def get_target_exposure_details(target: Target, moon: Dict[str, Any], extinction: float, latitude: float) -> Tuple[float, int, float, int, int]:
+    """
+    Returns (red_exp, red_num, blue_exp, blue_num, duration_minutes) for a target.
+    Accounts for manual overrides, standard star rules, lookup tables, and overheads.
+    """
+    # 1. Check standard star lookup:
+    if target.name in KAST_STANDARD_LOOKUP:
+        std = KAST_STANDARD_LOOKUP[target.name]
+        # Standard stars are observed once
+        t_seq = max(std["blue_exp"], std["red_exp"])
+        # Total duration is 7 mins slew + ceil(t_seq / 60.0)
+        dur_mins = 7 + int(math.ceil(t_seq / 60.0))
+        return std["red_exp"], std["red_num"], std["blue_exp"], std["blue_num"], dur_mins
+
+    # 2. Check if exposure overrides are set:
+    if target.red_exptime is not None and target.red_num is not None and target.blue_exptime is not None and target.blue_num is not None:
+        t_red = target.red_num * (target.red_exptime + RED_ERASE) + (target.red_num - 1) * RED_READOUT
+        t_blue = target.blue_num * (target.blue_exptime + BLUE_ERASE) + (target.blue_num - 1) * BLUE_READOUT
+        t_seq = max(t_red, t_blue)
+        dur_mins = 7 + int(math.ceil(t_seq / 60.0))
+        return target.red_exptime, target.red_num, target.blue_exptime, target.blue_num, dur_mins
+
+    # 3. If manual duration is set:
+    if target.manual_duration is not None:
+        t_seq = max(0.0, target.manual_duration * 60.0 - 420.0)
+        red_exp, red_num, blue_exp, blue_num = split_exposure_kast(t_seq)
+        dur_mins = int(math.ceil(target.manual_duration))
+        return red_exp, red_num, blue_exp, blue_num, dur_mins
+
+    # 4. Use lookup table based on magnitude rounded to nearest 0.5:
+    mag_val = target.magnitude
+    mag_rounded = round(mag_val * 2.0) / 2.0
+    if mag_rounded < 13.0:
+        mag_rounded = 13.0
+    elif mag_rounded > 20.0:
+        mag_rounded = 20.0
+
+    entry = KAST_SCIENCE_LOOKUP.get(mag_rounded)
+    if entry:
+        red_exp = entry["red_exp"]
+        red_num = entry["red_num"]
+        blue_exp = entry["blue_exp"]
+        blue_num = entry["blue_num"]
+        t_red = red_num * (red_exp + RED_ERASE) + (red_num - 1) * RED_READOUT
+        t_blue = blue_num * (blue_exp + BLUE_ERASE) + (blue_num - 1) * BLUE_READOUT
+        t_seq = max(t_red, t_blue)
+        dur_mins = 7 + int(math.ceil(t_seq / 60.0))
+        return red_exp, red_num, blue_exp, blue_num, dur_mins
+
+    # Fallback:
+    red_exp, red_num, blue_exp, blue_num = 300.0, 1, 300.0, 1
+    t_red = red_num * (red_exp + RED_ERASE) + (red_num - 1) * RED_READOUT
+    t_blue = blue_num * (blue_exp + BLUE_ERASE) + (blue_num - 1) * BLUE_READOUT
+    t_seq = max(t_red, t_blue)
+    dur_mins = 7 + int(math.ceil(t_seq / 60.0))
+    return red_exp, red_num, blue_exp, blue_num, dur_mins
+
+
 class Scheduler:
     """Discretizes the night and optimizes the schedule."""
     
@@ -598,6 +732,40 @@ class Scheduler:
 
         target._airmass_cache[dt_utc] = val
         return val
+
+    def precompute_target_airmass(self, target: Target):
+        """Precompute airmass for all chunk_times in one vectorized astropy call."""
+        if not hasattr(target, '_airmass_cache'):
+            target._airmass_cache = {}
+        
+        # Only compute the times that are not already cached
+        uncached_indices = [i for i, t in enumerate(self.chunk_times) if t not in target._airmass_cache]
+        if not uncached_indices:
+            return
+            
+        times_to_compute = [self.chunk_times[i] for i in uncached_indices]
+        
+        astropy_ok = False
+        if HAS_ASTRO_LIBS and self._obs is not None:
+            try:
+                times = Time(times_to_compute)
+                if not hasattr(target, '_fixed_target'):
+                    target._fixed_target = FixedTarget(coord=SkyCoord(ra=target.ra*u.hourangle, dec=target.dec*u.deg), name=target.name)
+                
+                altazs = self._obs.altaz(times, target._fixed_target)
+                for idx, c_idx in enumerate(uncached_indices):
+                    alt = altazs[idx].alt.degree
+                    val = altazs[idx].secz.value if alt > 0 else 999.0
+                    target._airmass_cache[self.chunk_times[c_idx]] = val
+                astropy_ok = True
+            except Exception:
+                pass
+                
+        if not astropy_ok:
+            for c_idx in uncached_indices:
+                dt_utc = self.chunk_times[c_idx]
+                alt, _ = get_alt_az(dt_utc, self.observatory.latitude, self.observatory.longitude, target.ra, target.dec)
+                target._airmass_cache[dt_utc] = get_airmass(alt)
 
     def is_chunk_valid(self, target: Target, chunk_idx: int, is_manual: bool = False, ignore_scheduling_limits: bool = False) -> bool:
         """Check if a target can be observed in a given chunk."""
@@ -952,6 +1120,12 @@ class Scheduler:
                     if ovr.get('manual_duration') is not None:
                         s['exposure_times'][self.telescope.name] = ovr['manual_duration'] * 60
 
+        # Precompute target airmasses to optimize performance
+        for t in targets:
+            self.precompute_target_airmass(t)
+        for s in standards:
+            self.precompute_target_airmass(s['target'])
+
         # Pre-schedule manual start standard stars
         reserved_chunks = set()
         manual_standard_blocks = []
@@ -993,20 +1167,23 @@ class Scheduler:
         manually_scheduled_names = set()
 
         # Target exposure calculations
-        target_exposures = {}
+        target_exposures_dict = {}
         extinction = float(self.realtime_constraints.get('extinction', 0.0))
         for t in targets:
-            if t.manual_duration is not None:
-                target_exposures[t.name] = t.manual_duration * 60.0
-            else:
-                sep = get_separation(t.ra, t.dec, self.moon['ra'], self.moon['dec'])
-                target_exposures[t.name] = t.calculate_exposure_time(self.moon['phase'], sep, extinction, self.observatory.latitude)
+            red_exp, red_num, blue_exp, blue_num, dur_mins = get_target_exposure_details(t, self.moon, extinction, self.observatory.latitude)
+            target_exposures_dict[t.name] = {
+                "red_exp": red_exp,
+                "red_num": red_num,
+                "blue_exp": blue_exp,
+                "blue_num": blue_num,
+                "duration_minutes": dur_mins
+            }
 
         for t in targets:
             if t.manual_start_time:
                 manual_chunk = self.get_chunk_idx_from_time_str(t.manual_start_time)
                 if manual_chunk is not None:
-                    dur_chunks = int(math.ceil(target_exposures[t.name] / 60.0))
+                    dur_chunks = target_exposures_dict[t.name]["duration_minutes"]
                     block_valid = True
                     for c_idx in range(manual_chunk, manual_chunk + dur_chunks):
                         if c_idx >= self.num_chunks or c_idx in reserved_chunks or not self.is_chunk_valid(t, c_idx, is_manual=True):
@@ -1015,15 +1192,18 @@ class Scheduler:
                     if block_valid:
                         reserved_chunks.update(range(manual_chunk, manual_chunk + dur_chunks))
                         airmass = self.get_airmass_for_target(t, self.chunk_times[manual_chunk])
+                        exp_info = target_exposures_dict[t.name]
+                        comment_prefix = f"Slew: 7m. Blue: {exp_info['blue_num']}x{exp_info['blue_exp']:.0f}s, Red: {exp_info['red_num']}x{exp_info['red_exp']:.0f}s."
+                        block_comment = f"{comment_prefix} {t.comment}" if t.comment else comment_prefix
                         block = ObservationBlock(
                             target=t,
                             start_time=self.chunk_times[manual_chunk],
-                            duration_minutes=dur_chunks * 1,
+                            duration_minutes=dur_chunks,
                             airmass_start=airmass,
                             airmass_end=self.get_airmass_for_target(t, self.chunk_times[manual_chunk + dur_chunks - 1]),
                             airmass_median=get_median([self.get_airmass_for_target(t, self.chunk_times[c]) for c in range(manual_chunk, manual_chunk + dur_chunks)]),
                             priority=t.priority,
-                            comment=t.comment
+                            comment=block_comment
                         )
                         manual_science_blocks.append(block)
                         manually_scheduled_names.add(t.name)
@@ -1086,9 +1266,7 @@ class Scheduler:
 
         def add_standard_block(star_dict, chunk_idx):
             target = star_dict['target']
-            t_name_tel = self.telescope.name
-            exp_seconds = star_dict['exposure_times'].get(t_name_tel, 300)
-            dur_chunks = int(math.ceil(exp_seconds / 60.0))
+            red_exp, red_num, blue_exp, blue_num, dur_chunks = get_target_exposure_details(target, self.moon, extinction, self.observatory.latitude)
 
             reserved_chunks.update(range(chunk_idx, chunk_idx + dur_chunks))
 
@@ -1097,12 +1275,12 @@ class Scheduler:
             block = ObservationBlock(
                 target=target,
                 start_time=self.chunk_times[chunk_idx],
-                duration_minutes=dur_chunks * 1,
+                duration_minutes=dur_chunks,
                 airmass_start=airmass,
                 airmass_end=self.get_airmass_for_target(target, self.chunk_times[chunk_idx + dur_chunks - 1]),
                 airmass_median=get_median([self.get_airmass_for_target(target, self.chunk_times[c]) for c in range(chunk_idx, chunk_idx + dur_chunks)]),
                 priority=0.0,
-                comment=f"Calib: {star_dict['color'].capitalize()} / {star_dict['quality'].capitalize()}, Airmass {airmass:.2f}"
+                comment=f"Slew: 7m. Blue: {blue_num}x{blue_exp:.0f}s, Red: {red_num}x{red_exp:.0f}s. Calib: {star_dict['color'].capitalize()} / {star_dict['quality'].capitalize()}, Airmass {airmass:.2f}"
             )
             block.target.priority = 0.0
             standard_blocks.append(block)
@@ -1121,9 +1299,7 @@ class Scheduler:
 
             for s in standards:
                 t = s['target']
-                t_name_tel = self.telescope.name
-                exp_seconds = s['exposure_times'].get(t_name_tel, 300)
-                dur_chunks = int(math.ceil(exp_seconds / 60.0))
+                red_exp, red_num, blue_exp, blue_num, dur_chunks = get_target_exposure_details(t, self.moon, extinction, self.observatory.latitude)
 
                 # Helper search function with dynamic constraints relaxation
                 def find_best_chunk(allowed_chunks, max_airmass):
@@ -1177,14 +1353,15 @@ class Scheduler:
             # Auto selection: choose one for each of the 4 slots
             blue_standards = [s for s in standards if s['color'] == 'blue']
             red_standards = [s for s in standards if s['color'] == 'red']
-
             # Evening Blue (Slot 1)
             best_eb_score = -1.0
             s_eb = None
+            dur_eb = 8
             for s in blue_standards:
-                if any(c in reserved_chunks for c in range(eve_slot_1, eve_slot_1 + 5)):
-                    break
                 t = s['target']
+                red_exp, red_num, blue_exp, blue_num, current_dur = get_target_exposure_details(t, self.moon, extinction, self.observatory.latitude)
+                if any(c in reserved_chunks or c >= self.num_chunks for c in range(eve_slot_1, eve_slot_1 + current_dur)):
+                    continue
                 if self.telescope.is_visible(t.ra, t.dec, self.chunk_times[eve_slot_1], self.observatory):
                     airmass = self.get_airmass_for_target(t, self.chunk_times[eve_slot_1])
                     if 0 < airmass <= 2.2:
@@ -1196,16 +1373,21 @@ class Scheduler:
                         if score > best_eb_score:
                             best_eb_score = score
                             s_eb = s
+                            dur_eb = current_dur
             if s_eb is not None:
                 add_standard_block(s_eb, eve_slot_1)
+                eve_slot_2 = eve_slot_1 + dur_eb
+            else:
+                eve_slot_2 = eve_slot_1 + 8
 
             # Evening Red (Slot 2)
             best_er_score = -1.0
             s_er = None
             for s in red_standards:
-                if any(c in reserved_chunks for c in range(eve_slot_2, eve_slot_2 + 5)):
-                    break
                 t = s['target']
+                red_exp, red_num, blue_exp, blue_num, current_dur = get_target_exposure_details(t, self.moon, extinction, self.observatory.latitude)
+                if any(c in reserved_chunks or c >= self.num_chunks for c in range(eve_slot_2, eve_slot_2 + current_dur)):
+                    continue
                 if self.telescope.is_visible(t.ra, t.dec, self.chunk_times[eve_slot_2], self.observatory):
                     airmass = self.get_airmass_for_target(t, self.chunk_times[eve_slot_2])
                     if 0 < airmass <= 2.2:
@@ -1219,16 +1401,48 @@ class Scheduler:
                             s_er = s
             if s_er is not None:
                 add_standard_block(s_er, eve_slot_2)
+            # Morning slots scheduling: morn_slot_2 is red, morn_slot_1 is blue.
+            morn_sequence_end = self.num_chunks - 5 if has_manual else self.num_chunks - 30
+            
+            # Morning Red (Slot 2)
+            best_mr_score = -1.0
+            s_mr = None
+            dur_mr = 8
+            for s in red_standards:
+                t = s['target']
+                red_exp, red_num, blue_exp, blue_num, current_dur = get_target_exposure_details(t, self.moon, extinction, self.observatory.latitude)
+                current_start = morn_sequence_end - current_dur
+                if any(c in reserved_chunks or c < 0 for c in range(current_start, current_start + current_dur)):
+                    continue
+                if self.telescope.is_visible(t.ra, t.dec, self.chunk_times[current_start], self.observatory):
+                    airmass = self.get_airmass_for_target(t, self.chunk_times[current_start])
+                    if 0 < airmass <= 2.2:
+                        score = 100.0 if s['quality'] == 'good' else 10.0
+                        if need_high_airmass:
+                            if 1.5 <= airmass <= 2.2: score += 20.0
+                        else:
+                            if airmass < 1.3: score += 20.0
+                        if score > best_mr_score:
+                            best_mr_score = score
+                            s_mr = s
+                            dur_mr = current_dur
+            if s_mr is not None:
+                morn_start_red = morn_sequence_end - dur_mr
+                add_standard_block(s_mr, morn_start_red)
+            else:
+                morn_start_red = morn_sequence_end - 8
 
             # Morning Blue (Slot 1)
             best_mb_score = -1.0
             s_mb = None
             for s in blue_standards:
-                if any(c in reserved_chunks for c in range(morn_slot_1, morn_slot_1 + 5)):
-                    break
                 t = s['target']
-                if self.telescope.is_visible(t.ra, t.dec, self.chunk_times[morn_slot_1], self.observatory):
-                    airmass = self.get_airmass_for_target(t, self.chunk_times[morn_slot_1])
+                red_exp, red_num, blue_exp, blue_num, current_dur = get_target_exposure_details(t, self.moon, extinction, self.observatory.latitude)
+                current_start = morn_start_red - current_dur
+                if any(c in reserved_chunks or c < 0 for c in range(current_start, current_start + current_dur)):
+                    continue
+                if self.telescope.is_visible(t.ra, t.dec, self.chunk_times[current_start], self.observatory):
+                    airmass = self.get_airmass_for_target(t, self.chunk_times[current_start])
                     if 0 < airmass <= 2.2:
                         score = 100.0 if s['quality'] == 'good' else 10.0
                         if need_high_airmass:
@@ -1239,28 +1453,10 @@ class Scheduler:
                             best_mb_score = score
                             s_mb = s
             if s_mb is not None:
-                add_standard_block(s_mb, morn_slot_1)
-
-            # Morning Red (Slot 2)
-            best_mr_score = -1.0
-            s_mr = None
-            for s in red_standards:
-                if any(c in reserved_chunks for c in range(morn_slot_2, morn_slot_2 + 5)):
-                    break
-                t = s['target']
-                if self.telescope.is_visible(t.ra, t.dec, self.chunk_times[morn_slot_2], self.observatory):
-                    airmass = self.get_airmass_for_target(t, self.chunk_times[morn_slot_2])
-                    if 0 < airmass <= 2.2:
-                        score = 100.0 if s['quality'] == 'good' else 10.0
-                        if need_high_airmass:
-                            if 1.5 <= airmass <= 2.2: score += 20.0
-                        else:
-                            if airmass < 1.3: score += 20.0
-                        if score > best_mr_score:
-                            best_mr_score = score
-                            s_mr = s
-            if s_mr is not None:
-                add_standard_block(s_mr, morn_slot_2)
+                details_mb = get_target_exposure_details(s_mb['target'], self.moon, extinction, self.observatory.latitude)
+                dur_mb = details_mb[4]
+                morn_start_blue = morn_start_red - dur_mb
+                add_standard_block(s_mb, morn_start_blue)
                 
         # 6. Run final solver pass with the reserved standard chunks
         final_solve = self._solve_internal(remaining_targets, reserved_chunks, previous_start_chunks=previous_start_chunks)
@@ -1324,33 +1520,46 @@ class Scheduler:
             
         # Generate Moon airmass and altitude curve
         moon_plot = []
-        for c_idx in range(self.num_chunks):
-            dt = self.chunk_times[c_idx]
-            if HAS_ASTRO_LIBS:
-                try:
-                    loc = EarthLocation(lat=self.observatory.latitude*u.deg, lon=self.observatory.longitude*u.deg, height=self.observatory.elevation*u.m)
-                    t = Time(dt)
-                    moon_coord = get_moon(t, location=loc)
-                    obs = Observer(location=loc)
-                    altaz = obs.altaz(t, moon_coord)
-                    alt = altaz.alt.degree
-                    airmass = altaz.secz.value if alt > 0 else 999.0
-                except Exception:
+        if HAS_ASTRO_LIBS:
+            try:
+                loc = EarthLocation(lat=self.observatory.latitude*u.deg, lon=self.observatory.longitude*u.deg, height=self.observatory.elevation*u.m)
+                obs = Observer(location=loc)
+                times = Time(self.chunk_times)
+                moon_coords = get_moon(times, location=loc)
+                altazs = obs.altaz(times, moon_coords)
+                for c_idx in range(self.num_chunks):
+                    alt = altazs[c_idx].alt.degree
+                    airmass = altazs[c_idx].secz.value if alt > 0 else 999.0
+                    dt = self.chunk_times[c_idx]
+                    moon_plot.append({
+                        'time': dt.isoformat(),
+                        'airmass': round(airmass, 3) if (alt > 0 and airmass < 10.0) else 999.0,
+                        'alt': round(alt, 3)
+                    })
+            except Exception:
+                for c_idx in range(self.num_chunks):
+                    dt = self.chunk_times[c_idx]
                     d = datetime_to_d(dt)
                     m_ra, m_dec, _ = get_moon_position(d)
                     alt, _ = get_alt_az(dt, self.observatory.latitude, self.observatory.longitude, m_ra, m_dec)
                     airmass = get_airmass(alt)
-            else:
+                    moon_plot.append({
+                        'time': dt.isoformat(),
+                        'airmass': round(airmass, 3) if (alt > 0 and airmass < 10.0) else 999.0,
+                        'alt': round(alt, 3)
+                    })
+        else:
+            for c_idx in range(self.num_chunks):
+                dt = self.chunk_times[c_idx]
                 d = datetime_to_d(dt)
                 m_ra, m_dec, _ = get_moon_position(d)
                 alt, _ = get_alt_az(dt, self.observatory.latitude, self.observatory.longitude, m_ra, m_dec)
                 airmass = get_airmass(alt)
-                
-            moon_plot.append({
-                'time': dt.isoformat(),
-                'airmass': round(airmass, 3) if (alt > 0 and airmass < 10.0) else 999.0,
-                'alt': round(alt, 3)
-            })
+                moon_plot.append({
+                    'time': dt.isoformat(),
+                    'airmass': round(airmass, 3) if (alt > 0 and airmass < 10.0) else 999.0,
+                    'alt': round(alt, 3)
+                })
             
         scheduled_names = {b.target.name for b in scheduled_blocks}
         conflicts = [c for c in (final_solve['conflicts'] + prelim_solve['conflicts']) if c not in scheduled_names]
@@ -1373,14 +1582,17 @@ class Scheduler:
         Ignores chunks in reserved_chunks.
         """
         # Parse exposures and durations
-        target_exposures: Dict[str, float] = {}
+        target_exposures_dict = {}
         extinction = float(getattr(self, 'realtime_constraints', {}).get('extinction', 0.0))
         for t in targets:
-            if t.manual_duration is not None:
-                target_exposures[t.name] = t.manual_duration * 60.0
-            else:
-                sep = get_separation(t.ra, t.dec, self.moon['ra'], self.moon['dec'])
-                target_exposures[t.name] = t.calculate_exposure_time(self.moon['phase'], sep, extinction, self.observatory.latitude)
+            red_exp, red_num, blue_exp, blue_num, dur_mins = get_target_exposure_details(t, self.moon, extinction, self.observatory.latitude)
+            target_exposures_dict[t.name] = {
+                "red_exp": red_exp,
+                "red_num": red_num,
+                "blue_exp": blue_exp,
+                "blue_num": blue_num,
+                "duration_minutes": dur_mins
+            }
                 
         # Parse manual start chunk indices
         manual_start_chunks: Dict[str, Optional[int]] = {}
@@ -1438,7 +1650,7 @@ class Scheduler:
         for t in observable_targets:
             manual_chunk = manual_start_chunks[t.name]
             if manual_chunk is not None:
-                dur_chunks = int(math.ceil(target_exposures[t.name] / 60.0))
+                dur_chunks = target_exposures_dict[t.name]["duration_minutes"]
                 block_valid = True
                 for c_idx in range(manual_chunk, manual_chunk + dur_chunks):
                     if c_idx >= self.num_chunks or c_idx in reserved_chunks or not self.is_chunk_valid(t, c_idx, is_manual=True):
@@ -1469,7 +1681,7 @@ class Scheduler:
                 
             durations: Dict[str, int] = {}
             for tg in targets:
-                durations[tg.name] = int(math.ceil(target_exposures[tg.name] / 60.0))
+                durations[tg.name] = target_exposures_dict[tg.name]["duration_minutes"]
 
             valid_slots: Dict[str, List[int]] = {}
             airmass_costs: Dict[str, Dict[int, float]] = {}
@@ -1711,7 +1923,7 @@ class Scheduler:
         scheduled_blocks: List[ObservationBlock] = []
         for t_name, start_idx in current_schedule.items():
             target = next(t for t in targets if t.name == t_name)
-            dur_chunks = int(math.ceil(target_exposures[t_name] / 60.0))
+            dur_chunks = target_exposures_dict[t_name]["duration_minutes"]
             airmasses = []
             for c_idx in range(start_idx, start_idx + dur_chunks):
                 airmasses.append(self.get_airmass_for_target(target, self.chunk_times[c_idx]))
@@ -1721,13 +1933,18 @@ class Scheduler:
             mid = len(airmasses) // 2
             airmass_median = airmasses[mid] if len(airmasses) % 2 != 0 else (airmasses[mid-1] + airmasses[mid]) / 2.0
             
+            exp_info = target_exposures_dict[t_name]
+            comment_prefix = f"Slew: 7m. Blue: {exp_info['blue_num']}x{exp_info['blue_exp']:.0f}s, Red: {exp_info['red_num']}x{exp_info['red_exp']:.0f}s."
+            block_comment = f"{comment_prefix} {target.comment}" if target.comment else comment_prefix
             block = ObservationBlock(
                 target=target,
                 start_time=self.chunk_times[start_idx],
-                duration_minutes=dur_chunks * 1,
+                duration_minutes=dur_chunks,
                 airmass_start=airmass_start,
                 airmass_end=airmass_end,
-                airmass_median=airmass_median
+                airmass_median=airmass_median,
+                priority=target.priority,
+                comment=block_comment
             )
             scheduled_blocks.append(block)
             

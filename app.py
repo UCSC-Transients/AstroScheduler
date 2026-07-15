@@ -82,6 +82,42 @@ def run_schedule_logic(data: dict) -> dict:
         if status in ["Skipped", "Failed", "Punted", "Observed"]:
             continue
 
+        red_exptime = t_data.get('red_exptime')
+        if red_exptime is not None and red_exptime != "":
+            try:
+                red_exptime = float(red_exptime)
+            except ValueError:
+                red_exptime = None
+        else:
+            red_exptime = None
+
+        red_num = t_data.get('red_num')
+        if red_num is not None and red_num != "":
+            try:
+                red_num = int(red_num)
+            except ValueError:
+                red_num = None
+        else:
+            red_num = None
+
+        blue_exptime = t_data.get('blue_exptime')
+        if blue_exptime is not None and blue_exptime != "":
+            try:
+                blue_exptime = float(blue_exptime)
+            except ValueError:
+                blue_exptime = None
+        else:
+            blue_exptime = None
+
+        blue_num = t_data.get('blue_num')
+        if blue_num is not None and blue_num != "":
+            try:
+                blue_num = int(blue_num)
+            except ValueError:
+                blue_num = None
+        else:
+            blue_num = None
+
         targets.append(Target(
             name=t_data.get('name'),
             ra=t_data.get('ra'),
@@ -95,7 +131,11 @@ def run_schedule_logic(data: dict) -> dict:
             manual_start_time=t_data.get('manual_start_time'),
             manual_duration=manual_dur,
             schedule_before=t_data.get('schedule_before'),
-            status=status
+            status=status,
+            red_exptime=red_exptime,
+            red_num=red_num,
+            blue_exptime=blue_exptime,
+            blue_num=blue_num
         ))
         
     scheduler = Scheduler(observatory, telescope, date_local)
@@ -264,7 +304,12 @@ if __name__ == "__main__":
     
     if HAS_FASTAPI:
         print("FastAPI and Uvicorn detected. Launching primary server...")
-        uvicorn.run("app:app", host="127.0.0.1", port=port, reload=True)
+        # Reload spawns a child process and delays first response; disable on CI/tests.
+        reload = (
+            os.environ.get("GITHUB_ACTIONS") != "true"
+            and os.environ.get("UVICORN_RELOAD", "1").lower() not in ("0", "false", "no")
+        )
+        uvicorn.run("app:app", host="127.0.0.1", port=port, reload=reload)
     else:
         print("FastAPI or Uvicorn not available. Launching built-in fallback server...")
         run_fallback_server(port)
