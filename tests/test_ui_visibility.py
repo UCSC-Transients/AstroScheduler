@@ -161,8 +161,14 @@ def test_exposure_linkage_bugs():
                 # Test Bug 1 & 2: Edit red_exp to 300
                 print("Editing red_exp to 300...")
                 red_exp_input.fill("300")
-                red_exp_input.dispatch_event("change")
-                page.wait_for_timeout(2000)
+                red_exp_input.blur()
+                
+                # Wait for Red N value to be populated in the input field
+                page.wait_for_function(
+                    "name => { const row = document.getElementById('sched-row-' + name); if (!row) return false; const inputs = row.querySelectorAll('input'); return inputs.length >= 7 && inputs[4].value !== ''; }",
+                    arg=target_name,
+                    timeout=5000
+                )
                 
                 # Re-locate inputs after table re-render
                 target_row = page.locator(f'tr[id="sched-row-{target_name}"]')
@@ -188,8 +194,14 @@ def test_exposure_linkage_bugs():
                 total_time_target = 800.0 * new_red_num
                 print(f"Editing red_exp to 800 (total time target = {total_time_target}s)...")
                 red_exp_input.fill("800")
-                red_exp_input.dispatch_event("change")
-                page.wait_for_timeout(2000)
+                red_exp_input.blur()
+                
+                # Wait for Red N to be updated to 3 (as 1600s redistributed yields 3 exposures)
+                page.wait_for_function(
+                    "name => { const row = document.getElementById('sched-row-' + name); if (!row) return false; const inputs = row.querySelectorAll('input'); return inputs.length >= 7 && inputs[4].value === '3'; }",
+                    arg=target_name,
+                    timeout=5000
+                )
                 
                 # Re-locate inputs
                 target_row = page.locator(f'tr[id="sched-row-{target_name}"]')

@@ -425,7 +425,11 @@ document.addEventListener("DOMContentLoaded", async () => {
                         manual_end_time: t.manual_end_time || null,
                         lock_type: t.lock_type || null,
                         manual_duration: null,
-                        schedule_before: Array.isArray(t.schedule_before) ? t.schedule_before : []
+                        schedule_before: Array.isArray(t.schedule_before) ? t.schedule_before : [],
+                        red_exptime: t.red_exptime !== undefined ? t.red_exptime : null,
+                        red_num: t.red_num !== undefined ? t.red_num : null,
+                        blue_exptime: t.blue_exptime !== undefined ? t.blue_exptime : null,
+                        blue_num: t.blue_num !== undefined ? t.blue_num : null
                     };
                     
                     if (typeof t.ra === 'number') clean.ra = t.ra;
@@ -1053,32 +1057,41 @@ function updateTargetRedExp(name, val) {
     const target = targetPool.find(t => t.name === name);
     if (!target) return;
     
-    const E_R = val.trim() ? parseFloat(val) : null;
-    target.red_exptime = E_R;
-    
-    const N_R = target.red_num !== null ? target.red_num : getTargetExposureDetailsJS(target).red_num;
-    target.red_num = N_R;
-    
-    if (E_R !== null && N_R !== null) {
-        let finalER = E_R;
-        if (finalER > 600) {
-            finalER = 600;
-            target.red_exptime = 600;
-        }
-        const T_seq = N_R * (finalER + 20.0) + (N_R - 1) * 22.0;
-        let N_B = Math.ceil((T_seq + 30.0) / 1934.0);
-        if (N_B < 1) N_B = 1;
-        const E_B = (T_seq + 30.0) / N_B - 35.0;
-        
-        target.blue_num = N_B;
-        target.blue_exptime = Math.max(0.0, E_B);
-        target.manual_duration = null;
-    } else {
+    if (!val.trim()) {
         target.red_exptime = null;
         target.red_num = null;
         target.blue_exptime = null;
         target.blue_num = null;
+        saveAndRefresh();
+        return;
     }
+    
+    const details = getTargetExposureDetailsJS(target);
+    let E_R = parseFloat(val);
+    let N_R = target.red_num !== null && target.red_num !== undefined ? target.red_num : details.red_num;
+    let E_B = target.blue_exptime !== null && target.blue_exptime !== undefined ? target.blue_exptime : details.blue_exp;
+    let N_B = target.blue_num !== null && target.blue_num !== undefined ? target.blue_num : details.blue_num;
+    
+    let T_target = E_R * N_R;
+    
+    if (E_R > 600.0) {
+        N_R = Math.ceil(T_target / 600.0);
+        E_R = T_target / N_R;
+    }
+    
+    E_B = T_target / N_B;
+    
+    if (E_B >= 1900.0) {
+        N_B = Math.ceil(T_target / 1899.0);
+        E_B = T_target / N_B;
+    }
+    
+    target.red_exptime = Math.round(E_R * 10) / 10;
+    target.red_num = N_R;
+    target.blue_exptime = Math.round(E_B * 10) / 10;
+    target.blue_num = N_B;
+    target.manual_duration = null;
+    
     saveAndRefresh();
 }
 
@@ -1086,32 +1099,42 @@ function updateTargetRedNum(name, val) {
     const target = targetPool.find(t => t.name === name);
     if (!target) return;
     
-    const N_R = val.trim() ? parseInt(val, 10) : null;
-    target.red_num = N_R;
-    
-    const E_R = target.red_exptime !== null ? target.red_exptime : getTargetExposureDetailsJS(target).red_exptime;
-    target.red_exptime = E_R;
-    
-    if (E_R !== null && N_R !== null) {
-        let finalER = E_R;
-        if (finalER > 600) {
-            finalER = 600;
-            target.red_exptime = 600;
-        }
-        const T_seq = N_R * (finalER + 20.0) + (N_R - 1) * 22.0;
-        let N_B = Math.ceil((T_seq + 30.0) / 1934.0);
-        if (N_B < 1) N_B = 1;
-        const E_B = (T_seq + 30.0) / N_B - 35.0;
-        
-        target.blue_num = N_B;
-        target.blue_exptime = Math.max(0.0, E_B);
-        target.manual_duration = null;
-    } else {
+    if (!val.trim()) {
         target.red_exptime = null;
         target.red_num = null;
         target.blue_exptime = null;
         target.blue_num = null;
+        saveAndRefresh();
+        return;
     }
+    
+    const details = getTargetExposureDetailsJS(target);
+    let E_R = target.red_exptime !== null && target.red_exptime !== undefined ? target.red_exptime : details.red_exp;
+    let N_R = parseInt(val, 10);
+    let E_B = target.blue_exptime !== null && target.blue_exptime !== undefined ? target.blue_exptime : details.blue_exp;
+    let N_B = target.blue_num !== null && target.blue_num !== undefined ? target.blue_num : details.blue_num;
+    
+    let T_target = E_R * N_R;
+    
+    N_B = Math.max(1, Math.round(T_target / E_B));
+    E_B = T_target / N_B;
+    
+    if (E_B >= 1900.0) {
+        N_B = Math.ceil(T_target / 1899.0);
+        E_B = T_target / N_B;
+    }
+    
+    if (E_R > 600.0) {
+        N_R = Math.ceil(T_target / 600.0);
+        E_R = T_target / N_R;
+    }
+    
+    target.red_exptime = Math.round(E_R * 10) / 10;
+    target.red_num = N_R;
+    target.blue_exptime = Math.round(E_B * 10) / 10;
+    target.blue_num = N_B;
+    target.manual_duration = null;
+    
     saveAndRefresh();
 }
 
@@ -1119,32 +1142,41 @@ function updateTargetBlueExp(name, val) {
     const target = targetPool.find(t => t.name === name);
     if (!target) return;
     
-    const E_B = val.trim() ? parseFloat(val) : null;
-    target.blue_exptime = E_B;
-    
-    const N_B = target.blue_num !== null ? target.blue_num : getTargetExposureDetailsJS(target).blue_num;
-    target.blue_num = N_B;
-    
-    if (E_B !== null && N_B !== null) {
-        let finalEB = E_B;
-        if (finalEB >= 1900) {
-            finalEB = 1899;
-            target.blue_exptime = 1899;
-        }
-        const T_seq = N_B * (finalEB + 5.0) + (N_B - 1) * 30.0;
-        let N_R = Math.ceil((T_seq + 22.0) / 642.0);
-        if (N_R < 1) N_R = 1;
-        const E_R = (T_seq + 22.0) / N_R - 42.0;
-        
-        target.red_num = N_R;
-        target.red_exptime = Math.max(0.0, E_R);
-        target.manual_duration = null;
-    } else {
+    if (!val.trim()) {
         target.red_exptime = null;
         target.red_num = null;
         target.blue_exptime = null;
         target.blue_num = null;
+        saveAndRefresh();
+        return;
     }
+    
+    const details = getTargetExposureDetailsJS(target);
+    let E_R = target.red_exptime !== null && target.red_exptime !== undefined ? target.red_exptime : details.red_exp;
+    let N_R = target.red_num !== null && target.red_num !== undefined ? target.red_num : details.red_num;
+    let E_B = parseFloat(val);
+    let N_B = target.blue_num !== null && target.blue_num !== undefined ? target.blue_num : details.blue_num;
+    
+    let T_target = E_B * N_B;
+    
+    if (E_B >= 1900.0) {
+        N_B = Math.ceil(T_target / 1899.0);
+        E_B = T_target / N_B;
+    }
+    
+    E_R = T_target / N_R;
+    
+    if (E_R > 600.0) {
+        N_R = Math.ceil(T_target / 600.0);
+        E_R = T_target / N_R;
+    }
+    
+    target.red_exptime = Math.round(E_R * 10) / 10;
+    target.red_num = N_R;
+    target.blue_exptime = Math.round(E_B * 10) / 10;
+    target.blue_num = N_B;
+    target.manual_duration = null;
+    
     saveAndRefresh();
 }
 
@@ -1152,32 +1184,42 @@ function updateTargetBlueNum(name, val) {
     const target = targetPool.find(t => t.name === name);
     if (!target) return;
     
-    const N_B = val.trim() ? parseInt(val, 10) : null;
-    target.blue_num = N_B;
-    
-    const E_B = target.blue_exptime !== null ? target.blue_exptime : getTargetExposureDetailsJS(target).blue_exptime;
-    target.blue_exptime = E_B;
-    
-    if (E_B !== null && N_B !== null) {
-        let finalEB = E_B;
-        if (finalEB >= 1900) {
-            finalEB = 1899;
-            target.blue_exptime = 1899;
-        }
-        const T_seq = N_B * (finalEB + 5.0) + (N_B - 1) * 30.0;
-        let N_R = Math.ceil((T_seq + 22.0) / 642.0);
-        if (N_R < 1) N_R = 1;
-        const E_R = (T_seq + 22.0) / N_R - 42.0;
-        
-        target.red_num = N_R;
-        target.red_exptime = Math.max(0.0, E_R);
-        target.manual_duration = null;
-    } else {
+    if (!val.trim()) {
         target.red_exptime = null;
         target.red_num = null;
         target.blue_exptime = null;
         target.blue_num = null;
+        saveAndRefresh();
+        return;
     }
+    
+    const details = getTargetExposureDetailsJS(target);
+    let E_R = target.red_exptime !== null && target.red_exptime !== undefined ? target.red_exptime : details.red_exp;
+    let N_R = target.red_num !== null && target.red_num !== undefined ? target.red_num : details.red_num;
+    let E_B = target.blue_exptime !== null && target.blue_exptime !== undefined ? target.blue_exptime : details.blue_exp;
+    let N_B = parseInt(val, 10);
+    
+    let T_target = E_B * N_B;
+    
+    N_R = Math.max(1, Math.round(T_target / E_R));
+    E_R = T_target / N_R;
+    
+    if (E_R > 600.0) {
+        N_R = Math.ceil(T_target / 600.0);
+        E_R = T_target / N_R;
+    }
+    
+    if (E_B >= 1900.0) {
+        N_B = Math.ceil(T_target / 1899.0);
+        E_B = T_target / N_B;
+    }
+    
+    target.red_exptime = Math.round(E_R * 10) / 10;
+    target.red_num = N_R;
+    target.blue_exptime = Math.round(E_B * 10) / 10;
+    target.blue_num = N_B;
+    target.manual_duration = null;
+    
     saveAndRefresh();
 }
 
