@@ -229,7 +229,7 @@ def test_exposure_linkage_bugs():
                 assert final_red_exp <= 600.0, f"Expected red exposure time to be capped/redistributed under 600.0s, but got {final_red_exp}"
                 assert abs(final_total_time - total_time_target) < 1.0, f"Expected total exposure time to be {total_time_target}s, but got {final_total_time}"
             except Exception as test_exc:
-                screenshot_path = "/Users/rfoley/.gemini/antigravity/brain/07a56a8c-cb2c-47e3-a0bb-bc911fb5da5c/linkage_bug_screenshot.png"
+                screenshot_path = "linkage_bug_screenshot.png"
                 page.screenshot(path=screenshot_path, full_page=True)
                 print(f"Test failed. Saved failure screenshot to {screenshot_path}")
                 raise test_exc
