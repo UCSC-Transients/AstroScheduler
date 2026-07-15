@@ -75,6 +75,8 @@ function getTargetExposureDetailsJS(t) {
             red_num: t.red_num,
             blue_exptime: t.blue_exptime,
             blue_num: t.blue_num,
+            red_exp: t.red_exptime,
+            blue_exp: t.blue_exptime,
             total_time: Math.round(T_seq),
             duration_minutes: 5 + Math.ceil(T_seq / 60.0)
         };
@@ -90,6 +92,8 @@ function getTargetExposureDetailsJS(t) {
             red_num: std.red_num,
             blue_exptime: std.blue_exp,
             blue_num: std.blue_num,
+            red_exp: std.red_exp,
+            blue_exp: std.blue_exp,
             total_time: Math.round(T_seq),
             duration_minutes: 5 + Math.ceil(T_seq / 60.0)
         };
@@ -103,6 +107,8 @@ function getTargetExposureDetailsJS(t) {
             red_num: split.red_num,
             blue_exptime: Math.round(split.blue_exptime * 10) / 10,
             blue_num: split.blue_num,
+            red_exp: Math.round(split.red_exptime * 10) / 10,
+            blue_exp: Math.round(split.blue_exptime * 10) / 10,
             total_time: Math.round(T_seq),
             duration_minutes: Math.max(1, Math.ceil(t.manual_duration))
         };
@@ -124,6 +130,8 @@ function getTargetExposureDetailsJS(t) {
         red_num: lut.red_num,
         blue_exptime: lut.blue_exp,
         blue_num: lut.blue_num,
+        red_exp: lut.red_exp,
+        blue_exp: lut.blue_exp,
         total_time: Math.round(T_seq),
         duration_minutes: 5 + Math.ceil(T_seq / 60.0)
     };
