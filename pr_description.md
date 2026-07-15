@@ -1,12 +1,12 @@
-# Pull Request: Solver Performance and Target Disappearance Fixes
+# Pull Request: Pointing Limits and Alt/Az Plot Shading Fixes
 
-This Pull Request addresses the scheduler hang, timeout issues, and priority 3 target disappearance when scheduling large target lists.
+This Pull Request addresses the Hour Angle and pointing limits propagation issue, correctly shading restricted regions on the Alt/Az sky map.
 
 ## Resolved Issues and Features
 
-- [x] **Solver Greedy Pass and Priority 3 Disappearance Fix**: Added a fast greedy initialization pass to establish a cost upper bound and fallback schedule in both Python and local JS solvers. Prevents priority 3.0 targets from disappearing when search limits are reached.
-- [x] **Solver Search Iterations Limit Reduction**: Reduced search iterations limits (Python to 20,000, JS to 10,000) to ensure immediate page loading and solver responsiveness.
-- [x] **Fixed JS Fallback ReferenceError**: Fixed `ReferenceError` on undefined `previousStartChunks` in the client-side local JS fallback solver.
-- [x] **Robust Integration Tests**: Automated Uvicorn server lifecycle and verified all features and lock transitions (including user's 15-target list on 2026-06-19 observing night) using synchronized Playwright tests.
-- [x] **Add conftest.py and set PYTHONPATH in GitHub Actions workflow**: Fixed CI `ModuleNotFoundError` during pytest test discovery.
+- [x] **Gather real-time constraint parameters**: Updated frontend payload construction to extract and send all 10 real-time constraints from the UI inputs (including dec, alt, az, and asymmetric HA limits) to the backend solver.
+- [x] **Local JS solver constraint validation**: Corrected the client-side solver to check asymmetric Hour Angle, Declination, Altitude, and Azimuth constraints.
+- [x] **Grid-based shading on Alt/Az plot**: Re-implemented the sky map shading logic to evaluate Dec, HA, Alt, and Az constraints on a 2px grid, rendering accurate grey shaded restricted zones.
+- [x] **Test validation**: Verified that all 40 python and browser integration tests pass successfully.
 
+Resolves #68
