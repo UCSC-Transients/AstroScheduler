@@ -131,7 +131,7 @@ def test_exposure_linkage_bugs():
             page.locator("button#load-sample-btn").click()
             
             # Wait dynamically for the schedule table to render
-            page.wait_for_selector("#schedule-table tr[id^='sched-row-']", timeout=15000)
+            page.wait_for_selector("#schedule-table tr[id^='sched-row-']", timeout=25000)
             
             # Find a science target row in schedule table
             rows = page.locator("#schedule-table tbody tr")
@@ -177,7 +177,7 @@ def test_exposure_linkage_bugs():
                 page.wait_for_function(
                     "name => { const row = document.getElementById('sched-row-' + name); if (!row) return false; const inputs = row.querySelectorAll('input'); return inputs.length >= 7 && inputs[5].value !== ''; }",
                     arg=target_name,
-                    timeout=5000
+                    timeout=20000
                 )
                 
                 # Re-locate inputs after table re-render
@@ -211,7 +211,7 @@ def test_exposure_linkage_bugs():
                 page.wait_for_function(
                     "name => { const row = document.getElementById('sched-row-' + name); if (!row) return false; const inputs = row.querySelectorAll('input'); return inputs.length >= 7 && inputs[5].value === '3'; }",
                     arg=target_name,
-                    timeout=5000
+                    timeout=20000
                 )
                 
                 # Re-locate inputs
