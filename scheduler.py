@@ -29,7 +29,7 @@ BLUE_ERASE = 5.0
 RED_ERASE = 20.0
 BLUE_READOUT = 30.0
 RED_READOUT = 22.0
-SLEW_ACQ_OVERHEAD_MIN = 5.0
+SLEW_ACQ_OVERHEAD_MIN = 7.0
 
 # Kast Science lookup table (Magnitude -> Total Exposure time (mins), Blue (s), Blue N, Red (s), Red N)
 # Magnitudes are rounded to the nearest 0.5.
@@ -616,8 +616,8 @@ def get_target_exposure_details(target: Target, moon: Dict[str, Any], extinction
         std = KAST_STANDARD_LOOKUP[target.name]
         # Standard stars are observed once
         t_seq = max(std["blue_exp"], std["red_exp"])
-        # Total duration is 5 mins slew + ceil(t_seq / 60.0)
-        dur_mins = 5 + int(math.ceil(t_seq / 60.0))
+        # Total duration is 7 mins slew + ceil(t_seq / 60.0)
+        dur_mins = 7 + int(math.ceil(t_seq / 60.0))
         return std["red_exp"], std["red_num"], std["blue_exp"], std["blue_num"], dur_mins
 
     # 2. Check if exposure overrides are set:
@@ -625,12 +625,12 @@ def get_target_exposure_details(target: Target, moon: Dict[str, Any], extinction
         t_red = target.red_num * (target.red_exptime + RED_ERASE) + (target.red_num - 1) * RED_READOUT
         t_blue = target.blue_num * (target.blue_exptime + BLUE_ERASE) + (target.blue_num - 1) * BLUE_READOUT
         t_seq = max(t_red, t_blue)
-        dur_mins = 5 + int(math.ceil(t_seq / 60.0))
+        dur_mins = 7 + int(math.ceil(t_seq / 60.0))
         return target.red_exptime, target.red_num, target.blue_exptime, target.blue_num, dur_mins
 
     # 3. If manual duration is set:
     if target.manual_duration is not None:
-        t_seq = max(0.0, target.manual_duration * 60.0 - 300.0)
+        t_seq = max(0.0, target.manual_duration * 60.0 - 420.0)
         red_exp, red_num, blue_exp, blue_num = split_exposure_kast(t_seq)
         dur_mins = int(math.ceil(target.manual_duration))
         return red_exp, red_num, blue_exp, blue_num, dur_mins
@@ -652,7 +652,7 @@ def get_target_exposure_details(target: Target, moon: Dict[str, Any], extinction
         t_red = red_num * (red_exp + RED_ERASE) + (red_num - 1) * RED_READOUT
         t_blue = blue_num * (blue_exp + BLUE_ERASE) + (blue_num - 1) * BLUE_READOUT
         t_seq = max(t_red, t_blue)
-        dur_mins = 5 + int(math.ceil(t_seq / 60.0))
+        dur_mins = 7 + int(math.ceil(t_seq / 60.0))
         return red_exp, red_num, blue_exp, blue_num, dur_mins
 
     # Fallback:
@@ -660,7 +660,7 @@ def get_target_exposure_details(target: Target, moon: Dict[str, Any], extinction
     t_red = red_num * (red_exp + RED_ERASE) + (red_num - 1) * RED_READOUT
     t_blue = blue_num * (blue_exp + BLUE_ERASE) + (blue_num - 1) * BLUE_READOUT
     t_seq = max(t_red, t_blue)
-    dur_mins = 5 + int(math.ceil(t_seq / 60.0))
+    dur_mins = 7 + int(math.ceil(t_seq / 60.0))
     return red_exp, red_num, blue_exp, blue_num, dur_mins
 
 
@@ -1193,7 +1193,7 @@ class Scheduler:
                         reserved_chunks.update(range(manual_chunk, manual_chunk + dur_chunks))
                         airmass = self.get_airmass_for_target(t, self.chunk_times[manual_chunk])
                         exp_info = target_exposures_dict[t.name]
-                        comment_prefix = f"Slew: 5m. Blue: {exp_info['blue_num']}x{exp_info['blue_exp']:.0f}s, Red: {exp_info['red_num']}x{exp_info['red_exp']:.0f}s."
+                        comment_prefix = f"Slew: 7m. Blue: {exp_info['blue_num']}x{exp_info['blue_exp']:.0f}s, Red: {exp_info['red_num']}x{exp_info['red_exp']:.0f}s."
                         block_comment = f"{comment_prefix} {t.comment}" if t.comment else comment_prefix
                         block = ObservationBlock(
                             target=t,
@@ -1280,7 +1280,7 @@ class Scheduler:
                 airmass_end=self.get_airmass_for_target(target, self.chunk_times[chunk_idx + dur_chunks - 1]),
                 airmass_median=get_median([self.get_airmass_for_target(target, self.chunk_times[c]) for c in range(chunk_idx, chunk_idx + dur_chunks)]),
                 priority=0.0,
-                comment=f"Slew: 5m. Blue: {blue_num}x{blue_exp:.0f}s, Red: {red_num}x{red_exp:.0f}s. Calib: {star_dict['color'].capitalize()} / {star_dict['quality'].capitalize()}, Airmass {airmass:.2f}"
+                comment=f"Slew: 7m. Blue: {blue_num}x{blue_exp:.0f}s, Red: {red_num}x{red_exp:.0f}s. Calib: {star_dict['color'].capitalize()} / {star_dict['quality'].capitalize()}, Airmass {airmass:.2f}"
             )
             block.target.priority = 0.0
             standard_blocks.append(block)
@@ -1934,7 +1934,7 @@ class Scheduler:
             airmass_median = airmasses[mid] if len(airmasses) % 2 != 0 else (airmasses[mid-1] + airmasses[mid]) / 2.0
             
             exp_info = target_exposures_dict[t_name]
-            comment_prefix = f"Slew: 5m. Blue: {exp_info['blue_num']}x{exp_info['blue_exp']:.0f}s, Red: {exp_info['red_num']}x{exp_info['red_exp']:.0f}s."
+            comment_prefix = f"Slew: 7m. Blue: {exp_info['blue_num']}x{exp_info['blue_exp']:.0f}s, Red: {exp_info['red_num']}x{exp_info['red_exp']:.0f}s."
             block_comment = f"{comment_prefix} {target.comment}" if target.comment else comment_prefix
             block = ObservationBlock(
                 target=target,

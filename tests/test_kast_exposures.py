@@ -37,8 +37,8 @@ class TestKastExposures(unittest.TestCase):
         self.assertEqual(blue_num, 1)
         self.assertEqual(red_exp, 100.0)
         self.assertEqual(red_num, 1)
-        # Slew (5m) + max(180s, 100s) = 5 + 3 = 8 min duration
-        self.assertEqual(dur_mins, 8)
+        # Slew (7m) + max(180s, 100s) = 7 + 3 = 10 min duration
+        self.assertEqual(dur_mins, 10)
 
         # Standard star HD19445: Blue 40s, Red 10s
         t_hd = Target("HD19445", 19.0, 20.0, 8.0, 1.0)
@@ -47,8 +47,8 @@ class TestKastExposures(unittest.TestCase):
         )
         self.assertEqual(blue_exp, 40.0)
         self.assertEqual(red_exp, 10.0)
-        # Slew (5m) + ceil(40/60) = 5 + 1 = 6 min duration
-        self.assertEqual(dur_mins, 6)
+        # Slew (7m) + ceil(40/60) = 7 + 1 = 8 min duration
+        self.assertEqual(dur_mins, 8)
 
     def test_get_target_exposure_details_science_lookup(self):
         # Science target, <= 15.0 mag
@@ -63,8 +63,8 @@ class TestKastExposures(unittest.TestCase):
         # T_R = 2 * (300 + 20) + (2 - 1) * 22 = 640 + 22 = 662s.
         # T_B = 1 * (637 + 5) + 0 = 642s.
         # T_seq = max(662, 642) = 662s -> ceil(662/60) = 12 mins.
-        # dur_mins = 5 + 12 = 17 mins.
-        self.assertEqual(dur_mins, 17)
+        # dur_mins = 7 + 12 = 19 mins.
+        self.assertEqual(dur_mins, 19)
 
         # Science target, 17.0 mag
         t2 = Target("Sci17.0", 12.0, 28.0, 17.0, 1.0)
@@ -94,8 +94,8 @@ class TestKastExposures(unittest.TestCase):
         # T_R = 2 * (450 + 20) + 1 * 22 = 940 + 22 = 962s.
         # T_B = 1 * (920 + 5) + 0 = 925s.
         # T_seq = max(962, 925) = 962s -> ceil(962/60) = 17 mins.
-        # dur_mins = 5 + 17 = 22 mins.
-        self.assertEqual(dur_mins, 22)
+        # dur_mins = 7 + 17 = 24 mins.
+        self.assertEqual(dur_mins, 24)
 
 if __name__ == '__main__':
     unittest.main()

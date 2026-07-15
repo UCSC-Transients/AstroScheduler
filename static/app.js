@@ -78,7 +78,7 @@ function getTargetExposureDetailsJS(t) {
             red_exp: t.red_exptime,
             blue_exp: t.blue_exptime,
             total_time: Math.round(T_seq),
-            duration_minutes: 5 + Math.ceil(T_seq / 60.0)
+            duration_minutes: 7 + Math.ceil(T_seq / 60.0)
         };
     }
     
@@ -95,12 +95,12 @@ function getTargetExposureDetailsJS(t) {
             red_exp: std.red_exp,
             blue_exp: std.blue_exp,
             total_time: Math.round(T_seq),
-            duration_minutes: 5 + Math.ceil(T_seq / 60.0)
+            duration_minutes: 7 + Math.ceil(T_seq / 60.0)
         };
     }
     
     if (t.manual_duration !== null && t.manual_duration !== undefined) {
-        const T_seq = Math.max(0.0, t.manual_duration * 60.0 - 300.0);
+        const T_seq = Math.max(0.0, t.manual_duration * 60.0 - 420.0);
         const split = splitExposureKast(T_seq);
         return {
             red_exptime: Math.round(split.red_exptime * 10) / 10,
@@ -133,7 +133,7 @@ function getTargetExposureDetailsJS(t) {
         red_exp: lut.red_exp,
         blue_exp: lut.blue_exp,
         total_time: Math.round(T_seq),
-        duration_minutes: 5 + Math.ceil(T_seq / 60.0)
+        duration_minutes: 7 + Math.ceil(T_seq / 60.0)
     };
 }
 
@@ -789,7 +789,7 @@ function renderTargetsTable() {
         const blue_exptime_placeholder = t.blue_exptime !== null && t.blue_exptime !== undefined ? '' : expDetails.blue_exptime.toFixed(0);
         const blue_num_placeholder = t.blue_num !== null && t.blue_num !== undefined ? '' : expDetails.blue_num;
         
-        const total_time_display = expDetails.total_time;
+        const total_time_display = Math.round(expDetails.red_exp * expDetails.red_num);
 
         const isScheduled = scheduledNames.has(t.name);
         const scheduledBlock = currentBlocksList.find(b => b.target_name === t.name);
@@ -880,26 +880,7 @@ function renderTargetsTable() {
                            onchange="updateTargetField('${t.name}', 'manual_start_time', this.value)" 
                            onclick="event.stopPropagation();" style="width: 75px; font-family: monospace; text-align: center;">
                 </td>
-                <td>
-                    <input type="number" placeholder="${red_exptime_placeholder}" min="0" step="0.1" value="${red_exptime_val}" 
-                           onchange="updateTargetField('${t.name}', 'red_exptime', this.value)" 
-                           onclick="event.stopPropagation();" style="width: 60px; text-align: center;">
-                </td>
-                <td>
-                    <input type="number" placeholder="${red_num_placeholder}" min="1" step="1" value="${red_num_val}" 
-                           onchange="updateTargetField('${t.name}', 'red_num', this.value)" 
-                           onclick="event.stopPropagation();" style="width: 45px; text-align: center;">
-                </td>
-                <td>
-                    <input type="number" placeholder="${blue_exptime_placeholder}" min="0" step="0.1" value="${blue_exptime_val}" 
-                           onchange="updateTargetField('${t.name}', 'blue_exptime', this.value)" 
-                           onclick="event.stopPropagation();" style="width: 60px; text-align: center;">
-                </td>
-                <td>
-                    <input type="number" placeholder="${blue_num_placeholder}" min="1" step="1" value="${blue_num_val}" 
-                           onchange="updateTargetField('${t.name}', 'blue_num', this.value)" 
-                           onclick="event.stopPropagation();" style="width: 45px; text-align: center;">
-                </td>
+
                 <td style="font-family: monospace; font-size: 0.85rem; text-align: center; color: var(--text-secondary);">
                     ${total_time_display}
                 </td>
@@ -2206,13 +2187,15 @@ function updateScheduleUI(result) {
 
     const schedBody = document.querySelector("#schedule-table tbody");
     if (blocks.length === 0) {
-        schedBody.innerHTML = `<tr><td colspan="8" class="text-center" style="color: var(--text-muted);">No targets could be scheduled due to conflicts or visibility limits.</td></tr>`;
+        schedBody.innerHTML = `<tr><td colspan="12" class="text-center" style="color: var(--text-muted);">No targets could be scheduled due to conflicts or visibility limits.</td></tr>`;
     } else {
         schedBody.innerHTML = blocks.map(b => {
             const startVal = formatTimeForTimezone(b.start_time, currentTimezone);
             const endVal = formatTimeForTimezone(b.end_time, currentTimezone);
             
             const target = targetPool.find(t => t.name === b.target_name) || standardStars.find(s => s.name === b.target_name);
+            const isStandard = !!KAST_STANDARD_LOOKUP[b.target_name];
+            const isScience = targetPool.some(t => t.name === b.target_name);
             
             let timeCell = "";
             let durationCell = "";
@@ -2250,6 +2233,51 @@ function updateScheduleUI(result) {
                 lockCell = `<td></td>`;
             }
             
+            let redExpCell = "-";
+            let redNCell = "-";
+            let blueExpCell = "-";
+            let blueNCell = "-";
+            
+            if (isScience && target) {
+                const expDetails = getTargetExposureDetailsJS(target);
+                const red_exptime_val = target.red_exptime !== null && target.red_exptime !== undefined ? target.red_exptime : '';
+                const red_num_val = target.red_num !== null && target.red_num !== undefined ? target.red_num : '';
+                const blue_exptime_val = target.blue_exptime !== null && target.blue_exptime !== undefined ? target.blue_exptime : '';
+                const blue_num_val = target.blue_num !== null && target.blue_num !== undefined ? target.blue_num : '';
+                
+                const red_exptime_placeholder = target.red_exptime !== null && target.red_exptime !== undefined ? '' : expDetails.red_exptime.toFixed(0);
+                const red_num_placeholder = target.red_num !== null && target.red_num !== undefined ? '' : expDetails.red_num;
+                const blue_exptime_placeholder = target.blue_exptime !== null && target.blue_exptime !== undefined ? '' : expDetails.blue_exptime.toFixed(0);
+                const blue_num_placeholder = target.blue_num !== null && target.blue_num !== undefined ? '' : expDetails.blue_num;
+
+                redExpCell = `
+                    <input type="number" placeholder="${red_exptime_placeholder}" min="0" step="0.1" value="${red_exptime_val}" 
+                           onchange="updateTargetField('${b.target_name}', 'red_exptime', this.value)" 
+                           onclick="event.stopPropagation();" style="width: 55px; text-align: center; padding: 2px; border-radius:4px; border: 1px solid var(--border-color); background: rgba(255,255,255,0.05); color:#fff;">
+                `;
+                redNCell = `
+                    <input type="number" placeholder="${red_num_placeholder}" min="1" step="1" value="${red_num_val}" 
+                           onchange="updateTargetField('${b.target_name}', 'red_num', this.value)" 
+                           onclick="event.stopPropagation();" style="width: 40px; text-align: center; padding: 2px; border-radius:4px; border: 1px solid var(--border-color); background: rgba(255,255,255,0.05); color:#fff;">
+                `;
+                blueExpCell = `
+                    <input type="number" placeholder="${blue_exptime_placeholder}" min="0" step="0.1" value="${blue_exptime_val}" 
+                           onchange="updateTargetField('${b.target_name}', 'blue_exptime', this.value)" 
+                           onclick="event.stopPropagation();" style="width: 55px; text-align: center; padding: 2px; border-radius:4px; border: 1px solid var(--border-color); background: rgba(255,255,255,0.05); color:#fff;">
+                `;
+                blueNCell = `
+                    <input type="number" placeholder="${blue_num_placeholder}" min="1" step="1" value="${blue_num_val}" 
+                           onchange="updateTargetField('${b.target_name}', 'blue_num', this.value)" 
+                           onclick="event.stopPropagation();" style="width: 40px; text-align: center; padding: 2px; border-radius:4px; border: 1px solid var(--border-color); background: rgba(255,255,255,0.05); color:#fff;">
+                `;
+            } else if (isStandard) {
+                const expDetails = getTargetExposureDetailsJS({ name: b.target_name });
+                redExpCell = `${expDetails.red_exptime.toFixed(0)}`;
+                redNCell = `${expDetails.red_num}`;
+                blueExpCell = `${expDetails.blue_exptime.toFixed(0)}`;
+                blueNCell = `${expDetails.blue_num}`;
+            }
+            
             return `
                 <tr id="sched-row-${b.target_name}" data-target="${b.target_name}"
                     onmouseenter="highlightTarget('${b.target_name}')"
@@ -2264,6 +2292,10 @@ function updateScheduleUI(result) {
                     <td>${durationCell}</td>
                     <td>${b.airmass_start.toFixed(2)} - ${b.airmass_end.toFixed(2)}</td>
                     <td><span style="font-weight:600; color:var(--accent-cyan);">${b.airmass_median.toFixed(2)}</span></td>
+                    <td style="text-align: center;">${redExpCell}</td>
+                    <td style="text-align: center;">${redNCell}</td>
+                    <td style="text-align: center;">${blueExpCell}</td>
+                    <td style="text-align: center;">${blueNCell}</td>
                     <td><span style="font-size: 0.85rem; color: var(--text-secondary);">${b.comment}</span></td>
                 </tr>
             `;
@@ -3779,7 +3811,7 @@ function runLocalJSSolver(payload) {
                         prelimReservedChunks.add(c);
                     }
                     const air = getAirmassForTarget(s, chunkTimes[manualChunk]);
-                    let commentPrefix = `Slew: 5m. Blue: ${details.blue_num}x${details.blue_exp.toFixed(0)}s, Red: ${details.red_num}x${details.red_exp.toFixed(0)}s.`;
+                    let commentPrefix = `Slew: 7m. Blue: ${details.blue_num}x${details.blue_exp.toFixed(0)}s, Red: ${details.red_num}x${details.red_exp.toFixed(0)}s.`;
                     let blockComment = `Calib: ${s.color.charAt(0).toUpperCase() + s.color.slice(1)} / ${s.quality.charAt(0).toUpperCase() + s.quality.slice(1)}, Airmass ${air.toFixed(2)}`;
                     manualStandardBlocks.push({
                         target_name: s.name,
@@ -3861,7 +3893,7 @@ function runLocalJSSolver(payload) {
         const durChunks = details.duration_minutes;
         const air = getAirmassForTarget(starObj, chunkTimes[chunkIdx]);
         
-        let commentPrefix = `Slew: 5m. Blue: ${details.blue_num}x${details.blue_exp.toFixed(0)}s, Red: ${details.red_num}x${details.red_exp.toFixed(0)}s.`;
+        let commentPrefix = `Slew: 7m. Blue: ${details.blue_num}x${details.blue_exp.toFixed(0)}s, Red: ${details.red_num}x${details.red_exp.toFixed(0)}s.`;
         let blockComment = `Calib: ${starObj.color.charAt(0).toUpperCase() + starObj.color.slice(1)} / ${starObj.quality.charAt(0).toUpperCase() + starObj.quality.slice(1)}, Airmass ${air.toFixed(2)}`;
         
         for (let c = chunkIdx; c < chunkIdx + durChunks; c++) {
@@ -4614,7 +4646,7 @@ function runLocalJSSolver(payload) {
             const medianAir = sortedAir.length % 2 !== 0 ? sortedAir[mid] : (sortedAir[mid-1] + sortedAir[mid]) / 2.0;
             
             const expInfo = targetExpsInfo[name];
-            let commentPrefix = `Slew: 5m. Blue: ${expInfo.blue_num}x${expInfo.blue_exp.toFixed(0)}s, Red: ${expInfo.red_num}x${expInfo.red_exp.toFixed(0)}s.`;
+            let commentPrefix = `Slew: 7m. Blue: ${expInfo.blue_num}x${expInfo.blue_exp.toFixed(0)}s, Red: ${expInfo.red_num}x${expInfo.red_exp.toFixed(0)}s.`;
             let blockComment = target.comment ? `${commentPrefix} ${target.comment}` : commentPrefix;
             blocksList.push({
                 target_name: name,

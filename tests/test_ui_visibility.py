@@ -78,6 +78,23 @@ def test_ui_visibility():
             print(f"Alt/Az Polar Chart Visible: {is_polar_visible}")
             assert is_polar_visible, "Alt/Az polar chart canvas is not visible"
             
+            # 6. Verify Schedule Table has the Red/Blue exposure headers
+            schedule_headers = page.locator("#schedule-table th").all_inner_texts()
+            print("Schedule headers:", schedule_headers)
+            assert "Red Exp (s)" in schedule_headers
+            assert "Red N" in schedule_headers
+            assert "Blue Exp (s)" in schedule_headers
+            assert "Blue N" in schedule_headers
+
+            # 7. Verify Target List table does NOT have Red/Blue exposure headers
+            targets_headers = page.locator("#targets-table th").all_inner_texts()
+            print("Targets headers:", targets_headers)
+            assert "Red Exp (s)" not in targets_headers
+            assert "Red N" not in targets_headers
+            assert "Blue Exp (s)" not in targets_headers
+            assert "Blue N" not in targets_headers
+            assert "Total Time (s)" in targets_headers
+            
             print("\nAll UI visibility checks passed successfully!")
             browser.close()
     finally:
