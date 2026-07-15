@@ -100,3 +100,119 @@ def test_ui_visibility():
     finally:
         server_process.terminate()
         server_process.wait()
+
+
+def test_exposure_linkage_bugs():
+    # Boot server on port 8063
+    server_process = subprocess.Popen(
+        [sys.executable, "-u", "app.py"],
+        env=dict(os.environ, PORT="8063", PYTHONUNBUFFERED="1")
+    )
+    time.sleep(5)  # Allow server to boot
+    
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            
+            page.on("console", lambda msg: print(f"BROWSER CONSOLE [{msg.type}]:", msg.text))
+            page.on("pageerror", lambda err: print("BROWSER ERROR:", err))
+            
+            # Navigate
+            page.goto("http://127.0.0.1:8063")
+            page.wait_for_timeout(2000)
+            
+            # Load sample targets
+            page.locator("button#load-sample-btn").click()
+            page.wait_for_timeout(2000)
+            
+            # Find a science target row in schedule table
+            rows = page.locator("#schedule-table tbody tr")
+            row_count = rows.count()
+            target_row = None
+            for i in range(row_count):
+                row_id = rows.nth(i).get_attribute("id") or ""
+                if row_id.startswith("sched-row-") and not any(cal in row_id for cal in ["BD+", "Feige", "HZ", "HD19445"]):
+                    target_row = rows.nth(i)
+                    break
+            
+            assert target_row is not None, "No scheduled science target row found!"
+            target_name = target_row.get_attribute("id").replace("sched-row-", "")
+            print(f"Testing linkage on target: {target_name}")
+            
+            # Click the lock button to lock the target at this time slot
+            target_row.locator("button").first.click()
+            page.wait_for_timeout(1000)
+            
+            # Get input elements
+            red_exp_input = target_row.locator("input").nth(3)
+            red_num_input = target_row.locator("input").nth(4)
+            blue_exp_input = target_row.locator("input").nth(5)
+            blue_num_input = target_row.locator("input").nth(6)
+            
+            # Read initial values/placeholders
+            init_red_num = red_num_input.input_value() or red_num_input.get_attribute("placeholder") or "2"
+            init_blue_num = blue_num_input.input_value() or blue_num_input.get_attribute("placeholder") or "1"
+            init_red_num_val = int(init_red_num)
+            init_blue_num_val = int(init_blue_num)
+            print(f"Initial counts: Red N = {init_red_num_val}, Blue N = {init_blue_num_val}")
+            
+            try:
+                # Test Bug 1 & 2: Edit red_exp to 300
+                print("Editing red_exp to 300...")
+                red_exp_input.fill("300")
+                red_exp_input.dispatch_event("change")
+                page.wait_for_timeout(2000)
+                
+                # Re-locate inputs after table re-render
+                target_row = page.locator(f'tr[id="sched-row-{target_name}"]')
+                red_exp_input = target_row.locator("input").nth(3)
+                red_num_input = target_row.locator("input").nth(4)
+                blue_exp_input = target_row.locator("input").nth(5)
+                blue_num_input = target_row.locator("input").nth(6)
+                
+                new_red_num = int(red_num_input.input_value())
+                new_blue_num = int(blue_num_input.input_value())
+                new_blue_exp = blue_exp_input.input_value()
+                
+                print(f"After editing red_exp to 300: Red N = {new_red_num}, Blue N = {new_blue_num}, Blue Exp = {new_blue_exp}")
+                
+                # Verify Bug 1: changing exposure time does not change number of exposures of either arm (if within bounds)
+                assert new_red_num == init_red_num_val, f"Expected red_num to remain {init_red_num_val}, but got {new_red_num}"
+                assert new_blue_num == init_blue_num_val, f"Expected blue_num to remain {init_blue_num_val}, but got {new_blue_num}"
+                
+                # Verify Bug 2: other arm inputs are not blank
+                assert new_blue_exp.strip() != "", "Blue exposure time input became blank!"
+                
+                # Test Bug 3: Exceed maximum exposure time (red max is 600s)
+                total_time_target = 800.0 * new_red_num
+                print(f"Editing red_exp to 800 (total time target = {total_time_target}s)...")
+                red_exp_input.fill("800")
+                red_exp_input.dispatch_event("change")
+                page.wait_for_timeout(2000)
+                
+                # Re-locate inputs
+                target_row = page.locator(f'tr[id="sched-row-{target_name}"]')
+                red_exp_input = target_row.locator("input").nth(3)
+                red_num_input = target_row.locator("input").nth(4)
+                
+                final_red_exp = float(red_exp_input.input_value())
+                final_red_num = int(red_num_input.input_value())
+                final_total_time = final_red_exp * final_red_num
+                
+                print(f"After editing red_exp to 800: Red Exp = {final_red_exp}, Red N = {final_red_num}, Total = {final_total_time}")
+                
+                # Verify Bug 3: redistributed correctly, total time is equal to total time set (1600) and exp <= 600
+                assert final_red_exp <= 600.0, f"Expected red exposure time to be capped/redistributed under 600.0s, but got {final_red_exp}"
+                assert abs(final_total_time - total_time_target) < 1.0, f"Expected total exposure time to be {total_time_target}s, but got {final_total_time}"
+            except Exception as test_exc:
+                screenshot_path = "/Users/rfoley/.gemini/antigravity/brain/07a56a8c-cb2c-47e3-a0bb-bc911fb5da5c/linkage_bug_screenshot.png"
+                page.screenshot(path=screenshot_path, full_page=True)
+                print(f"Test failed. Saved failure screenshot to {screenshot_path}")
+                raise test_exc
+            
+            browser.close()
+    finally:
+        server_process.terminate()
+        server_process.wait()
+
