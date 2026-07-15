@@ -10,3 +10,4 @@ This Pull Request addresses the Hour Angle and pointing limits propagation issue
 - [x] **Test validation**: Verified that all 40 python and browser integration tests pass successfully.
 
 Resolves #68
+
