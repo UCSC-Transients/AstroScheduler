@@ -122,6 +122,11 @@ def test_exposure_linkage_bugs():
             page.goto("http://127.0.0.1:8063")
             page.wait_for_timeout(2000)
             
+            # Set fixed observing date to ensure deterministic scheduling
+            page.locator("#obs-date").fill("2026-07-14")
+            page.locator("#obs-date").dispatch_event("change")
+            page.wait_for_timeout(1000)
+            
             # Load sample targets
             page.locator("button#load-sample-btn").click()
             page.wait_for_timeout(2000)
