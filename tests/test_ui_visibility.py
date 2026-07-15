@@ -232,6 +232,9 @@ def test_exposure_linkage_bugs():
                 screenshot_path = "linkage_bug_screenshot.png"
                 page.screenshot(path=screenshot_path, full_page=True)
                 print(f"Test failed. Saved failure screenshot to {screenshot_path}")
+                print("--- START HTML CONTENT ---")
+                print(page.content())
+                print("--- END HTML CONTENT ---")
                 raise test_exc
             
             browser.close()
