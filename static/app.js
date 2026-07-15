@@ -2018,17 +2018,41 @@ async function recalculateStartingNow() {
     const magLimitInput = document.getElementById("rt-mag-limit")?.value;
     const mag_limit = (magLimitInput !== undefined && magLimitInput !== "") ? parseFloat(magLimitInput) : null;
     
-    const haLimitInput = document.getElementById("rt-ha-limit")?.value;
-    const ha_limit = (haLimitInput !== undefined && haLimitInput !== "") ? parseFloat(haLimitInput) : null;
-    
     const altLimitInput = document.getElementById("rt-alt-limit")?.value;
     const alt_limit = (altLimitInput !== undefined && altLimitInput !== "") ? parseFloat(altLimitInput) : null;
+    
+    const altMaxInput = document.getElementById("rt-alt-max")?.value;
+    const alt_max = (altMaxInput !== undefined && altMaxInput !== "") ? parseFloat(altMaxInput) : null;
+    
+    const decMinInput = document.getElementById("rt-dec-min")?.value;
+    const dec_min = (decMinInput !== undefined && decMinInput !== "") ? parseFloat(decMinInput) : null;
+    
+    const decMaxInput = document.getElementById("rt-dec-max")?.value;
+    const dec_max = (decMaxInput !== undefined && decMaxInput !== "") ? parseFloat(decMaxInput) : null;
+    
+    const azMinInput = document.getElementById("rt-az-min")?.value;
+    const az_min = (azMinInput !== undefined && azMinInput !== "") ? parseFloat(azMinInput) : null;
+    
+    const azMaxInput = document.getElementById("rt-az-max")?.value;
+    const az_max = (azMaxInput !== undefined && azMaxInput !== "") ? parseFloat(azMaxInput) : null;
+    
+    const haLimitEastInput = document.getElementById("rt-ha-limit-east")?.value;
+    const ha_limit_east = (haLimitEastInput !== undefined && haLimitEastInput !== "") ? parseFloat(haLimitEastInput) : null;
+    
+    const haLimitWestInput = document.getElementById("rt-ha-limit-west")?.value;
+    const ha_limit_west = (haLimitWestInput !== undefined && haLimitWestInput !== "") ? parseFloat(haLimitWestInput) : null;
     
     const realtime_constraints = {
         extinction,
         mag_limit,
-        ha_limit,
         alt_limit,
+        alt_max,
+        dec_min,
+        dec_max,
+        az_min,
+        az_max,
+        ha_limit_east,
+        ha_limit_west,
         start_from: new Date(nowMs).toISOString()
     };
     
@@ -2099,11 +2123,29 @@ async function _doSchedule() {
     const magLimitInput = document.getElementById("rt-mag-limit")?.value;
     const mag_limit = (magLimitInput !== undefined && magLimitInput !== "") ? parseFloat(magLimitInput) : null;
     
-    const haLimitInput = document.getElementById("rt-ha-limit")?.value;
-    const ha_limit = (haLimitInput !== undefined && haLimitInput !== "") ? parseFloat(haLimitInput) : null;
-    
     const altLimitInput = document.getElementById("rt-alt-limit")?.value;
     const alt_limit = (altLimitInput !== undefined && altLimitInput !== "") ? parseFloat(altLimitInput) : null;
+    
+    const altMaxInput = document.getElementById("rt-alt-max")?.value;
+    const alt_max = (altMaxInput !== undefined && altMaxInput !== "") ? parseFloat(altMaxInput) : null;
+    
+    const decMinInput = document.getElementById("rt-dec-min")?.value;
+    const dec_min = (decMinInput !== undefined && decMinInput !== "") ? parseFloat(decMinInput) : null;
+    
+    const decMaxInput = document.getElementById("rt-dec-max")?.value;
+    const dec_max = (decMaxInput !== undefined && decMaxInput !== "") ? parseFloat(decMaxInput) : null;
+    
+    const azMinInput = document.getElementById("rt-az-min")?.value;
+    const az_min = (azMinInput !== undefined && azMinInput !== "") ? parseFloat(azMinInput) : null;
+    
+    const azMaxInput = document.getElementById("rt-az-max")?.value;
+    const az_max = (azMaxInput !== undefined && azMaxInput !== "") ? parseFloat(azMaxInput) : null;
+    
+    const haLimitEastInput = document.getElementById("rt-ha-limit-east")?.value;
+    const ha_limit_east = (haLimitEastInput !== undefined && haLimitEastInput !== "") ? parseFloat(haLimitEastInput) : null;
+    
+    const haLimitWestInput = document.getElementById("rt-ha-limit-west")?.value;
+    const ha_limit_west = (haLimitWestInput !== undefined && haLimitWestInput !== "") ? parseFloat(haLimitWestInput) : null;
     
     const startOverride = document.getElementById("manual-night-start")?.value.trim() || "";
     const endOverride = document.getElementById("manual-night-end")?.value.trim() || "";
@@ -2112,8 +2154,14 @@ async function _doSchedule() {
     const realtime_constraints = {
         extinction,
         mag_limit,
-        ha_limit,
-        alt_limit
+        alt_limit,
+        alt_max,
+        dec_min,
+        dec_max,
+        az_min,
+        az_max,
+        ha_limit_east,
+        ha_limit_west
     };
 
     if (startOverride || endOverride) {
@@ -3726,16 +3774,38 @@ function runLocalJSSolver(payload) {
         }
         
         if (!isManual && !ignoreSchedulingLimits) {
-            // Real-time limits
             const rt = payload.realtime_constraints || {};
-            if (rt.ha_limit !== undefined && rt.ha_limit !== null && rt.ha_limit !== "") {
-                const lst = getLst(dt, observatory.lon);
-                const ha = getHourAngle(lst, t.ra);
-                if (Math.abs(ha) > parseFloat(rt.ha_limit)) return false;
+            const lst = getLst(dt, observatory.lon);
+            const ha = getHourAngle(lst, t.ra);
+            const dec = typeof t.dec === 'number' ? t.dec : parseCoordinate(t.dec, false);
+            const altAz = getAltAz(dt, observatory.lat, observatory.lon, t.ra, t.dec);
+            
+            if (rt.ha_limit_east !== undefined && rt.ha_limit_east !== null && rt.ha_limit_east !== "") {
+                if (ha < parseFloat(rt.ha_limit_east)) return false;
+            }
+            if (rt.ha_limit_west !== undefined && rt.ha_limit_west !== null && rt.ha_limit_west !== "") {
+                if (ha > parseFloat(rt.ha_limit_west)) return false;
+            }
+            if (rt.dec_min !== undefined && rt.dec_min !== null && rt.dec_min !== "") {
+                if (dec < parseFloat(rt.dec_min)) return false;
+            }
+            if (rt.dec_max !== undefined && rt.dec_max !== null && rt.dec_max !== "") {
+                if (dec > parseFloat(rt.dec_max)) return false;
             }
             if (rt.alt_limit !== undefined && rt.alt_limit !== null && rt.alt_limit !== "") {
-                const altAz = getAltAz(dt, observatory.lat, observatory.lon, t.ra, t.dec);
                 if (altAz.alt < parseFloat(rt.alt_limit)) return false;
+            }
+            if (rt.alt_max !== undefined && rt.alt_max !== null && rt.alt_max !== "") {
+                if (altAz.alt > parseFloat(rt.alt_max)) return false;
+            }
+            if (rt.az_min !== undefined && rt.az_min !== null && rt.az_min !== "") {
+                const minAz = parseFloat(rt.az_min);
+                const maxAz = (rt.az_max !== undefined && rt.az_max !== null && rt.az_max !== "") ? parseFloat(rt.az_max) : 360.0;
+                if (minAz <= maxAz) {
+                    if (altAz.az < minAz || altAz.az > maxAz) return false;
+                } else {
+                    if (altAz.az < minAz && altAz.az > maxAz) return false;
+                }
             }
         }
         
@@ -4742,43 +4812,81 @@ function drawPolarSkyMap(blocks, targetPool, solar_times) {
     let maxAlt = 90;
     let minAz = 0;
     let maxAz = 360;
+    let decMin = -35;
+    let decMax = 72;
+    let haLimitEast = -5.6667;
+    let haLimitWest = 3.75;
     
     if (isRealTime) {
-        minAlt = parseFloat(document.getElementById("rt-alt-limit")?.value) || 20;
-        maxAlt = parseFloat(document.getElementById("rt-alt-max")?.value) || 90;
-        minAz = parseFloat(document.getElementById("rt-az-min")?.value) || 0;
-        maxAz = parseFloat(document.getElementById("rt-az-max")?.value) || 360;
+        const altLimitVal = parseFloat(document.getElementById("rt-alt-limit")?.value);
+        minAlt = !isNaN(altLimitVal) ? altLimitVal : 20;
+        const altMaxVal = parseFloat(document.getElementById("rt-alt-max")?.value);
+        maxAlt = !isNaN(altMaxVal) ? altMaxVal : 90;
+        const azMinVal = parseFloat(document.getElementById("rt-az-min")?.value);
+        minAz = !isNaN(azMinVal) ? azMinVal : 0;
+        const azMaxVal = parseFloat(document.getElementById("rt-az-max")?.value);
+        maxAz = !isNaN(azMaxVal) ? azMaxVal : 360;
+        const decMinVal = parseFloat(document.getElementById("rt-dec-min")?.value);
+        decMin = !isNaN(decMinVal) ? decMinVal : -35;
+        const decMaxVal = parseFloat(document.getElementById("rt-dec-max")?.value);
+        decMax = !isNaN(decMaxVal) ? decMaxVal : 72;
+        const haEastVal = parseFloat(document.getElementById("rt-ha-limit-east")?.value);
+        haLimitEast = !isNaN(haEastVal) ? haEastVal : -5.6667;
+        const haWestVal = parseFloat(document.getElementById("rt-ha-limit-west")?.value);
+        haLimitWest = !isNaN(haWestVal) ? haWestVal : 3.75;
     }
-    
-    // 1. Altitude < minAlt grey ring
-    if (minAlt > 0) {
-        const rInner = rMax * ((90 - minAlt) / 90);
-        ctx.fillStyle = "rgba(255, 255, 255, 0.08)";
-        ctx.beginPath();
-        ctx.arc(cx, cy, rMax, 0, 2 * Math.PI);
-        ctx.arc(cx, cy, rInner, 0, 2 * Math.PI, true);
-        ctx.fill();
-    }
-    
-    // 2. Altitude > maxAlt grey circle
-    if (maxAlt < 90) {
-        const rOuter = rMax * ((90 - maxAlt) / 90);
-        ctx.fillStyle = "rgba(255, 255, 255, 0.08)";
-        ctx.beginPath();
-        ctx.arc(cx, cy, rOuter, 0, 2 * Math.PI);
-        ctx.fill();
-    }
-    
-    // 3. Azimuth outside [minAz, maxAz] grey sector
-    if (minAz > 0 || maxAz < 360) {
-        ctx.fillStyle = "rgba(255, 255, 255, 0.08)";
-        ctx.beginPath();
-        ctx.moveTo(cx, cy);
-        const startAngle = (maxAz - 90) * Math.PI / 180;
-        const endAngle = (minAz - 90) * Math.PI / 180;
-        ctx.arc(cx, cy, rMax, startAngle, endAngle);
-        ctx.closePath();
-        ctx.fill();
+
+    // Grid-based shading for all restricted limits
+    ctx.fillStyle = "rgba(255, 255, 255, 0.08)";
+    const latRad = 37.3414 * Math.PI / 180.0;
+    const sinLat = Math.sin(latRad);
+    const cosLat = Math.cos(latRad);
+    const step = 2;
+    for (let y = 0; y < size; y += step) {
+        for (let x = 0; x < size; x += step) {
+            const dx = x - cx;
+            const dy = y - cy;
+            const r = Math.sqrt(dx * dx + dy * dy);
+            if (r <= rMax) {
+                const alt = 90.0 * (1.0 - r / rMax);
+                const angleRad = Math.atan2(dy, dx);
+                const az = (angleRad * 180.0 / Math.PI + 90.0 + 360.0) % 360.0;
+                
+                const altRad = alt * Math.PI / 180.0;
+                const azRad = az * Math.PI / 180.0;
+                const sinAlt = Math.sin(altRad);
+                const cosAlt = Math.cos(altRad);
+                const sinDec = sinAlt * sinLat + cosAlt * cosLat * Math.cos(azRad);
+                const dec = Math.asin(Math.max(-1.0, Math.min(1.0, sinDec))) * 180.0 / Math.PI;
+                
+                const y_coord = -Math.sin(azRad) * cosAlt;
+                const x_coord = sinAlt * cosLat - cosAlt * Math.cos(azRad) * sinLat;
+                const haRad = Math.atan2(y_coord, x_coord);
+                let ha = haRad * 12.0 / Math.PI;
+                ha = (ha + 12.0) % 24.0 - 12.0;
+                
+                let restricted = false;
+                if (alt < minAlt || alt > maxAlt) {
+                    restricted = true;
+                } else if (minAz <= maxAz) {
+                    if (az < minAz || az > maxAz) restricted = true;
+                } else {
+                    if (az < minAz && az > maxAz) restricted = true;
+                }
+                
+                if (!restricted) {
+                    if (dec < decMin || dec > decMax) {
+                        restricted = true;
+                    } else if (ha < haLimitEast || ha > haLimitWest) {
+                        restricted = true;
+                    }
+                }
+                
+                if (restricted) {
+                    ctx.fillRect(x, y, step, step);
+                }
+            }
+        }
     }
 
     // Draw outer horizon circle
