@@ -23,15 +23,18 @@ def test_ui_visibility():
             page.on("console", lambda msg: console_logs.append(f"[{msg.type}] {msg.text}"))
             page.on("pageerror", lambda err: page_errors.append(err))
             
-            print("Navigating to page...")
-            with page.expect_response(
-                lambda r: "/api/schedule" in r.url and r.status == 200,
-                timeout=15000
-            ):
-                page.goto("http://127.0.0.1:8062")
+            # Intercept and fail /api/schedule requests to force local solver fallback
+            page.route("**/api/schedule", lambda route: route.fulfill(
+                status=500,
+                content_type="application/json",
+                body='{"detail": "Internal Server Error"}'
+            ))
             
-            # Wait another second for rendering
-            page.wait_for_timeout(2000)
+            print("Navigating to page with API offline...")
+            page.goto("http://127.0.0.1:8062")
+            
+            # Wait for local solver fallback to run
+            page.wait_for_timeout(4000)
             
             print("\n--- BROWSER LOGS ---")
             for log in console_logs:
