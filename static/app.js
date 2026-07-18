@@ -2946,10 +2946,31 @@ function handleTimelineReorder(draggedName, targetName) {
         }
     }
 
-    localStorage.setItem("targetPool", JSON.stringify(targetPool));
-    localStorage.setItem("standardStars", JSON.stringify(standardStars));
     localStorage.setItem("lockedTargets", JSON.stringify(Array.from(lockedTargets.entries())));
-    recalculateLayoutOnly();
+
+    if (autoUpdateEnabled) {
+        saveAndRefresh();
+    } else {
+        const blockA = currentBlocksList.find(b => b.target_name === draggedName);
+        const blockB = currentBlocksList.find(b => b.target_name === targetName);
+        if (blockA && blockB) {
+            const tStartA = new Date(blockA.start_time).getTime();
+            const tStartB = new Date(blockB.start_time).getTime();
+            const combinedStart = Math.min(tStartA, tStartB);
+            
+            blockA.start_time = new Date(combinedStart).toISOString();
+            blockA.end_time = new Date(combinedStart + blockA.duration_minutes * 60 * 1000).toISOString();
+            
+            blockB.start_time = blockA.end_time;
+            blockB.end_time = new Date(new Date(blockB.start_time).getTime() + blockB.duration_minutes * 60 * 1000).toISOString();
+        }
+        localStorage.setItem("targetPool", JSON.stringify(targetPool));
+        localStorage.setItem("standardStars", JSON.stringify(standardStars));
+        renderTargetsTable();
+        
+        lastScheduleResult.blocks = currentBlocksList;
+        updateScheduleUI(lastScheduleResult);
+    }
 }
 
 function renderTimeline(blocks, solar_times, moon_plot) {
