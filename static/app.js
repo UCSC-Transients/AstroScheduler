@@ -999,11 +999,19 @@ function updateTargetManualStart(name, val) {
     const target = targetPool.find(t => t.name === name) || standardStars.find(s => s.name === name);
     if (!target) return;
     
+    const oldBlock = currentBlocksList.find(b => b.target_name === name);
+    const oldStartTime = oldBlock ? new Date(oldBlock.start_time).getTime() : null;
+    
     if (!val.trim()) {
         target.manual_start_time = null;
         target.manual_end_time = null;
         target.lock_type = null;
         lockedTargets.delete(name);
+        
+        localStorage.setItem("targetPool", JSON.stringify(targetPool));
+        localStorage.setItem("standardStars", JSON.stringify(standardStars));
+        renderTargetsTable();
+        recalculateLayoutOnly();
     } else {
         const dateStr = document.getElementById("obs-date").value;
         const iso = parseTimeInputToISO(val, dateStr, currentTimezone, true);
@@ -1022,19 +1030,50 @@ function updateTargetManualStart(name, val) {
             const endDate = new Date(startDate.getTime() + duration * 60 * 1000);
             target.manual_end_time = endDate.toISOString();
         }
+        
+        const newStartTime = new Date(target.manual_start_time).getTime();
+        
+        localStorage.setItem("targetPool", JSON.stringify(targetPool));
+        localStorage.setItem("standardStars", JSON.stringify(standardStars));
+        renderTargetsTable();
+        
+        if (!isNaN(newStartTime) && oldBlock && oldStartTime !== null) {
+            const deltaMinutes = Math.round((newStartTime - oldStartTime) / (60 * 1000));
+            oldBlock.start_time = target.manual_start_time;
+            oldBlock.end_time = target.manual_end_time;
+            adjustAbuttingBlocks(name, deltaMinutes);
+        } else {
+            recalculateLayoutOnly();
+        }
     }
-    saveAndRefresh();
 }
 
 function updateTargetManualEnd(name, val) {
     const target = targetPool.find(t => t.name === name) || standardStars.find(s => s.name === name);
     if (!target) return;
     
+    const oldBlock = currentBlocksList.find(b => b.target_name === name);
+    const oldDuration = oldBlock ? oldBlock.duration_minutes : 30;
+    
     if (!val.trim()) {
         target.manual_start_time = null;
         target.manual_end_time = null;
         target.lock_type = null;
         lockedTargets.delete(name);
+        
+        const exp = getTargetExposureDetailsJS(target);
+        const defaultDuration = exp ? exp.duration_minutes : 30;
+        const deltaMinutes = defaultDuration - oldDuration;
+        if (oldBlock) {
+            oldBlock.duration_minutes = defaultDuration;
+            const startMs = new Date(oldBlock.start_time).getTime();
+            oldBlock.end_time = new Date(startMs + defaultDuration * 60 * 1000).toISOString();
+        }
+        
+        localStorage.setItem("targetPool", JSON.stringify(targetPool));
+        localStorage.setItem("standardStars", JSON.stringify(standardStars));
+        renderTargetsTable();
+        adjustAbuttingBlocks(name, deltaMinutes);
     } else {
         const dateStr = document.getElementById("obs-date").value;
         const iso = parseTimeInputToISO(val, dateStr, currentTimezone, false);
@@ -1053,13 +1092,32 @@ function updateTargetManualEnd(name, val) {
             const startDate = new Date(endDate.getTime() - duration * 60 * 1000);
             target.manual_start_time = startDate.toISOString();
         }
+        
+        localStorage.setItem("targetPool", JSON.stringify(targetPool));
+        localStorage.setItem("standardStars", JSON.stringify(standardStars));
+        renderTargetsTable();
+        
+        const newEndTime = new Date(target.manual_end_time).getTime();
+        if (!isNaN(newEndTime) && oldBlock) {
+            const startMs = new Date(oldBlock.start_time).getTime();
+            const newDuration = Math.round((newEndTime - startMs) / (60 * 1000));
+            target.manual_duration = newDuration;
+            oldBlock.duration_minutes = newDuration;
+            oldBlock.end_time = target.manual_end_time;
+            const deltaMinutes = newDuration - oldDuration;
+            adjustAbuttingBlocks(name, deltaMinutes);
+        } else {
+            recalculateLayoutOnly();
+        }
     }
-    saveAndRefresh();
 }
 
 function updateTargetManualDuration(name, val) {
     const target = targetPool.find(t => t.name === name) || standardStars.find(s => s.name === name);
     if (!target) return;
+    
+    const oldBlock = currentBlocksList.find(b => b.target_name === name);
+    const oldDuration = oldBlock ? oldBlock.duration_minutes : 30;
     
     const duration = val.trim() ? parseFloat(val) : null;
     target.manual_duration = duration;
@@ -1087,19 +1145,39 @@ function updateTargetManualDuration(name, val) {
             }
         }
     }
-    saveAndRefresh();
+    
+    let newDuration = duration !== null ? duration : 30;
+    if (duration === null) {
+        const exp = getTargetExposureDetailsJS(target);
+        if (exp) newDuration = exp.duration_minutes;
+    }
+    const deltaMinutes = newDuration - oldDuration;
+    
+    if (oldBlock) {
+        oldBlock.duration_minutes = newDuration;
+        const startMs = new Date(oldBlock.start_time).getTime();
+        oldBlock.end_time = new Date(startMs + newDuration * 60 * 1000).toISOString();
+    }
+    
+    localStorage.setItem("targetPool", JSON.stringify(targetPool));
+    localStorage.setItem("standardStars", JSON.stringify(standardStars));
+    renderTargetsTable();
+    adjustAbuttingBlocks(name, deltaMinutes);
 }
 
 function updateTargetRedExp(name, val) {
     const target = targetPool.find(t => t.name === name);
     if (!target) return;
     
+    const oldBlock = currentBlocksList.find(b => b.target_name === name);
+    const oldDuration = oldBlock ? oldBlock.duration_minutes : 30;
+    
     if (!val.trim()) {
         target.red_exptime = null;
         target.red_num = null;
         target.blue_exptime = null;
         target.blue_num = null;
-        saveAndRefresh();
+        saveExposureAndReTime(name, oldDuration);
         return;
     }
     
@@ -1129,19 +1207,22 @@ function updateTargetRedExp(name, val) {
     target.blue_num = N_B;
     target.manual_duration = null;
     
-    saveAndRefresh();
+    saveExposureAndReTime(name, oldDuration);
 }
 
 function updateTargetRedNum(name, val) {
     const target = targetPool.find(t => t.name === name);
     if (!target) return;
     
+    const oldBlock = currentBlocksList.find(b => b.target_name === name);
+    const oldDuration = oldBlock ? oldBlock.duration_minutes : 30;
+    
     if (!val.trim()) {
         target.red_exptime = null;
         target.red_num = null;
         target.blue_exptime = null;
         target.blue_num = null;
-        saveAndRefresh();
+        saveExposureAndReTime(name, oldDuration);
         return;
     }
     
@@ -1172,19 +1253,22 @@ function updateTargetRedNum(name, val) {
     target.blue_num = N_B;
     target.manual_duration = null;
     
-    saveAndRefresh();
+    saveExposureAndReTime(name, oldDuration);
 }
 
 function updateTargetBlueExp(name, val) {
     const target = targetPool.find(t => t.name === name);
     if (!target) return;
     
+    const oldBlock = currentBlocksList.find(b => b.target_name === name);
+    const oldDuration = oldBlock ? oldBlock.duration_minutes : 30;
+    
     if (!val.trim()) {
         target.red_exptime = null;
         target.red_num = null;
         target.blue_exptime = null;
         target.blue_num = null;
-        saveAndRefresh();
+        saveExposureAndReTime(name, oldDuration);
         return;
     }
     
@@ -1214,19 +1298,22 @@ function updateTargetBlueExp(name, val) {
     target.blue_num = N_B;
     target.manual_duration = null;
     
-    saveAndRefresh();
+    saveExposureAndReTime(name, oldDuration);
 }
 
 function updateTargetBlueNum(name, val) {
     const target = targetPool.find(t => t.name === name);
     if (!target) return;
     
+    const oldBlock = currentBlocksList.find(b => b.target_name === name);
+    const oldDuration = oldBlock ? oldBlock.duration_minutes : 30;
+    
     if (!val.trim()) {
         target.red_exptime = null;
         target.red_num = null;
         target.blue_exptime = null;
         target.blue_num = null;
-        saveAndRefresh();
+        saveExposureAndReTime(name, oldDuration);
         return;
     }
     
@@ -1257,7 +1344,7 @@ function updateTargetBlueNum(name, val) {
     target.blue_num = N_B;
     target.manual_duration = null;
     
-    saveAndRefresh();
+    saveExposureAndReTime(name, oldDuration);
 }
 
 function toggleTargetLock(name) {
@@ -1415,14 +1502,7 @@ function stickyHighlightTarget(name) {
         );
     }
     
-    // Scroll up to airmass chart card
-    const airmassChartEl = document.getElementById("airmassChart");
-    if (airmassChartEl) {
-        const airmassCard = airmassChartEl.closest(".card");
-        if (airmassCard) {
-            airmassCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }
-    }
+
 }
 
 // Timezone & Formatting Utilities
@@ -2293,8 +2373,145 @@ function recalculateLayoutOnly() {
         currentTime = end;
     });
     
+    const conflicts = [];
+    const unobservable = [];
+    
+    newBlocks.forEach(block => {
+        const t = targetMap[block.target_name];
+        if (t) {
+            const dec = typeof t.dec === 'number' ? t.dec : parseCoordinate(t.dec, false);
+            const ra = typeof t.ra === 'number' ? t.ra : parseCoordinate(t.ra, true);
+            const obs = { lat: 37.3414, lon: -121.6429, elevation: 1283 };
+            
+            const startLst = getLst(new Date(block.start_time), obs.lon);
+            const startHa = getHourAngle(startLst, ra);
+            const endLst = getLst(new Date(block.end_time), obs.lon);
+            const endHa = getHourAngle(endLst, ra);
+            
+            let decWarn = (dec < -35.0 || dec > 72.0);
+            let haWarn = (startHa < -5.6667 || startHa > 3.75 || endHa < -5.6667 || endHa > 3.75);
+            let airmassWarn = (block.airmass_start <= 0 || block.airmass_start > 2.5 || block.airmass_end <= 0 || block.airmass_end > 2.5);
+            
+            if (decWarn || haWarn || airmassWarn) {
+                let reasons = [];
+                if (decWarn) reasons.push("declination out of range (-35 to +72)");
+                if (haWarn) reasons.push("hour angle exceeds limits (-5.67h to +3.75h)");
+                if (airmassWarn) reasons.push("airmass exceeds 2.5 limit");
+                
+                unobservable.push(`Conflict: Target "${t.name}" violates limits (${reasons.join(", ")}).`);
+            }
+        }
+    });
+    
     lastScheduleResult.blocks = newBlocks;
+    lastScheduleResult.conflicts = conflicts;
+    lastScheduleResult.unobservable = unobservable;
     updateScheduleUI(lastScheduleResult);
+}
+
+function adjustAbuttingBlocks(changedTargetName, deltaMinutes) {
+    if (deltaMinutes === 0) return;
+    
+    const idx = currentBlocksList.findIndex(b => b.target_name === changedTargetName);
+    if (idx === -1) return;
+    
+    let prevEnd = new Date(currentBlocksList[idx].end_time).getTime();
+    
+    for (let i = idx + 1; i < currentBlocksList.length; i++) {
+        const b = currentBlocksList[i];
+        const bStart = new Date(b.start_time).getTime();
+        
+        if (Math.abs(bStart - prevEnd) < 5000) {
+            const newStart = new Date(bStart + deltaMinutes * 60 * 1000).toISOString();
+            const newEnd = new Date(new Date(b.end_time).getTime() + deltaMinutes * 60 * 1000).toISOString();
+            
+            b.start_time = newStart;
+            b.end_time = newEnd;
+            
+            const tName = b.target_name;
+            if (lastScheduleResult && lastScheduleResult.airmass_plots[tName]) {
+                const plotData = lastScheduleResult.airmass_plots[tName];
+                const getClosestAirmass = (timeMs) => {
+                    let closest = null;
+                    let minDist = Infinity;
+                    plotData.forEach(p => {
+                        const dist = Math.abs(new Date(p.time).getTime() - timeMs);
+                        if (dist < minDist) {
+                            minDist = dist;
+                            closest = p.airmass;
+                        }
+                    });
+                    return closest;
+                };
+                b.airmass_start = getClosestAirmass(new Date(newStart).getTime()) || b.airmass_start;
+                b.airmass_end = getClosestAirmass(new Date(newEnd).getTime()) || b.airmass_end;
+                b.airmass_median = getClosestAirmass(new Date(newStart).getTime() + (new Date(newEnd).getTime() - new Date(newStart).getTime()) / 2) || b.airmass_median;
+            }
+            
+            prevEnd = new Date(newEnd).getTime();
+        } else {
+            break;
+        }
+    }
+    
+    if (lastScheduleResult) {
+        lastScheduleResult.blocks = currentBlocksList;
+        
+        const unobservable = [];
+        const conflicts = [];
+        
+        currentBlocksList.forEach(block => {
+            const t = targetPool.find(target => target.name === block.target_name) || standardStars.find(star => star.name === block.target_name);
+            if (t) {
+                const dec = typeof t.dec === 'number' ? t.dec : parseCoordinate(t.dec, false);
+                const ra = typeof t.ra === 'number' ? t.ra : parseCoordinate(t.ra, true);
+                const obs = { lat: 37.3414, lon: -121.6429, elevation: 1283 };
+                
+                const startLst = getLst(new Date(block.start_time), obs.lon);
+                const startHa = getHourAngle(startLst, ra);
+                const endLst = getLst(new Date(block.end_time), obs.lon);
+                const endHa = getHourAngle(endLst, ra);
+                
+                let decWarn = (dec < -35.0 || dec > 72.0);
+                let haWarn = (startHa < -5.6667 || startHa > 3.75 || endHa < -5.6667 || endHa > 3.75);
+                let airmassWarn = (block.airmass_start <= 0 || block.airmass_start > 2.5 || block.airmass_end <= 0 || block.airmass_end > 2.5);
+                
+                if (decWarn || haWarn || airmassWarn) {
+                    let reasons = [];
+                    if (decWarn) reasons.push("declination out of range (-35 to +72)");
+                    if (haWarn) reasons.push("hour angle exceeds limits (-5.67h to +3.75h)");
+                    if (airmassWarn) reasons.push("airmass exceeds 2.5 limit");
+                    
+                    unobservable.push(`Conflict: Target "${t.name}" violates limits (${reasons.join(", ")}).`);
+                }
+            }
+        });
+        
+        lastScheduleResult.unobservable = unobservable;
+        lastScheduleResult.conflicts = conflicts;
+        
+        updateScheduleUI(lastScheduleResult);
+    }
+}
+
+function saveExposureAndReTime(name, oldDuration) {
+    const target = targetPool.find(t => t.name === name);
+    if (!target) return;
+    
+    const oldBlock = currentBlocksList.find(b => b.target_name === name);
+    const exp = getTargetExposureDetailsJS(target);
+    const newDuration = exp ? exp.duration_minutes : 30;
+    const deltaMinutes = newDuration - oldDuration;
+    
+    if (oldBlock) {
+        oldBlock.duration_minutes = newDuration;
+        const startMs = new Date(oldBlock.start_time).getTime();
+        oldBlock.end_time = new Date(startMs + newDuration * 60 * 1000).toISOString();
+    }
+    
+    localStorage.setItem("targetPool", JSON.stringify(targetPool));
+    renderTargetsTable();
+    adjustAbuttingBlocks(name, deltaMinutes);
 }
 
 // Issue #34: Debounce triggerScheduling to prevent flicker from rapid re-runs
@@ -2718,7 +2935,10 @@ function handleTimelineReorder(draggedName, targetName) {
         }
     }
 
-    saveAndRefresh();
+    localStorage.setItem("targetPool", JSON.stringify(targetPool));
+    localStorage.setItem("standardStars", JSON.stringify(standardStars));
+    localStorage.setItem("lockedTargets", JSON.stringify(Array.from(lockedTargets.entries())));
+    recalculateLayoutOnly();
 }
 
 function renderTimeline(blocks, solar_times, moon_plot) {
