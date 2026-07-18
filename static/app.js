@@ -2286,8 +2286,6 @@ function recalculateLayoutOnly() {
         if (iso) sunrise = new Date(iso);
     }
     
-    const scheduledNames = currentBlocksList.map(b => b.target_name);
-    
     const allPoolTargets = targetPool;
     const allStandards = standardStars.filter(s => !disabledStandards.has(s.name));
     
@@ -2295,30 +2293,28 @@ function recalculateLayoutOnly() {
     allPoolTargets.forEach(t => { targetMap[t.name] = t; });
     allStandards.forEach(s => { targetMap[s.name] = s; });
     
-    const sequenceNames = scheduledNames.filter(name => targetMap[name]);
-    
     let currentTime = sunset.getTime();
     const newBlocks = [];
     
-    sequenceNames.forEach(tName => {
-        const t = targetMap[tName];
-        if (!t) return;
-        
+    currentBlocksList.forEach(b => {
+        const t = targetMap[b.target_name];
         let start = currentTime;
-        if (t.manual_start_time) {
-            const mStart = new Date(t.manual_start_time).getTime();
-            if (!isNaN(mStart)) {
-                start = mStart;
-            }
-        }
+        let duration = b.duration_minutes;
         
-        let duration = 30;
-        if (t.manual_duration !== null && t.manual_duration !== undefined) {
-            duration = parseInt(t.manual_duration, 10);
-        } else {
-            const exp = getTargetExposureDetailsJS(t);
-            if (exp) {
-                duration = exp.duration_minutes;
+        if (t) {
+            if (t.manual_start_time) {
+                const mStart = new Date(t.manual_start_time).getTime();
+                if (!isNaN(mStart)) {
+                    start = mStart;
+                }
+            }
+            if (t.manual_duration !== null && t.manual_duration !== undefined) {
+                duration = parseInt(t.manual_duration, 10);
+            } else {
+                const exp = getTargetExposureDetailsJS(t);
+                if (exp) {
+                    duration = exp.duration_minutes;
+                }
             }
         }
         
@@ -2327,8 +2323,8 @@ function recalculateLayoutOnly() {
         let airmass_start = 1.0;
         let airmass_end = 1.0;
         let airmass_median = 1.0;
-        if (lastScheduleResult.airmass_plots[tName]) {
-            const plotData = lastScheduleResult.airmass_plots[tName];
+        if (lastScheduleResult.airmass_plots && lastScheduleResult.airmass_plots[b.target_name]) {
+            const plotData = lastScheduleResult.airmass_plots[b.target_name];
             const getClosestAirmass = (timeMs) => {
                 let closest = null;
                 let minDist = Infinity;
@@ -2347,15 +2343,15 @@ function recalculateLayoutOnly() {
         }
         
         newBlocks.push({
-            target_name: t.name,
+            target_name: b.target_name,
             start_time: new Date(start).toISOString(),
             end_time: new Date(end).toISOString(),
             duration_minutes: duration,
-            priority: t.priority || 0.0,
+            priority: b.priority || 0.0,
             airmass_start,
             airmass_end,
             airmass_median,
-            comment: t.comment || ""
+            comment: b.comment || ""
         });
         
         currentTime = end;
@@ -2784,10 +2780,17 @@ function updateScheduleUI(result) {
             
             return `
                 <tr id="sched-row-${b.target_name}" data-target="${b.target_name}"
+                    draggable="${b.target_name !== 'Evening Twilight' && b.target_name !== 'Morning Twilight' ? 'true' : 'false'}"
+                    ondragstart="event.dataTransfer.setData('text/plain', '${b.target_name}'); this.style.opacity = '0.4';"
+                    ondragend="this.style.opacity = '1';"
+                    ondragover="event.preventDefault();"
+                    ondragenter="if (event.dataTransfer.types.includes('text/plain')) { this.style.background = 'rgba(34, 211, 238, 0.15)'; }"
+                    ondragleave="this.style.background = '${isLocked ? 'rgba(245,158,11,0.05)' : ''}';"
+                    ondrop="this.style.background = '${isLocked ? 'rgba(245,158,11,0.05)' : ''}'; event.preventDefault(); const dragged = event.dataTransfer.getData('text/plain'); if (dragged && dragged !== '${b.target_name}') { handleTimelineReorder(dragged, '${b.target_name}'); }"
                     onmouseenter="highlightTarget('${b.target_name}')"
                     onmouseleave="unhighlightTarget('${b.target_name}')"
                     onclick="stickyHighlightTarget('${b.target_name}')"
-                    style="cursor: pointer; ${isLocked ? 'background: rgba(245,158,11,0.05);' : ''}">
+                    style="cursor: pointer; transition: background 0.2s ease; ${isLocked ? 'background: rgba(245,158,11,0.05);' : ''}">
                     ${lockCell}
                     <td>${timeCell}</td>
                     <td><strong>${b.target_name}</strong></td>
@@ -2888,33 +2891,16 @@ function handleTimelineReorder(draggedName, targetName) {
         }
     }
     
-    // When autoUpdateEnabled is OFF: swap ONLY the time slots (start/end times) of the two touched blocks
-    // and do NOT recalculate layout or re-time any other blocks.
-    if (!autoUpdateEnabled) {
-        const blockA = currentBlocksList.find(b => b.target_name === draggedName);
-        const blockB = currentBlocksList.find(b => b.target_name === targetName);
-        if (blockA && blockB) {
-            const tempStart = blockA.start_time;
-            const tempEnd = blockA.end_time;
-            
-            blockA.start_time = blockB.start_time;
-            blockA.end_time = new Date(new Date(blockA.start_time).getTime() + blockA.duration_minutes * 60 * 1000).toISOString();
-            
-            blockB.start_time = tempStart;
-            blockB.end_time = new Date(new Date(blockB.start_time).getTime() + blockB.duration_minutes * 60 * 1000).toISOString();
-        }
-    }
-    
     // Reorder the currentBlocksList to reflect the new visual dragged order
     const draggedBlockIdx = currentBlocksList.findIndex(b => b.target_name === draggedName);
-    if (draggedBlockIdx !== -1) {
+    let targetBlockIdx = currentBlocksList.findIndex(b => b.target_name === targetName);
+    if (targetName === "Evening Twilight") {
+        targetBlockIdx = 1;
+    }
+    
+    if (draggedBlockIdx !== -1 && targetBlockIdx !== -1) {
         const [draggedBlock] = currentBlocksList.splice(draggedBlockIdx, 1);
-        const targetBlockIdx = currentBlocksList.findIndex(b => b.target_name === targetName);
-        if (targetBlockIdx !== -1) {
-            currentBlocksList.splice(targetBlockIdx, 0, draggedBlock);
-        } else {
-            currentBlocksList.push(draggedBlock);
-        }
+        currentBlocksList.splice(targetBlockIdx, 0, draggedBlock);
     }
     
     localStorage.setItem("targetPool", JSON.stringify(targetPool));
@@ -2924,8 +2910,7 @@ function handleTimelineReorder(draggedName, targetName) {
     if (autoUpdateEnabled) {
         saveAndRefresh();
     } else {
-        lastScheduleResult.blocks = currentBlocksList;
-        updateScheduleUI(lastScheduleResult);
+        recalculateLayoutOnly();
     }
 }
 
@@ -3129,6 +3114,7 @@ function renderTimeline(blocks, solar_times, moon_plot) {
             blockEl.addEventListener("drop", (e) => {
                 e.preventDefault();
                 const draggedName = e.dataTransfer.getData("text/plain");
+                console.log("Timeline drop listener called, draggedName:", draggedName, "targetName:", b.target_name);
                 if (draggedName && draggedName !== b.target_name) {
                     handleTimelineReorder(draggedName, b.target_name);
                 }
