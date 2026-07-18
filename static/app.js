@@ -2855,7 +2855,7 @@ function handleTimelineReorder(draggedName, targetName) {
     if (draggedName === targetName) return;
     
     // Find the objects to set the new sequence constraint
-    const draggedTarget = targetPool.find(t => t.name === draggedName);
+    const draggedTarget = targetPool.find(t => t.name === draggedName) || standardStars.find(s => s.name === draggedName);
     const targetObj = targetPool.find(t => t.name === targetName) || standardStars.find(s => s.name === targetName);
     
     if (draggedTarget && targetObj) {
@@ -2888,6 +2888,23 @@ function handleTimelineReorder(draggedName, targetName) {
         }
     }
     
+    // When autoUpdateEnabled is OFF: swap ONLY the time slots (start/end times) of the two touched blocks
+    // and do NOT recalculate layout or re-time any other blocks.
+    if (!autoUpdateEnabled) {
+        const blockA = currentBlocksList.find(b => b.target_name === draggedName);
+        const blockB = currentBlocksList.find(b => b.target_name === targetName);
+        if (blockA && blockB) {
+            const tempStart = blockA.start_time;
+            const tempEnd = blockA.end_time;
+            
+            blockA.start_time = blockB.start_time;
+            blockA.end_time = new Date(new Date(blockA.start_time).getTime() + blockA.duration_minutes * 60 * 1000).toISOString();
+            
+            blockB.start_time = tempStart;
+            blockB.end_time = new Date(new Date(blockB.start_time).getTime() + blockB.duration_minutes * 60 * 1000).toISOString();
+        }
+    }
+    
     // Reorder the currentBlocksList to reflect the new visual dragged order
     const draggedBlockIdx = currentBlocksList.findIndex(b => b.target_name === draggedName);
     if (draggedBlockIdx !== -1) {
@@ -2907,7 +2924,8 @@ function handleTimelineReorder(draggedName, targetName) {
     if (autoUpdateEnabled) {
         saveAndRefresh();
     } else {
-        recalculateLayoutOnly();
+        lastScheduleResult.blocks = currentBlocksList;
+        updateScheduleUI(lastScheduleResult);
     }
 }
 
@@ -3095,8 +3113,8 @@ function renderTimeline(blocks, solar_times, moon_plot) {
         const bEndLST = formatLST(getLst(bEnd, obsLon));
         blockEl.title = `${b.target_name}\nUT: ${formatTimeForTimezone(b.start_time, 'UTC')} - ${formatTimeForTimezone(b.end_time, 'UTC')}\nLoc: ${formatTimeForTimezone(b.start_time, 'obs')} - ${formatTimeForTimezone(b.end_time, 'obs')}\nLST: ${bStartLST} - ${bEndLST}\nMedian Airmass: ${b.airmass_median.toFixed(2)}`;
         
-        // Enable drag & drop for manual scheduling
-        if (b.priority > 0) {
+        // Enable drag & drop for manual scheduling (exclude twilight blocks)
+        if (b.target_name !== "Evening Twilight" && b.target_name !== "Morning Twilight") {
             blockEl.draggable = true;
             blockEl.addEventListener("dragstart", (e) => {
                 e.dataTransfer.setData("text/plain", b.target_name);
