@@ -2287,7 +2287,6 @@ function recalculateLayoutOnly() {
     }
     
     const scheduledNames = currentBlocksList.map(b => b.target_name);
-    const scheduledNameSet = new Set(scheduledNames);
     
     const allPoolTargets = targetPool;
     const allStandards = standardStars.filter(s => !disabledStandards.has(s.name));
@@ -2297,17 +2296,6 @@ function recalculateLayoutOnly() {
     allStandards.forEach(s => { targetMap[s.name] = s; });
     
     const sequenceNames = scheduledNames.filter(name => targetMap[name]);
-    
-    allPoolTargets.forEach(t => {
-        if (!scheduledNameSet.has(t.name)) {
-            sequenceNames.push(t.name);
-        }
-    });
-    allStandards.forEach(s => {
-        if (!scheduledNameSet.has(s.name)) {
-            sequenceNames.push(s.name);
-        }
-    });
     
     let currentTime = sunset.getTime();
     const newBlocks = [];
@@ -2375,6 +2363,11 @@ function recalculateLayoutOnly() {
     
     const conflicts = [];
     const unobservable = [];
+    if (lastScheduleResult.unobservable) {
+        lastScheduleResult.unobservable.forEach(name => {
+            if (!unobservable.includes(name)) unobservable.push(name);
+        });
+    }
     
     newBlocks.forEach(block => {
         const t = targetMap[block.target_name];
@@ -2392,13 +2385,14 @@ function recalculateLayoutOnly() {
             let haWarn = (startHa < -5.6667 || startHa > 3.75 || endHa < -5.6667 || endHa > 3.75);
             let airmassWarn = (block.airmass_start <= 0 || block.airmass_start > 2.5 || block.airmass_end <= 0 || block.airmass_end > 2.5);
             
-            if (decWarn || haWarn || airmassWarn) {
-                let reasons = [];
-                if (decWarn) reasons.push("declination out of range (-35 to +72)");
-                if (haWarn) reasons.push("hour angle exceeds limits (-5.67h to +3.75h)");
-                if (airmassWarn) reasons.push("airmass exceeds 2.5 limit");
-                
-                unobservable.push(`Conflict: Target "${t.name}" violates limits (${reasons.join(", ")}).`);
+            if (decWarn) {
+                if (!unobservable.includes(t.name)) {
+                    unobservable.push(t.name);
+                }
+            } else if (haWarn || airmassWarn) {
+                if (!conflicts.includes(t.name)) {
+                    conflicts.push(t.name);
+                }
             }
         }
     });
@@ -2457,8 +2451,13 @@ function adjustAbuttingBlocks(changedTargetName, deltaMinutes) {
     if (lastScheduleResult) {
         lastScheduleResult.blocks = currentBlocksList;
         
-        const unobservable = [];
         const conflicts = [];
+        const unobservable = [];
+        if (lastScheduleResult.unobservable) {
+            lastScheduleResult.unobservable.forEach(name => {
+                if (!unobservable.includes(name)) unobservable.push(name);
+            });
+        }
         
         currentBlocksList.forEach(block => {
             const t = targetPool.find(target => target.name === block.target_name) || standardStars.find(star => star.name === block.target_name);
@@ -2476,13 +2475,14 @@ function adjustAbuttingBlocks(changedTargetName, deltaMinutes) {
                 let haWarn = (startHa < -5.6667 || startHa > 3.75 || endHa < -5.6667 || endHa > 3.75);
                 let airmassWarn = (block.airmass_start <= 0 || block.airmass_start > 2.5 || block.airmass_end <= 0 || block.airmass_end > 2.5);
                 
-                if (decWarn || haWarn || airmassWarn) {
-                    let reasons = [];
-                    if (decWarn) reasons.push("declination out of range (-35 to +72)");
-                    if (haWarn) reasons.push("hour angle exceeds limits (-5.67h to +3.75h)");
-                    if (airmassWarn) reasons.push("airmass exceeds 2.5 limit");
-                    
-                    unobservable.push(`Conflict: Target "${t.name}" violates limits (${reasons.join(", ")}).`);
+                if (decWarn) {
+                    if (!unobservable.includes(t.name)) {
+                        unobservable.push(t.name);
+                    }
+                } else if (haWarn || airmassWarn) {
+                    if (!conflicts.includes(t.name)) {
+                        conflicts.push(t.name);
+                    }
                 }
             }
         });
@@ -2932,6 +2932,17 @@ function handleTimelineReorder(draggedName, targetName) {
         const yName = names[i];
         if (!draggedTarget.schedule_before.includes(yName)) {
             draggedTarget.schedule_before.push(yName);
+        }
+    }
+
+    const draggedBlockIdx = currentBlocksList.findIndex(b => b.target_name === draggedName);
+    if (draggedBlockIdx !== -1) {
+        const [draggedBlock] = currentBlocksList.splice(draggedBlockIdx, 1);
+        const targetBlockIdx = currentBlocksList.findIndex(b => b.target_name === targetName);
+        if (targetBlockIdx !== -1) {
+            currentBlocksList.splice(targetBlockIdx, 0, draggedBlock);
+        } else {
+            currentBlocksList.push(draggedBlock);
         }
     }
 
