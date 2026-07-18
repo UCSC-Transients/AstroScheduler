@@ -2899,8 +2899,47 @@ function handleTimelineReorder(draggedName, targetName) {
     }
     
     if (draggedBlockIdx !== -1 && targetBlockIdx !== -1) {
+        const minIdx = Math.min(draggedBlockIdx, targetBlockIdx);
+        const maxIdx = Math.max(draggedBlockIdx, targetBlockIdx);
+        const rangeStart = new Date(currentBlocksList[minIdx].start_time).getTime();
+        
         const [draggedBlock] = currentBlocksList.splice(draggedBlockIdx, 1);
         currentBlocksList.splice(targetBlockIdx, 0, draggedBlock);
+        
+        if (!autoUpdateEnabled) {
+            let currentTime = rangeStart;
+            for (let i = minIdx; i <= maxIdx; i++) {
+                const b = currentBlocksList[i];
+                if (!b) continue;
+                
+                const start = currentTime;
+                const end = start + b.duration_minutes * 60 * 1000;
+                
+                b.start_time = new Date(start).toISOString();
+                b.end_time = new Date(end).toISOString();
+                
+                if (lastScheduleResult.airmass_plots && lastScheduleResult.airmass_plots[b.target_name]) {
+                    const plotData = lastScheduleResult.airmass_plots[b.target_name];
+                    const getClosestAirmass = (timeMs) => {
+                        let closest = null;
+                        let minDist = Infinity;
+                        plotData.forEach(p => {
+                            const dist = Math.abs(new Date(p.time).getTime() - timeMs);
+                            if (dist < minDist) {
+                                minDist = dist;
+                                closest = p.airmass;
+                            }
+                        });
+                        return closest;
+                    };
+                    b.airmass_start = getClosestAirmass(start) || 1.0;
+                    b.airmass_end = getClosestAirmass(end) || 1.0;
+                    b.airmass_median = getClosestAirmass(start + (end - start) / 2) || 1.0;
+                }
+                
+                currentTime = end;
+            }
+        }
     }
     
     localStorage.setItem("targetPool", JSON.stringify(targetPool));
@@ -2910,7 +2949,8 @@ function handleTimelineReorder(draggedName, targetName) {
     if (autoUpdateEnabled) {
         saveAndRefresh();
     } else {
-        recalculateLayoutOnly();
+        lastScheduleResult.blocks = currentBlocksList;
+        updateScheduleUI(lastScheduleResult);
     }
 }
 
