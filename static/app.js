@@ -2854,87 +2854,41 @@ function updateScheduleUI(result) {
 function handleTimelineReorder(draggedName, targetName) {
     if (draggedName === targetName) return;
     
-    // Filter current blocks list to only include science targets
-    const sciBlocks = currentBlocksList.filter(b => b.priority > 0);
+    // Find the objects to set the new sequence constraint
+    const draggedTarget = targetPool.find(t => t.name === draggedName);
+    const targetObj = targetPool.find(t => t.name === targetName) || standardStars.find(s => s.name === targetName);
     
-    const draggedIdx = sciBlocks.findIndex(b => b.target_name === draggedName);
-    if (draggedIdx === -1) return; // Standard stars cannot be dragged
-    
-    let targetIdx = sciBlocks.findIndex(b => b.target_name === targetName);
-    
-    // If targetName is a standard star, find the nearest science target in the timeline
-    if (targetIdx === -1) {
-        const fullTargetIdx = currentBlocksList.findIndex(b => b.target_name === targetName);
-        if (fullTargetIdx === -1) return;
+    if (draggedTarget && targetObj) {
+        // Find indices in the current visual layout order to know the relative direction
+        const draggedBlockIdx = currentBlocksList.findIndex(b => b.target_name === draggedName);
+        const targetBlockIdx = currentBlocksList.findIndex(b => b.target_name === targetName);
         
-        let found = false;
-        // Look to the right first
-        for (let i = fullTargetIdx + 1; i < currentBlocksList.length; i++) {
-            if (currentBlocksList[i].priority > 0) {
-                targetName = currentBlocksList[i].target_name;
-                targetIdx = sciBlocks.findIndex(b => b.target_name === targetName);
-                found = true;
-                break;
-            }
-        }
-        // Look to the left if not found
-        if (!found) {
-            for (let i = fullTargetIdx - 1; i >= 0; i--) {
-                if (currentBlocksList[i].priority > 0) {
-                    targetName = currentBlocksList[i].target_name;
-                    targetIdx = sciBlocks.findIndex(b => b.target_name === targetName);
-                    found = true;
-                    break;
+        if (draggedBlockIdx !== -1 && targetBlockIdx !== -1) {
+            if (draggedBlockIdx < targetBlockIdx) {
+                // draggedTarget should be before targetObj
+                if (!draggedTarget.schedule_before) draggedTarget.schedule_before = [];
+                if (!draggedTarget.schedule_before.includes(targetName)) {
+                    draggedTarget.schedule_before.push(targetName);
+                }
+                // Remove targetObj -> draggedTarget constraint
+                if (targetObj.schedule_before) {
+                    targetObj.schedule_before = targetObj.schedule_before.filter(z => z !== draggedName);
+                }
+            } else {
+                // targetObj should be before draggedTarget
+                if (!targetObj.schedule_before) targetObj.schedule_before = [];
+                if (!targetObj.schedule_before.includes(draggedName)) {
+                    targetObj.schedule_before.push(draggedName);
+                }
+                // Remove draggedTarget -> targetObj constraint
+                if (draggedTarget.schedule_before) {
+                    draggedTarget.schedule_before = draggedTarget.schedule_before.filter(z => z !== targetName);
                 }
             }
         }
-        if (!found) return; // No science targets scheduled to reorder against
-    }
-
-    if (targetName === draggedName) return;
-
-    // 1. Clear all old constraints involving draggedName to start fresh
-    const draggedTarget = targetPool.find(t => t.name === draggedName);
-    if (!draggedTarget) return;
-    draggedTarget.schedule_before = [];
-    
-    targetPool.forEach(t => {
-        if (t.schedule_before) {
-            t.schedule_before = t.schedule_before.filter(z => z !== draggedName);
-        }
-    });
-
-    // 2. Get the list of science target names in the current schedule order
-    const names = sciBlocks.map(b => b.target_name);
-    
-    // 3. Compute the new sequence by moving draggedName to be just before targetName
-    names.splice(draggedIdx, 1);
-    const newIdx = names.indexOf(targetName);
-    names.splice(newIdx, 0, draggedName);
-    
-    // 4. Find the new index of draggedName
-    const draggedNewIdx = names.indexOf(draggedName);
-    
-    // 5. For every target before the dragged target in the new sequence, add draggedName to its schedule_before
-    for (let i = 0; i < draggedNewIdx; i++) {
-        const xName = names[i];
-        const xTarget = targetPool.find(t => t.name === xName) || standardStars.find(s => s.name === xName);
-        if (xTarget) {
-            if (!xTarget.schedule_before) xTarget.schedule_before = [];
-            if (!xTarget.schedule_before.includes(draggedName)) {
-                xTarget.schedule_before.push(draggedName);
-            }
-        }
     }
     
-    // 6. For every target after the dragged target in the new sequence, add it to draggedTarget's schedule_before
-    for (let i = draggedNewIdx + 1; i < names.length; i++) {
-        const yName = names[i];
-        if (!draggedTarget.schedule_before.includes(yName)) {
-            draggedTarget.schedule_before.push(yName);
-        }
-    }
-
+    // Reorder the currentBlocksList to reflect the new visual dragged order
     const draggedBlockIdx = currentBlocksList.findIndex(b => b.target_name === draggedName);
     if (draggedBlockIdx !== -1) {
         const [draggedBlock] = currentBlocksList.splice(draggedBlockIdx, 1);
@@ -2945,31 +2899,15 @@ function handleTimelineReorder(draggedName, targetName) {
             currentBlocksList.push(draggedBlock);
         }
     }
-
+    
+    localStorage.setItem("targetPool", JSON.stringify(targetPool));
+    localStorage.setItem("standardStars", JSON.stringify(standardStars));
     localStorage.setItem("lockedTargets", JSON.stringify(Array.from(lockedTargets.entries())));
-
+    
     if (autoUpdateEnabled) {
         saveAndRefresh();
     } else {
-        const blockA = currentBlocksList.find(b => b.target_name === draggedName);
-        const blockB = currentBlocksList.find(b => b.target_name === targetName);
-        if (blockA && blockB) {
-            const tStartA = new Date(blockA.start_time).getTime();
-            const tStartB = new Date(blockB.start_time).getTime();
-            const combinedStart = Math.min(tStartA, tStartB);
-            
-            blockA.start_time = new Date(combinedStart).toISOString();
-            blockA.end_time = new Date(combinedStart + blockA.duration_minutes * 60 * 1000).toISOString();
-            
-            blockB.start_time = blockA.end_time;
-            blockB.end_time = new Date(new Date(blockB.start_time).getTime() + blockB.duration_minutes * 60 * 1000).toISOString();
-        }
-        localStorage.setItem("targetPool", JSON.stringify(targetPool));
-        localStorage.setItem("standardStars", JSON.stringify(standardStars));
-        renderTargetsTable();
-        
-        lastScheduleResult.blocks = currentBlocksList;
-        updateScheduleUI(lastScheduleResult);
+        recalculateLayoutOnly();
     }
 }
 

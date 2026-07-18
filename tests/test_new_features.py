@@ -40,7 +40,7 @@ def test_new_features():
             
             # Manual recalculate to trigger scheduling since auto-update is off
             page.click("#run-schedule-btn")
-            page.wait_for_timeout(2000)
+            page.wait_for_selector("#high-alerts-body", timeout=10000)
             
             # Check high severity alerts body is uncollapsed
             high_body = page.locator("#high-alerts-body")
