@@ -32,9 +32,8 @@ def test_ui_visibility():
             
             print("Navigating to page with API offline...")
             page.goto("http://127.0.0.1:8062")
-            
-            # Wait for local solver fallback to run
             page.wait_for_timeout(4000)
+            page.check("#auto-update-toggle")
             
             print("\n--- BROWSER LOGS ---")
             for log in console_logs:
@@ -121,6 +120,7 @@ def test_exposure_linkage_bugs():
             # Navigate
             page.goto("http://127.0.0.1:8063")
             page.wait_for_timeout(2000)
+            page.check("#auto-update-toggle")
             
             # Set fixed observing date to ensure deterministic scheduling
             page.locator("#obs-date").fill("2026-07-14")

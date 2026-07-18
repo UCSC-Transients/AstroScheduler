@@ -218,7 +218,14 @@ let autoDisabledStandards = new Set();
 
 // Issue #16: Manual standard star selection mode tracking
 let autoStandardsMode = true;
+
+// Issue #71: Automatic schedule updates toggle state
+let autoUpdateEnabled = false;
 let selectedStandards = new Set();
+
+// Issue #72: Alerts panel collapse states
+let highAlertsCollapsed = false;
+let lowAlertsCollapsed = true;
 
 // Target list sort state
 let targetSortField = 'none';
@@ -272,6 +279,26 @@ document.addEventListener("DOMContentLoaded", async () => {
         const tzSelect = document.getElementById("tz-select");
         if (tzSelect) tzSelect.value = storedTZ;
     }
+    
+    // Restore autoUpdate toggle state
+    const storedAutoUpdate = localStorage.getItem("autoUpdateEnabled");
+    if (storedAutoUpdate !== null) {
+        autoUpdateEnabled = (storedAutoUpdate === "true");
+    } else {
+        autoUpdateEnabled = false;
+    }
+    const autoUpdateToggle = document.getElementById("auto-update-toggle");
+    if (autoUpdateToggle) {
+        autoUpdateToggle.checked = autoUpdateEnabled;
+        autoUpdateToggle.addEventListener("change", (e) => {
+            autoUpdateEnabled = e.target.checked;
+            localStorage.setItem("autoUpdateEnabled", autoUpdateEnabled);
+            if (autoUpdateEnabled) {
+                triggerScheduling();
+            }
+        });
+    }
+
     const timeHeader = document.getElementById("schedule-time-header");
     const logHeader = document.getElementById("log-time-header");
     const label = (currentTimezone === 'UTC' || currentTimezone.startsWith('UTC')) ? "Time (UT)" : "Time (Local)";
@@ -325,7 +352,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         }
         lastObsDate = newDateStr;
         localStorage.setItem("obsDate", newDateStr);
-        triggerScheduling();
+        triggerScheduling(true);
     });
     
     // Add Event Listeners
@@ -576,7 +603,7 @@ function deleteTarget(name) {
     targetPool = targetPool.filter(t => t.name !== name);
     saveState();
     renderTargetsTable();
-    triggerScheduling();
+    triggerScheduling(true);
 }
 
 function editTarget(name) {
@@ -644,7 +671,7 @@ function saveAndRefresh(skipReschedule = false) {
     syncLockedTargets();
     renderTargetsTable();
     if (!skipReschedule) {
-        triggerScheduling();
+        triggerScheduling(true);
     }
 };
 
@@ -907,6 +934,16 @@ function renderTargetsTable() {
             </tr>
         `;
     }).join('');
+
+    // Re-apply selected/highlighted classes to newly rendered rows
+    stickyHighlightedTargets.forEach(tName => {
+        const row = document.getElementById(`target-row-${tName}`);
+        if (row) row.classList.add("row-selected");
+    });
+    if (stickyHighlightedTarget) {
+        const row = document.getElementById(`target-row-${stickyHighlightedTarget}`);
+        if (row) row.classList.add("row-highlighted");
+    }
 
     window.scrollTo(scrollX, scrollY);
 }
@@ -1291,6 +1328,7 @@ function clearAllOverrides() {
     saveAndRefresh();
 }
 
+let stickyHighlightedTargets = new Set();
 let stickyHighlightedTarget = null;
 
 function highlightTarget(name) {
@@ -1308,41 +1346,82 @@ function unhighlightTarget(name) {
     if (stickyHighlightedTarget === name) return;
     
     const row = document.getElementById(`target-row-${name}`);
-    if (row) row.classList.remove("row-highlighted");
+    if (row) {
+        row.classList.remove("row-highlighted");
+        if (stickyHighlightedTargets.has(name)) {
+            row.classList.add("row-selected");
+        } else {
+            row.classList.remove("row-selected");
+        }
+    }
     
     const schedRow = document.getElementById(`sched-row-${name}`);
-    if (schedRow) schedRow.classList.remove("row-highlighted");
+    if (schedRow) {
+        schedRow.classList.remove("row-highlighted");
+        if (stickyHighlightedTargets.has(name)) {
+            schedRow.classList.add("row-selected");
+        } else {
+            schedRow.classList.remove("row-selected");
+        }
+    }
     
     const block = document.querySelector(`.timeline-block[data-target="${name}"]`);
     if (block) block.classList.remove("block-highlighted");
 }
 
 function stickyHighlightTarget(name) {
+    if (stickyHighlightedTargets.has(name)) {
+        stickyHighlightedTargets.delete(name);
+        if (stickyHighlightedTarget === name) {
+            const arr = Array.from(stickyHighlightedTargets);
+            stickyHighlightedTarget = arr.length > 0 ? arr[arr.length - 1] : null;
+        }
+    } else {
+        stickyHighlightedTargets.add(name);
+        stickyHighlightedTarget = name;
+    }
+    
+    // Clear all target pool and schedule table highlighting
+    document.querySelectorAll("#targets-table tbody tr").forEach(row => {
+        row.classList.remove("row-highlighted");
+        row.classList.remove("row-selected");
+    });
+    document.querySelectorAll("#schedule-table tbody tr").forEach(row => {
+        row.classList.remove("row-highlighted");
+        row.classList.remove("row-selected");
+    });
+    document.querySelectorAll(".timeline-block").forEach(block => {
+        block.classList.remove("block-highlighted");
+    });
+    
+    // Re-apply highlighted and selected classes
+    stickyHighlightedTargets.forEach(tName => {
+        const row = document.getElementById(`target-row-${tName}`);
+        if (row) row.classList.add("row-selected");
+        const schedRow = document.getElementById(`sched-row-${tName}`);
+        if (schedRow) schedRow.classList.add("row-selected");
+    });
+    
     if (stickyHighlightedTarget) {
-        const prev = stickyHighlightedTarget;
-        stickyHighlightedTarget = null;
-        unhighlightTarget(prev);
+        highlightTarget(stickyHighlightedTarget);
     }
     
-    stickyHighlightedTarget = name;
-    highlightTarget(name);
-    
-    // Scroll target pool row into view
-    const targetRow = document.getElementById(`target-row-${name}`);
-    if (targetRow) {
-        targetRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    if (lastScheduleResult) {
+        renderAirmassChart(
+            lastScheduleResult.airmass_plots,
+            lastScheduleResult.blocks,
+            lastScheduleResult.solar_times,
+            lastScheduleResult.moon_plot
+        );
     }
     
-    // Scroll schedule row into view
-    const schedRow = document.getElementById(`sched-row-${name}`);
-    if (schedRow) {
-        schedRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }
-    
-    // Scroll timeline block into view
-    const block = document.querySelector(`.timeline-block[data-target="${name}"]`);
-    if (block) {
-        block.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    // Scroll up to airmass chart card
+    const airmassChartEl = document.getElementById("airmassChart");
+    if (airmassChartEl) {
+        const airmassCard = airmassChartEl.closest(".card");
+        if (airmassCard) {
+            airmassCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
     }
 }
 
@@ -1821,7 +1900,7 @@ function processTargetFile(file) {
             targetPool = targetPool.concat(parsed);
             localStorage.setItem("targetPool", JSON.stringify(targetPool));
             renderTargetsTable();
-            triggerScheduling();
+            triggerScheduling(true);
             logToTerminal(`Successfully uploaded ${parsed.length} targets.`);
         } else {
             logToTerminal("No valid targets found in the file.");
@@ -1966,7 +2045,7 @@ function setMode(mode) {
 
 function updateRealTimeParameters() {
     logToTerminal("Real-time constraints modified. Re-calculating...");
-    triggerScheduling();
+    triggerScheduling(true);
 }
 
 function logCommentFromInput() {
@@ -2107,9 +2186,127 @@ async function recalculateStartingNow() {
 // SERVER INTERACTION OR CLIENT-SIDE FALLBACK SOLVER
 // ==============================================================================
 
+function recalculateLayoutOnly() {
+    if (!lastScheduleResult) return;
+    
+    let sunset = new Date(lastScheduleResult.solar_times.sunset);
+    let sunrise = new Date(lastScheduleResult.solar_times.sunrise);
+    
+    const startOverride = document.getElementById("manual-night-start")?.value.trim() || "";
+    const endOverride = document.getElementById("manual-night-end")?.value.trim() || "";
+    const tzOverride = document.getElementById("manual-night-tz")?.value || "UTC";
+    const dateStr = document.getElementById("obs-date").value;
+    
+    if (startOverride) {
+        const iso = parseTimeInputToISO(startOverride, dateStr, tzOverride, true);
+        if (iso) sunset = new Date(iso);
+    }
+    if (endOverride) {
+        const iso = parseTimeInputToISO(endOverride, dateStr, tzOverride, false);
+        if (iso) sunrise = new Date(iso);
+    }
+    
+    const scheduledNames = currentBlocksList.map(b => b.target_name);
+    const scheduledNameSet = new Set(scheduledNames);
+    
+    const allPoolTargets = targetPool;
+    const allStandards = standardStars.filter(s => !disabledStandards.has(s.name));
+    
+    const targetMap = {};
+    allPoolTargets.forEach(t => { targetMap[t.name] = t; });
+    allStandards.forEach(s => { targetMap[s.name] = s; });
+    
+    const sequenceNames = scheduledNames.filter(name => targetMap[name]);
+    
+    allPoolTargets.forEach(t => {
+        if (!scheduledNameSet.has(t.name)) {
+            sequenceNames.push(t.name);
+        }
+    });
+    allStandards.forEach(s => {
+        if (!scheduledNameSet.has(s.name)) {
+            sequenceNames.push(s.name);
+        }
+    });
+    
+    let currentTime = sunset.getTime();
+    const newBlocks = [];
+    
+    sequenceNames.forEach(tName => {
+        const t = targetMap[tName];
+        if (!t) return;
+        
+        let start = currentTime;
+        if (t.manual_start_time) {
+            const mStart = new Date(t.manual_start_time).getTime();
+            if (!isNaN(mStart)) {
+                start = mStart;
+            }
+        }
+        
+        let duration = 30;
+        if (t.manual_duration !== null && t.manual_duration !== undefined) {
+            duration = parseInt(t.manual_duration, 10);
+        } else {
+            const exp = getTargetExposureDetailsJS(t);
+            if (exp) {
+                duration = exp.duration_minutes;
+            }
+        }
+        
+        const end = start + duration * 60 * 1000;
+        
+        let airmass_start = 1.0;
+        let airmass_end = 1.0;
+        let airmass_median = 1.0;
+        if (lastScheduleResult.airmass_plots[tName]) {
+            const plotData = lastScheduleResult.airmass_plots[tName];
+            const getClosestAirmass = (timeMs) => {
+                let closest = null;
+                let minDist = Infinity;
+                plotData.forEach(p => {
+                    const dist = Math.abs(new Date(p.time).getTime() - timeMs);
+                    if (dist < minDist) {
+                        minDist = dist;
+                        closest = p.airmass;
+                    }
+                });
+                return closest;
+            };
+            airmass_start = getClosestAirmass(start) || 1.0;
+            airmass_end = getClosestAirmass(end) || 1.0;
+            airmass_median = getClosestAirmass(start + (end - start) / 2) || 1.0;
+        }
+        
+        newBlocks.push({
+            target_name: t.name,
+            start_time: new Date(start).toISOString(),
+            end_time: new Date(end).toISOString(),
+            duration_minutes: duration,
+            priority: t.priority || 0.0,
+            airmass_start,
+            airmass_end,
+            airmass_median,
+            comment: t.comment || ""
+        });
+        
+        currentTime = end;
+    });
+    
+    lastScheduleResult.blocks = newBlocks;
+    updateScheduleUI(lastScheduleResult);
+}
+
 // Issue #34: Debounce triggerScheduling to prevent flicker from rapid re-runs
 let _scheduleDebounceTimer = null;
-function triggerScheduling() {
+function triggerScheduling(isAutoRun = false) {
+    if (isAutoRun && (isAutoRun instanceof Event || typeof isAutoRun.target !== 'undefined')) {
+        isAutoRun = false;
+    }
+    if (isAutoRun && !autoUpdateEnabled) {
+        recalculateLayoutOnly();
+        return;
+    }
     clearTimeout(_scheduleDebounceTimer);
     _scheduleDebounceTimer = setTimeout(_doSchedule, 150);
 }
@@ -2416,6 +2613,16 @@ function updateScheduleUI(result) {
     renderTargetsTable();
     // Issue #30: Update night overrides input placeholders
     updateNightOverridePlaceholders();
+
+    // Re-apply selected/highlighted classes to newly rendered schedule table rows
+    stickyHighlightedTargets.forEach(tName => {
+        const schedRow = document.getElementById(`sched-row-${tName}`);
+        if (schedRow) schedRow.classList.add("row-selected");
+    });
+    if (stickyHighlightedTarget) {
+        const schedRow = document.getElementById(`sched-row-${stickyHighlightedTarget}`);
+        if (schedRow) schedRow.classList.add("row-highlighted");
+    }
 
     window.scrollTo(scrollX, scrollY);
 }
@@ -2805,12 +3012,27 @@ function renderAlerts(conflicts, unobservable, empty_blocks, scheduled_count) {
         return;
     }
     
-    const items = [];
+    const highItems = [];
+    const lowItems = [];
     
+    // High alerts: Unobservable targets
+    unobservable.forEach(name => {
+        const t = targetPool.find(target => target.name === name);
+        highItems.push(`
+            <div class="alert-item alert-danger">
+                <div>
+                    <div class="alert-title">Unobservable: Target "${name}" (Priority ${t ? t.priority : 'N/A'}) cannot be observed</div>
+                    <div class="alert-desc">It does not meet minimum altitude, DEC, hour angle, or twilight limits at any point during the night. Action: Check target coordinates or adjust observatory constraints.</div>
+                </div>
+            </div>
+        `);
+    });
+    
+    // Low alerts: Conflicts (scheduling overlaps)
     conflicts.forEach(name => {
         const t = targetPool.find(target => target.name === name);
-        items.push(`
-            <div class="alert-item alert-danger">
+        lowItems.push(`
+            <div class="alert-item alert-warning">
                 <div>
                     <div class="alert-title">Conflict: Target "${name}" (Priority ${t ? t.priority : 'N/A'}) cannot be scheduled</div>
                     <div class="alert-desc">It overlaps with other targets at this priority level. Action: Try changing its priority, enabling twilight observations, or allowing higher airmass.</div>
@@ -2819,6 +3041,7 @@ function renderAlerts(conflicts, unobservable, empty_blocks, scheduled_count) {
         `);
     });
     
+    // Low alerts: Unused telescope time
     if (scheduled_count > 0 && empty_blocks.length > 0) {
         const totalUnused = empty_blocks.reduce((acc, b) => acc + b.duration_minutes, 0);
         const listStr = empty_blocks.map(b => {
@@ -2827,7 +3050,7 @@ function renderAlerts(conflicts, unobservable, empty_blocks, scheduled_count) {
             return `${start}-${end} (${b.duration_minutes}m)`;
         }).join(', ');
         
-        items.push(`
+        lowItems.push(`
             <div class="alert-item alert-warning" style="background: rgba(59, 130, 246, 0.1); border-color: rgba(59, 130, 246, 0.3); color: #93c5fd;">
                 <div>
                     <div class="alert-title">Unused Time Remaining: ${totalUnused} minutes empty</div>
@@ -2837,17 +3060,85 @@ function renderAlerts(conflicts, unobservable, empty_blocks, scheduled_count) {
         `);
     }
     
-    if (items.length > 0) {
+    const totalCount = highItems.length + lowItems.length;
+    if (totalCount > 0) {
+        // Reset collapse states on fresh render
+        if (highItems.length > 0) {
+            highAlertsCollapsed = false; // uncollapse high alerts
+        }
+        lowAlertsCollapsed = true; // keep low alerts collapsed
+        
         const headerHtml = `
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; border-bottom: 1px solid var(--border-color); padding-bottom: 8px;">
                 <span style="font-weight: bold; color: #fff; font-size: 0.95rem;">Alerts & Conflicts</span>
                 <button onclick="clearAlerts()" class="btn" style="padding: 2px 8px; font-size: 0.75rem; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 4px; cursor: pointer; color: #fca5a5;">Clear Alerts</button>
             </div>
         `;
-        consoleEl.innerHTML = headerHtml + items.join('');
+        
+        let sectionsHtml = "";
+        
+        if (highItems.length > 0) {
+            const bodyClass = highAlertsCollapsed ? "card-body-collapse collapsed" : "card-body-collapse";
+            sectionsHtml += `
+                <div class="alert-section" style="margin-bottom: 12px;">
+                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px; cursor: pointer; user-select: none;" onclick="toggleAlertsSection('high')">
+                        <span style="font-size: 0.8rem; font-weight: 600; color: #f87171; text-transform: uppercase; letter-spacing: 0.05em;">High Severity Alerts (${highItems.length})</span>
+                        <span id="high-alerts-toggle-icon" style="font-size: 0.8rem; color: var(--text-secondary); font-family: monospace;">${highAlertsCollapsed ? '+' : '−'}</span>
+                    </div>
+                    <div id="high-alerts-body" class="${bodyClass}">
+                        ${highItems.join('')}
+                    </div>
+                </div>
+            `;
+        }
+        
+        if (lowItems.length > 0) {
+            const bodyClass = lowAlertsCollapsed ? "card-body-collapse collapsed" : "card-body-collapse";
+            sectionsHtml += `
+                <div class="alert-section">
+                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px; cursor: pointer; user-select: none;" onclick="toggleAlertsSection('low')">
+                        <span style="font-size: 0.8rem; font-weight: 600; color: #fde68a; text-transform: uppercase; letter-spacing: 0.05em;">Low Severity Alerts (${lowItems.length})</span>
+                        <span id="low-alerts-toggle-icon" style="font-size: 0.8rem; color: var(--text-secondary); font-family: monospace;">${lowAlertsCollapsed ? '+' : '−'}</span>
+                    </div>
+                    <div id="low-alerts-body" class="${bodyClass}">
+                        ${lowItems.join('')}
+                    </div>
+                </div>
+            `;
+        }
+        
+        consoleEl.innerHTML = headerHtml + sectionsHtml;
         consoleEl.style.display = "block";
     } else {
         consoleEl.style.display = "none";
+    }
+}
+
+function toggleAlertsSection(sec) {
+    if (sec === 'high') {
+        const body = document.getElementById("high-alerts-body");
+        const icon = document.getElementById("high-alerts-toggle-icon");
+        if (!body || !icon) return;
+        highAlertsCollapsed = !highAlertsCollapsed;
+        if (highAlertsCollapsed) {
+            body.classList.add("collapsed");
+            icon.textContent = "+";
+        } else {
+            body.classList.remove("collapsed");
+            icon.textContent = "−";
+        }
+    } else if (sec === 'low') {
+        const body = document.getElementById("low-alerts-body");
+        const icon = document.getElementById("low-alerts-toggle-icon");
+        if (!body || !icon) return;
+        lowAlertsCollapsed = !lowAlertsCollapsed;
+        if (lowAlertsCollapsed) {
+            body.classList.add("collapsed");
+            icon.textContent = "+";
+        } else {
+            body.classList.remove("collapsed");
+            icon.textContent = "−";
+        }
     }
 }
 
@@ -2986,6 +3277,29 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
             });
         }
     });
+
+    stickyHighlightedTargets.forEach(tName => {
+        if (airmass_plots[tName]) {
+            const plotData = airmass_plots[tName];
+            const highlightPoints = plotData.map(p => {
+                return {
+                    x: new Date(p.time).getTime(),
+                    y: (p.airmass <= 0) ? null : p.airmass
+                };
+            });
+            datasets.push({
+                label: `${tName} (Highlighted)`,
+                data: highlightPoints,
+                borderColor: '#ffffff',
+                borderWidth: 4,
+                fill: false,
+                tension: 0.1,
+                pointRadius: 0,
+                pointHoverRadius: 4,
+                yAxisID: 'y'
+            });
+        }
+    });
     
     // Twilight Plugin to draw gradients & vertical lines in Chart.js
     const twilightPlugin = {
@@ -3120,13 +3434,13 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
                         font: { family: 'Inter', size: 11 },
                         usePointStyle: true,
                         filter: function(item) {
-                            // Exclude night-profile dotted series and Moon series
-                            return !item.text.includes('(Night Profile)') && item.text !== 'Moon (Airmass)';
+                            // Exclude night-profile dotted series, Moon series, and clicked highlighted series
+                            return !item.text.includes('(Night Profile)') && item.text !== 'Moon (Airmass)' && !item.text.includes('(Highlighted)');
                         },
                         generateLabels: function(chart) {
                             const original = Chart.defaults.plugins.legend.labels.generateLabels(chart);
                             return original
-                                .filter(item => !item.text.includes('(Night Profile)') && item.text !== 'Moon (Airmass)')
+                                .filter(item => !item.text.includes('(Night Profile)') && item.text !== 'Moon (Airmass)' && !item.text.includes('(Highlighted)'))
                                 .map(item => {
                                     // Issue #20: horizontal line icon instead of filled rectangle
                                     item.pointStyle = 'line';

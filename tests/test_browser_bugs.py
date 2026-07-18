@@ -43,6 +43,7 @@ def test_bugs():
             ):
                 page.goto("http://127.0.0.1:8055")
             page.wait_for_timeout(500)
+            page.check("#auto-update-toggle")
             
             # Force date to 2026-06-18 to ensure valid IERS data
             date_input = page.locator("#obs-date")
@@ -272,6 +273,7 @@ def test_user_target_list_solving():
             ):
                 page.goto("http://127.0.0.1:8056")
             page.wait_for_timeout(500)
+            page.check("#auto-update-toggle")
             
             # Dismiss confirmation dialog for clearing targets
             page.on("dialog", lambda dialog: dialog.accept())
