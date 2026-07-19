@@ -722,6 +722,11 @@ input:focus, select:focus {
     border-left: 3px solid var(--accent-purple) !important;
 }
 
+.row-selected {
+    background: rgba(139, 92, 246, 0.08) !important;
+    border-left: 3px dashed rgba(139, 92, 246, 0.5) !important;
+}
+
 /* Unobservable greyed-out state */
 .status-row-unobservable {
     opacity: 0.45 !important;
@@ -1085,5 +1090,52 @@ input:focus, select:focus {
 .timeline-tooltip-detail {
     color: #cbd5e1;
     font-family: monospace;
+}
+
+/* Switch toggle */
+.switch-container {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    user-select: none;
+}
+.switch-container input {
+    position: absolute;
+    opacity: 0.0001;
+    cursor: pointer;
+    height: 20px;
+    width: 36px;
+    z-index: 10;
+}
+.switch-slider {
+    position: relative;
+    width: 36px;
+    height: 20px;
+    background-color: rgba(15, 23, 42, 0.6);
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    transition: background-color 0.2s, border-color 0.2s;
+}
+.switch-slider:before {
+    content: "";
+    position: absolute;
+    height: 14px;
+    width: 14px;
+    left: 2px;
+    bottom: 2px;
+    background-color: var(--text-muted);
+    border-radius: 50%;
+    transition: transform 0.2s, background-color 0.2s;
+}
+.switch-container input:checked + .switch-slider {
+    background-color: var(--accent-blue);
+    border-color: var(--accent-blue);
+}
+.switch-container input:checked + .switch-slider:before {
+    transform: translateX(16px);
+    background-color: white;
 }
 

@@ -218,7 +218,14 @@ let autoDisabledStandards = new Set();
 
 // Issue #16: Manual standard star selection mode tracking
 let autoStandardsMode = true;
+
+// Issue #71: Automatic schedule updates toggle state
+let autoUpdateEnabled = false;
 let selectedStandards = new Set();
+
+// Issue #72: Alerts panel collapse states
+let highAlertsCollapsed = false;
+let lowAlertsCollapsed = true;
 
 // Target list sort state
 let targetSortField = 'none';
@@ -272,6 +279,26 @@ document.addEventListener("DOMContentLoaded", async () => {
         const tzSelect = document.getElementById("tz-select");
         if (tzSelect) tzSelect.value = storedTZ;
     }
+    
+    // Restore autoUpdate toggle state
+    const storedAutoUpdate = localStorage.getItem("autoUpdateEnabled");
+    if (storedAutoUpdate !== null) {
+        autoUpdateEnabled = (storedAutoUpdate === "true");
+    } else {
+        autoUpdateEnabled = false;
+    }
+    const autoUpdateToggle = document.getElementById("auto-update-toggle");
+    if (autoUpdateToggle) {
+        autoUpdateToggle.checked = autoUpdateEnabled;
+        autoUpdateToggle.addEventListener("change", (e) => {
+            autoUpdateEnabled = e.target.checked;
+            localStorage.setItem("autoUpdateEnabled", autoUpdateEnabled);
+            if (autoUpdateEnabled) {
+                triggerScheduling();
+            }
+        });
+    }
+
     const timeHeader = document.getElementById("schedule-time-header");
     const logHeader = document.getElementById("log-time-header");
     const label = (currentTimezone === 'UTC' || currentTimezone.startsWith('UTC')) ? "Time (UT)" : "Time (Local)";
@@ -325,7 +352,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         }
         lastObsDate = newDateStr;
         localStorage.setItem("obsDate", newDateStr);
-        triggerScheduling();
+        triggerScheduling(true);
     });
     
     // Add Event Listeners
@@ -576,7 +603,7 @@ function deleteTarget(name) {
     targetPool = targetPool.filter(t => t.name !== name);
     saveState();
     renderTargetsTable();
-    triggerScheduling();
+    triggerScheduling(true);
 }
 
 function editTarget(name) {
@@ -644,7 +671,7 @@ function saveAndRefresh(skipReschedule = false) {
     syncLockedTargets();
     renderTargetsTable();
     if (!skipReschedule) {
-        triggerScheduling();
+        triggerScheduling(true);
     }
 };
 
@@ -908,6 +935,16 @@ function renderTargetsTable() {
         `;
     }).join('');
 
+    // Re-apply selected/highlighted classes to newly rendered rows
+    stickyHighlightedTargets.forEach(tName => {
+        const row = document.getElementById(`target-row-${tName}`);
+        if (row) row.classList.add("row-selected");
+    });
+    if (stickyHighlightedTarget) {
+        const row = document.getElementById(`target-row-${stickyHighlightedTarget}`);
+        if (row) row.classList.add("row-highlighted");
+    }
+
     window.scrollTo(scrollX, scrollY);
 }
 
@@ -962,11 +999,19 @@ function updateTargetManualStart(name, val) {
     const target = targetPool.find(t => t.name === name) || standardStars.find(s => s.name === name);
     if (!target) return;
     
+    const oldBlock = currentBlocksList.find(b => b.target_name === name);
+    const oldStartTime = oldBlock ? new Date(oldBlock.start_time).getTime() : null;
+    
     if (!val.trim()) {
         target.manual_start_time = null;
         target.manual_end_time = null;
         target.lock_type = null;
         lockedTargets.delete(name);
+        
+        localStorage.setItem("targetPool", JSON.stringify(targetPool));
+        localStorage.setItem("standardStars", JSON.stringify(standardStars));
+        renderTargetsTable();
+        recalculateLayoutOnly();
     } else {
         const dateStr = document.getElementById("obs-date").value;
         const iso = parseTimeInputToISO(val, dateStr, currentTimezone, true);
@@ -985,19 +1030,50 @@ function updateTargetManualStart(name, val) {
             const endDate = new Date(startDate.getTime() + duration * 60 * 1000);
             target.manual_end_time = endDate.toISOString();
         }
+        
+        const newStartTime = new Date(target.manual_start_time).getTime();
+        
+        localStorage.setItem("targetPool", JSON.stringify(targetPool));
+        localStorage.setItem("standardStars", JSON.stringify(standardStars));
+        renderTargetsTable();
+        
+        if (!isNaN(newStartTime) && oldBlock && oldStartTime !== null) {
+            const deltaMinutes = Math.round((newStartTime - oldStartTime) / (60 * 1000));
+            oldBlock.start_time = target.manual_start_time;
+            oldBlock.end_time = target.manual_end_time;
+            adjustAbuttingBlocks(name, deltaMinutes);
+        } else {
+            recalculateLayoutOnly();
+        }
     }
-    saveAndRefresh();
 }
 
 function updateTargetManualEnd(name, val) {
     const target = targetPool.find(t => t.name === name) || standardStars.find(s => s.name === name);
     if (!target) return;
     
+    const oldBlock = currentBlocksList.find(b => b.target_name === name);
+    const oldDuration = oldBlock ? oldBlock.duration_minutes : 30;
+    
     if (!val.trim()) {
         target.manual_start_time = null;
         target.manual_end_time = null;
         target.lock_type = null;
         lockedTargets.delete(name);
+        
+        const exp = getTargetExposureDetailsJS(target);
+        const defaultDuration = exp ? exp.duration_minutes : 30;
+        const deltaMinutes = defaultDuration - oldDuration;
+        if (oldBlock) {
+            oldBlock.duration_minutes = defaultDuration;
+            const startMs = new Date(oldBlock.start_time).getTime();
+            oldBlock.end_time = new Date(startMs + defaultDuration * 60 * 1000).toISOString();
+        }
+        
+        localStorage.setItem("targetPool", JSON.stringify(targetPool));
+        localStorage.setItem("standardStars", JSON.stringify(standardStars));
+        renderTargetsTable();
+        adjustAbuttingBlocks(name, deltaMinutes);
     } else {
         const dateStr = document.getElementById("obs-date").value;
         const iso = parseTimeInputToISO(val, dateStr, currentTimezone, false);
@@ -1016,13 +1092,32 @@ function updateTargetManualEnd(name, val) {
             const startDate = new Date(endDate.getTime() - duration * 60 * 1000);
             target.manual_start_time = startDate.toISOString();
         }
+        
+        localStorage.setItem("targetPool", JSON.stringify(targetPool));
+        localStorage.setItem("standardStars", JSON.stringify(standardStars));
+        renderTargetsTable();
+        
+        const newEndTime = new Date(target.manual_end_time).getTime();
+        if (!isNaN(newEndTime) && oldBlock) {
+            const startMs = new Date(oldBlock.start_time).getTime();
+            const newDuration = Math.round((newEndTime - startMs) / (60 * 1000));
+            target.manual_duration = newDuration;
+            oldBlock.duration_minutes = newDuration;
+            oldBlock.end_time = target.manual_end_time;
+            const deltaMinutes = newDuration - oldDuration;
+            adjustAbuttingBlocks(name, deltaMinutes);
+        } else {
+            recalculateLayoutOnly();
+        }
     }
-    saveAndRefresh();
 }
 
 function updateTargetManualDuration(name, val) {
     const target = targetPool.find(t => t.name === name) || standardStars.find(s => s.name === name);
     if (!target) return;
+    
+    const oldBlock = currentBlocksList.find(b => b.target_name === name);
+    const oldDuration = oldBlock ? oldBlock.duration_minutes : 30;
     
     const duration = val.trim() ? parseFloat(val) : null;
     target.manual_duration = duration;
@@ -1050,19 +1145,39 @@ function updateTargetManualDuration(name, val) {
             }
         }
     }
-    saveAndRefresh();
+    
+    let newDuration = duration !== null ? duration : 30;
+    if (duration === null) {
+        const exp = getTargetExposureDetailsJS(target);
+        if (exp) newDuration = exp.duration_minutes;
+    }
+    const deltaMinutes = newDuration - oldDuration;
+    
+    if (oldBlock) {
+        oldBlock.duration_minutes = newDuration;
+        const startMs = new Date(oldBlock.start_time).getTime();
+        oldBlock.end_time = new Date(startMs + newDuration * 60 * 1000).toISOString();
+    }
+    
+    localStorage.setItem("targetPool", JSON.stringify(targetPool));
+    localStorage.setItem("standardStars", JSON.stringify(standardStars));
+    renderTargetsTable();
+    adjustAbuttingBlocks(name, deltaMinutes);
 }
 
 function updateTargetRedExp(name, val) {
     const target = targetPool.find(t => t.name === name);
     if (!target) return;
     
+    const oldBlock = currentBlocksList.find(b => b.target_name === name);
+    const oldDuration = oldBlock ? oldBlock.duration_minutes : 30;
+    
     if (!val.trim()) {
         target.red_exptime = null;
         target.red_num = null;
         target.blue_exptime = null;
         target.blue_num = null;
-        saveAndRefresh();
+        saveExposureAndReTime(name, oldDuration);
         return;
     }
     
@@ -1092,19 +1207,22 @@ function updateTargetRedExp(name, val) {
     target.blue_num = N_B;
     target.manual_duration = null;
     
-    saveAndRefresh();
+    saveExposureAndReTime(name, oldDuration);
 }
 
 function updateTargetRedNum(name, val) {
     const target = targetPool.find(t => t.name === name);
     if (!target) return;
     
+    const oldBlock = currentBlocksList.find(b => b.target_name === name);
+    const oldDuration = oldBlock ? oldBlock.duration_minutes : 30;
+    
     if (!val.trim()) {
         target.red_exptime = null;
         target.red_num = null;
         target.blue_exptime = null;
         target.blue_num = null;
-        saveAndRefresh();
+        saveExposureAndReTime(name, oldDuration);
         return;
     }
     
@@ -1135,19 +1253,22 @@ function updateTargetRedNum(name, val) {
     target.blue_num = N_B;
     target.manual_duration = null;
     
-    saveAndRefresh();
+    saveExposureAndReTime(name, oldDuration);
 }
 
 function updateTargetBlueExp(name, val) {
     const target = targetPool.find(t => t.name === name);
     if (!target) return;
     
+    const oldBlock = currentBlocksList.find(b => b.target_name === name);
+    const oldDuration = oldBlock ? oldBlock.duration_minutes : 30;
+    
     if (!val.trim()) {
         target.red_exptime = null;
         target.red_num = null;
         target.blue_exptime = null;
         target.blue_num = null;
-        saveAndRefresh();
+        saveExposureAndReTime(name, oldDuration);
         return;
     }
     
@@ -1177,19 +1298,22 @@ function updateTargetBlueExp(name, val) {
     target.blue_num = N_B;
     target.manual_duration = null;
     
-    saveAndRefresh();
+    saveExposureAndReTime(name, oldDuration);
 }
 
 function updateTargetBlueNum(name, val) {
     const target = targetPool.find(t => t.name === name);
     if (!target) return;
     
+    const oldBlock = currentBlocksList.find(b => b.target_name === name);
+    const oldDuration = oldBlock ? oldBlock.duration_minutes : 30;
+    
     if (!val.trim()) {
         target.red_exptime = null;
         target.red_num = null;
         target.blue_exptime = null;
         target.blue_num = null;
-        saveAndRefresh();
+        saveExposureAndReTime(name, oldDuration);
         return;
     }
     
@@ -1220,7 +1344,7 @@ function updateTargetBlueNum(name, val) {
     target.blue_num = N_B;
     target.manual_duration = null;
     
-    saveAndRefresh();
+    saveExposureAndReTime(name, oldDuration);
 }
 
 function toggleTargetLock(name) {
@@ -1291,6 +1415,7 @@ function clearAllOverrides() {
     saveAndRefresh();
 }
 
+let stickyHighlightedTargets = new Set();
 let stickyHighlightedTarget = null;
 
 function highlightTarget(name) {
@@ -1308,42 +1433,76 @@ function unhighlightTarget(name) {
     if (stickyHighlightedTarget === name) return;
     
     const row = document.getElementById(`target-row-${name}`);
-    if (row) row.classList.remove("row-highlighted");
+    if (row) {
+        row.classList.remove("row-highlighted");
+        if (stickyHighlightedTargets.has(name)) {
+            row.classList.add("row-selected");
+        } else {
+            row.classList.remove("row-selected");
+        }
+    }
     
     const schedRow = document.getElementById(`sched-row-${name}`);
-    if (schedRow) schedRow.classList.remove("row-highlighted");
+    if (schedRow) {
+        schedRow.classList.remove("row-highlighted");
+        if (stickyHighlightedTargets.has(name)) {
+            schedRow.classList.add("row-selected");
+        } else {
+            schedRow.classList.remove("row-selected");
+        }
+    }
     
     const block = document.querySelector(`.timeline-block[data-target="${name}"]`);
     if (block) block.classList.remove("block-highlighted");
 }
 
 function stickyHighlightTarget(name) {
+    if (stickyHighlightedTargets.has(name)) {
+        stickyHighlightedTargets.delete(name);
+        if (stickyHighlightedTarget === name) {
+            const arr = Array.from(stickyHighlightedTargets);
+            stickyHighlightedTarget = arr.length > 0 ? arr[arr.length - 1] : null;
+        }
+    } else {
+        stickyHighlightedTargets.add(name);
+        stickyHighlightedTarget = name;
+    }
+    
+    // Clear all target pool and schedule table highlighting
+    document.querySelectorAll("#targets-table tbody tr").forEach(row => {
+        row.classList.remove("row-highlighted");
+        row.classList.remove("row-selected");
+    });
+    document.querySelectorAll("#schedule-table tbody tr").forEach(row => {
+        row.classList.remove("row-highlighted");
+        row.classList.remove("row-selected");
+    });
+    document.querySelectorAll(".timeline-block").forEach(block => {
+        block.classList.remove("block-highlighted");
+    });
+    
+    // Re-apply highlighted and selected classes
+    stickyHighlightedTargets.forEach(tName => {
+        const row = document.getElementById(`target-row-${tName}`);
+        if (row) row.classList.add("row-selected");
+        const schedRow = document.getElementById(`sched-row-${tName}`);
+        if (schedRow) schedRow.classList.add("row-selected");
+    });
+    
     if (stickyHighlightedTarget) {
-        const prev = stickyHighlightedTarget;
-        stickyHighlightedTarget = null;
-        unhighlightTarget(prev);
+        highlightTarget(stickyHighlightedTarget);
     }
     
-    stickyHighlightedTarget = name;
-    highlightTarget(name);
-    
-    // Scroll target pool row into view
-    const targetRow = document.getElementById(`target-row-${name}`);
-    if (targetRow) {
-        targetRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    if (lastScheduleResult) {
+        renderAirmassChart(
+            lastScheduleResult.airmass_plots,
+            lastScheduleResult.blocks,
+            lastScheduleResult.solar_times,
+            lastScheduleResult.moon_plot
+        );
     }
     
-    // Scroll schedule row into view
-    const schedRow = document.getElementById(`sched-row-${name}`);
-    if (schedRow) {
-        schedRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }
-    
-    // Scroll timeline block into view
-    const block = document.querySelector(`.timeline-block[data-target="${name}"]`);
-    if (block) {
-        block.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    }
+
 }
 
 // Timezone & Formatting Utilities
@@ -1821,7 +1980,7 @@ function processTargetFile(file) {
             targetPool = targetPool.concat(parsed);
             localStorage.setItem("targetPool", JSON.stringify(targetPool));
             renderTargetsTable();
-            triggerScheduling();
+            triggerScheduling(true);
             logToTerminal(`Successfully uploaded ${parsed.length} targets.`);
         } else {
             logToTerminal("No valid targets found in the file.");
@@ -1966,7 +2125,7 @@ function setMode(mode) {
 
 function updateRealTimeParameters() {
     logToTerminal("Real-time constraints modified. Re-calculating...");
-    triggerScheduling();
+    triggerScheduling(true);
 }
 
 function logCommentFromInput() {
@@ -2107,9 +2266,260 @@ async function recalculateStartingNow() {
 // SERVER INTERACTION OR CLIENT-SIDE FALLBACK SOLVER
 // ==============================================================================
 
+function recalculateLayoutOnly() {
+    if (!lastScheduleResult) return;
+    
+    let sunset = new Date(lastScheduleResult.solar_times.sunset);
+    let sunrise = new Date(lastScheduleResult.solar_times.sunrise);
+    
+    const startOverride = document.getElementById("manual-night-start")?.value.trim() || "";
+    const endOverride = document.getElementById("manual-night-end")?.value.trim() || "";
+    const tzOverride = document.getElementById("manual-night-tz")?.value || "UTC";
+    const dateStr = document.getElementById("obs-date").value;
+    
+    if (startOverride) {
+        const iso = parseTimeInputToISO(startOverride, dateStr, tzOverride, true);
+        if (iso) sunset = new Date(iso);
+    }
+    if (endOverride) {
+        const iso = parseTimeInputToISO(endOverride, dateStr, tzOverride, false);
+        if (iso) sunrise = new Date(iso);
+    }
+    
+    const allPoolTargets = targetPool;
+    const allStandards = standardStars.filter(s => !disabledStandards.has(s.name));
+    
+    const targetMap = {};
+    allPoolTargets.forEach(t => { targetMap[t.name] = t; });
+    allStandards.forEach(s => { targetMap[s.name] = s; });
+    
+    let currentTime = sunset.getTime();
+    const newBlocks = [];
+    
+    currentBlocksList.forEach(b => {
+        const t = targetMap[b.target_name];
+        let start = currentTime;
+        let duration = b.duration_minutes;
+        
+        if (t) {
+            if (t.manual_start_time) {
+                const mStart = new Date(t.manual_start_time).getTime();
+                if (!isNaN(mStart)) {
+                    start = mStart;
+                }
+            }
+            if (t.manual_duration !== null && t.manual_duration !== undefined) {
+                duration = parseInt(t.manual_duration, 10);
+            } else {
+                const exp = getTargetExposureDetailsJS(t);
+                if (exp) {
+                    duration = exp.duration_minutes;
+                }
+            }
+        }
+        
+        const end = start + duration * 60 * 1000;
+        
+        let airmass_start = 1.0;
+        let airmass_end = 1.0;
+        let airmass_median = 1.0;
+        if (lastScheduleResult.airmass_plots && lastScheduleResult.airmass_plots[b.target_name]) {
+            const plotData = lastScheduleResult.airmass_plots[b.target_name];
+            const getClosestAirmass = (timeMs) => {
+                let closest = null;
+                let minDist = Infinity;
+                plotData.forEach(p => {
+                    const dist = Math.abs(new Date(p.time).getTime() - timeMs);
+                    if (dist < minDist) {
+                        minDist = dist;
+                        closest = p.airmass;
+                    }
+                });
+                return closest;
+            };
+            airmass_start = getClosestAirmass(start) || 1.0;
+            airmass_end = getClosestAirmass(end) || 1.0;
+            airmass_median = getClosestAirmass(start + (end - start) / 2) || 1.0;
+        }
+        
+        newBlocks.push({
+            target_name: b.target_name,
+            start_time: new Date(start).toISOString(),
+            end_time: new Date(end).toISOString(),
+            duration_minutes: duration,
+            priority: b.priority || 0.0,
+            airmass_start,
+            airmass_end,
+            airmass_median,
+            comment: b.comment || ""
+        });
+        
+        currentTime = end;
+    });
+    
+    const conflicts = [];
+    const unobservable = [];
+    if (lastScheduleResult.unobservable) {
+        lastScheduleResult.unobservable.forEach(name => {
+            if (!unobservable.includes(name)) unobservable.push(name);
+        });
+    }
+    
+    newBlocks.forEach(block => {
+        const t = targetMap[block.target_name];
+        if (t) {
+            const dec = typeof t.dec === 'number' ? t.dec : parseCoordinate(t.dec, false);
+            const ra = typeof t.ra === 'number' ? t.ra : parseCoordinate(t.ra, true);
+            const obs = { lat: 37.3414, lon: -121.6429, elevation: 1283 };
+            
+            const startLst = getLst(new Date(block.start_time), obs.lon);
+            const startHa = getHourAngle(startLst, ra);
+            const endLst = getLst(new Date(block.end_time), obs.lon);
+            const endHa = getHourAngle(endLst, ra);
+            
+            let decWarn = (dec < -35.0 || dec > 72.0);
+            let haWarn = (startHa < -5.6667 || startHa > 3.75 || endHa < -5.6667 || endHa > 3.75);
+            let airmassWarn = (block.airmass_start <= 0 || block.airmass_start > 2.5 || block.airmass_end <= 0 || block.airmass_end > 2.5);
+            
+            if (decWarn) {
+                if (!unobservable.includes(t.name)) {
+                    unobservable.push(t.name);
+                }
+            } else if (haWarn || airmassWarn) {
+                if (!conflicts.includes(t.name)) {
+                    conflicts.push(t.name);
+                }
+            }
+        }
+    });
+    
+    lastScheduleResult.blocks = newBlocks;
+    lastScheduleResult.conflicts = conflicts;
+    lastScheduleResult.unobservable = unobservable;
+    updateScheduleUI(lastScheduleResult);
+}
+
+function adjustAbuttingBlocks(changedTargetName, deltaMinutes) {
+    if (deltaMinutes === 0) return;
+    
+    const idx = currentBlocksList.findIndex(b => b.target_name === changedTargetName);
+    if (idx === -1) return;
+    
+    let prevEnd = new Date(currentBlocksList[idx].end_time).getTime();
+    
+    for (let i = idx + 1; i < currentBlocksList.length; i++) {
+        const b = currentBlocksList[i];
+        const bStart = new Date(b.start_time).getTime();
+        
+        if (Math.abs(bStart - prevEnd) < 5000) {
+            const newStart = new Date(bStart + deltaMinutes * 60 * 1000).toISOString();
+            const newEnd = new Date(new Date(b.end_time).getTime() + deltaMinutes * 60 * 1000).toISOString();
+            
+            b.start_time = newStart;
+            b.end_time = newEnd;
+            
+            const tName = b.target_name;
+            if (lastScheduleResult && lastScheduleResult.airmass_plots[tName]) {
+                const plotData = lastScheduleResult.airmass_plots[tName];
+                const getClosestAirmass = (timeMs) => {
+                    let closest = null;
+                    let minDist = Infinity;
+                    plotData.forEach(p => {
+                        const dist = Math.abs(new Date(p.time).getTime() - timeMs);
+                        if (dist < minDist) {
+                            minDist = dist;
+                            closest = p.airmass;
+                        }
+                    });
+                    return closest;
+                };
+                b.airmass_start = getClosestAirmass(new Date(newStart).getTime()) || b.airmass_start;
+                b.airmass_end = getClosestAirmass(new Date(newEnd).getTime()) || b.airmass_end;
+                b.airmass_median = getClosestAirmass(new Date(newStart).getTime() + (new Date(newEnd).getTime() - new Date(newStart).getTime()) / 2) || b.airmass_median;
+            }
+            
+            prevEnd = new Date(newEnd).getTime();
+        } else {
+            break;
+        }
+    }
+    
+    if (lastScheduleResult) {
+        lastScheduleResult.blocks = currentBlocksList;
+        
+        const conflicts = [];
+        const unobservable = [];
+        if (lastScheduleResult.unobservable) {
+            lastScheduleResult.unobservable.forEach(name => {
+                if (!unobservable.includes(name)) unobservable.push(name);
+            });
+        }
+        
+        currentBlocksList.forEach(block => {
+            const t = targetPool.find(target => target.name === block.target_name) || standardStars.find(star => star.name === block.target_name);
+            if (t) {
+                const dec = typeof t.dec === 'number' ? t.dec : parseCoordinate(t.dec, false);
+                const ra = typeof t.ra === 'number' ? t.ra : parseCoordinate(t.ra, true);
+                const obs = { lat: 37.3414, lon: -121.6429, elevation: 1283 };
+                
+                const startLst = getLst(new Date(block.start_time), obs.lon);
+                const startHa = getHourAngle(startLst, ra);
+                const endLst = getLst(new Date(block.end_time), obs.lon);
+                const endHa = getHourAngle(endLst, ra);
+                
+                let decWarn = (dec < -35.0 || dec > 72.0);
+                let haWarn = (startHa < -5.6667 || startHa > 3.75 || endHa < -5.6667 || endHa > 3.75);
+                let airmassWarn = (block.airmass_start <= 0 || block.airmass_start > 2.5 || block.airmass_end <= 0 || block.airmass_end > 2.5);
+                
+                if (decWarn) {
+                    if (!unobservable.includes(t.name)) {
+                        unobservable.push(t.name);
+                    }
+                } else if (haWarn || airmassWarn) {
+                    if (!conflicts.includes(t.name)) {
+                        conflicts.push(t.name);
+                    }
+                }
+            }
+        });
+        
+        lastScheduleResult.unobservable = unobservable;
+        lastScheduleResult.conflicts = conflicts;
+        
+        updateScheduleUI(lastScheduleResult);
+    }
+}
+
+function saveExposureAndReTime(name, oldDuration) {
+    const target = targetPool.find(t => t.name === name);
+    if (!target) return;
+    
+    const oldBlock = currentBlocksList.find(b => b.target_name === name);
+    const exp = getTargetExposureDetailsJS(target);
+    const newDuration = exp ? exp.duration_minutes : 30;
+    const deltaMinutes = newDuration - oldDuration;
+    
+    if (oldBlock) {
+        oldBlock.duration_minutes = newDuration;
+        const startMs = new Date(oldBlock.start_time).getTime();
+        oldBlock.end_time = new Date(startMs + newDuration * 60 * 1000).toISOString();
+    }
+    
+    localStorage.setItem("targetPool", JSON.stringify(targetPool));
+    renderTargetsTable();
+    adjustAbuttingBlocks(name, deltaMinutes);
+}
+
 // Issue #34: Debounce triggerScheduling to prevent flicker from rapid re-runs
 let _scheduleDebounceTimer = null;
-function triggerScheduling() {
+function triggerScheduling(isAutoRun = false) {
+    if (isAutoRun && (isAutoRun instanceof Event || typeof isAutoRun.target !== 'undefined')) {
+        isAutoRun = false;
+    }
+    if (isAutoRun && !autoUpdateEnabled) {
+        recalculateLayoutOnly();
+        return;
+    }
     clearTimeout(_scheduleDebounceTimer);
     _scheduleDebounceTimer = setTimeout(_doSchedule, 150);
 }
@@ -2370,10 +2780,17 @@ function updateScheduleUI(result) {
             
             return `
                 <tr id="sched-row-${b.target_name}" data-target="${b.target_name}"
+                    draggable="${b.target_name !== 'Evening Twilight' && b.target_name !== 'Morning Twilight' ? 'true' : 'false'}"
+                    ondragstart="event.dataTransfer.setData('text/plain', '${b.target_name}'); this.style.opacity = '0.4';"
+                    ondragend="this.style.opacity = '1';"
+                    ondragover="event.preventDefault();"
+                    ondragenter="if (event.dataTransfer.types.includes('text/plain')) { this.style.background = 'rgba(34, 211, 238, 0.15)'; }"
+                    ondragleave="this.style.background = '${isLocked ? 'rgba(245,158,11,0.05)' : ''}';"
+                    ondrop="this.style.background = '${isLocked ? 'rgba(245,158,11,0.05)' : ''}'; event.preventDefault(); const dragged = event.dataTransfer.getData('text/plain'); if (dragged && dragged !== '${b.target_name}') { handleTimelineReorder(dragged, '${b.target_name}'); }"
                     onmouseenter="highlightTarget('${b.target_name}')"
                     onmouseleave="unhighlightTarget('${b.target_name}')"
                     onclick="stickyHighlightTarget('${b.target_name}')"
-                    style="cursor: pointer; ${isLocked ? 'background: rgba(245,158,11,0.05);' : ''}">
+                    style="cursor: pointer; transition: background 0.2s ease; ${isLocked ? 'background: rgba(245,158,11,0.05);' : ''}">
                     ${lockCell}
                     <td>${timeCell}</td>
                     <td><strong>${b.target_name}</strong></td>
@@ -2417,6 +2834,16 @@ function updateScheduleUI(result) {
     // Issue #30: Update night overrides input placeholders
     updateNightOverridePlaceholders();
 
+    // Re-apply selected/highlighted classes to newly rendered schedule table rows
+    stickyHighlightedTargets.forEach(tName => {
+        const schedRow = document.getElementById(`sched-row-${tName}`);
+        if (schedRow) schedRow.classList.add("row-selected");
+    });
+    if (stickyHighlightedTarget) {
+        const schedRow = document.getElementById(`sched-row-${stickyHighlightedTarget}`);
+        if (schedRow) schedRow.classList.add("row-highlighted");
+    }
+
     window.scrollTo(scrollX, scrollY);
 }
 
@@ -2430,88 +2857,101 @@ function updateScheduleUI(result) {
 function handleTimelineReorder(draggedName, targetName) {
     if (draggedName === targetName) return;
     
-    // Filter current blocks list to only include science targets
-    const sciBlocks = currentBlocksList.filter(b => b.priority > 0);
+    // Find the objects to set the new sequence constraint
+    const draggedTarget = targetPool.find(t => t.name === draggedName) || standardStars.find(s => s.name === draggedName);
+    const targetObj = targetPool.find(t => t.name === targetName) || standardStars.find(s => s.name === targetName);
     
-    const draggedIdx = sciBlocks.findIndex(b => b.target_name === draggedName);
-    if (draggedIdx === -1) return; // Standard stars cannot be dragged
-    
-    let targetIdx = sciBlocks.findIndex(b => b.target_name === targetName);
-    
-    // If targetName is a standard star, find the nearest science target in the timeline
-    if (targetIdx === -1) {
-        const fullTargetIdx = currentBlocksList.findIndex(b => b.target_name === targetName);
-        if (fullTargetIdx === -1) return;
+    if (draggedTarget && targetObj) {
+        // Find indices in the current visual layout order to know the relative direction
+        const draggedBlockIdx = currentBlocksList.findIndex(b => b.target_name === draggedName);
+        const targetBlockIdx = currentBlocksList.findIndex(b => b.target_name === targetName);
         
-        let found = false;
-        // Look to the right first
-        for (let i = fullTargetIdx + 1; i < currentBlocksList.length; i++) {
-            if (currentBlocksList[i].priority > 0) {
-                targetName = currentBlocksList[i].target_name;
-                targetIdx = sciBlocks.findIndex(b => b.target_name === targetName);
-                found = true;
-                break;
-            }
-        }
-        // Look to the left if not found
-        if (!found) {
-            for (let i = fullTargetIdx - 1; i >= 0; i--) {
-                if (currentBlocksList[i].priority > 0) {
-                    targetName = currentBlocksList[i].target_name;
-                    targetIdx = sciBlocks.findIndex(b => b.target_name === targetName);
-                    found = true;
-                    break;
+        if (draggedBlockIdx !== -1 && targetBlockIdx !== -1) {
+            if (draggedBlockIdx < targetBlockIdx) {
+                // draggedTarget should be before targetObj
+                if (!draggedTarget.schedule_before) draggedTarget.schedule_before = [];
+                if (!draggedTarget.schedule_before.includes(targetName)) {
+                    draggedTarget.schedule_before.push(targetName);
+                }
+                // Remove targetObj -> draggedTarget constraint
+                if (targetObj.schedule_before) {
+                    targetObj.schedule_before = targetObj.schedule_before.filter(z => z !== draggedName);
+                }
+            } else {
+                // targetObj should be before draggedTarget
+                if (!targetObj.schedule_before) targetObj.schedule_before = [];
+                if (!targetObj.schedule_before.includes(draggedName)) {
+                    targetObj.schedule_before.push(draggedName);
+                }
+                // Remove draggedTarget -> targetObj constraint
+                if (draggedTarget.schedule_before) {
+                    draggedTarget.schedule_before = draggedTarget.schedule_before.filter(z => z !== targetName);
                 }
             }
         }
-        if (!found) return; // No science targets scheduled to reorder against
     }
-
-    if (targetName === draggedName) return;
-
-    // 1. Clear all old constraints involving draggedName to start fresh
-    const draggedTarget = targetPool.find(t => t.name === draggedName);
-    if (!draggedTarget) return;
-    draggedTarget.schedule_before = [];
     
-    targetPool.forEach(t => {
-        if (t.schedule_before) {
-            t.schedule_before = t.schedule_before.filter(z => z !== draggedName);
-        }
-    });
-
-    // 2. Get the list of science target names in the current schedule order
-    const names = sciBlocks.map(b => b.target_name);
+    // Reorder the currentBlocksList to reflect the new visual dragged order
+    const draggedBlockIdx = currentBlocksList.findIndex(b => b.target_name === draggedName);
+    let targetBlockIdx = currentBlocksList.findIndex(b => b.target_name === targetName);
+    if (targetName === "Evening Twilight") {
+        targetBlockIdx = 1;
+    }
     
-    // 3. Compute the new sequence by moving draggedName to be just before targetName
-    names.splice(draggedIdx, 1);
-    const newIdx = names.indexOf(targetName);
-    names.splice(newIdx, 0, draggedName);
-    
-    // 4. Find the new index of draggedName
-    const draggedNewIdx = names.indexOf(draggedName);
-    
-    // 5. For every target before the dragged target in the new sequence, add draggedName to its schedule_before
-    for (let i = 0; i < draggedNewIdx; i++) {
-        const xName = names[i];
-        const xTarget = targetPool.find(t => t.name === xName) || standardStars.find(s => s.name === xName);
-        if (xTarget) {
-            if (!xTarget.schedule_before) xTarget.schedule_before = [];
-            if (!xTarget.schedule_before.includes(draggedName)) {
-                xTarget.schedule_before.push(draggedName);
+    if (draggedBlockIdx !== -1 && targetBlockIdx !== -1) {
+        const minIdx = Math.min(draggedBlockIdx, targetBlockIdx);
+        const maxIdx = Math.max(draggedBlockIdx, targetBlockIdx);
+        const rangeStart = new Date(currentBlocksList[minIdx].start_time).getTime();
+        
+        const [draggedBlock] = currentBlocksList.splice(draggedBlockIdx, 1);
+        currentBlocksList.splice(targetBlockIdx, 0, draggedBlock);
+        
+        if (!autoUpdateEnabled) {
+            let currentTime = rangeStart;
+            for (let i = minIdx; i <= maxIdx; i++) {
+                const b = currentBlocksList[i];
+                if (!b) continue;
+                
+                const start = currentTime;
+                const end = start + b.duration_minutes * 60 * 1000;
+                
+                b.start_time = new Date(start).toISOString();
+                b.end_time = new Date(end).toISOString();
+                
+                if (lastScheduleResult.airmass_plots && lastScheduleResult.airmass_plots[b.target_name]) {
+                    const plotData = lastScheduleResult.airmass_plots[b.target_name];
+                    const getClosestAirmass = (timeMs) => {
+                        let closest = null;
+                        let minDist = Infinity;
+                        plotData.forEach(p => {
+                            const dist = Math.abs(new Date(p.time).getTime() - timeMs);
+                            if (dist < minDist) {
+                                minDist = dist;
+                                closest = p.airmass;
+                            }
+                        });
+                        return closest;
+                    };
+                    b.airmass_start = getClosestAirmass(start) || 1.0;
+                    b.airmass_end = getClosestAirmass(end) || 1.0;
+                    b.airmass_median = getClosestAirmass(start + (end - start) / 2) || 1.0;
+                }
+                
+                currentTime = end;
             }
         }
     }
     
-    // 6. For every target after the dragged target in the new sequence, add it to draggedTarget's schedule_before
-    for (let i = draggedNewIdx + 1; i < names.length; i++) {
-        const yName = names[i];
-        if (!draggedTarget.schedule_before.includes(yName)) {
-            draggedTarget.schedule_before.push(yName);
-        }
+    localStorage.setItem("targetPool", JSON.stringify(targetPool));
+    localStorage.setItem("standardStars", JSON.stringify(standardStars));
+    localStorage.setItem("lockedTargets", JSON.stringify(Array.from(lockedTargets.entries())));
+    
+    if (autoUpdateEnabled) {
+        saveAndRefresh();
+    } else {
+        lastScheduleResult.blocks = currentBlocksList;
+        updateScheduleUI(lastScheduleResult);
     }
-
-    saveAndRefresh();
 }
 
 function renderTimeline(blocks, solar_times, moon_plot) {
@@ -2698,8 +3138,8 @@ function renderTimeline(blocks, solar_times, moon_plot) {
         const bEndLST = formatLST(getLst(bEnd, obsLon));
         blockEl.title = `${b.target_name}\nUT: ${formatTimeForTimezone(b.start_time, 'UTC')} - ${formatTimeForTimezone(b.end_time, 'UTC')}\nLoc: ${formatTimeForTimezone(b.start_time, 'obs')} - ${formatTimeForTimezone(b.end_time, 'obs')}\nLST: ${bStartLST} - ${bEndLST}\nMedian Airmass: ${b.airmass_median.toFixed(2)}`;
         
-        // Enable drag & drop for manual scheduling
-        if (b.priority > 0) {
+        // Enable drag & drop for manual scheduling (exclude twilight blocks)
+        if (b.target_name !== "Evening Twilight" && b.target_name !== "Morning Twilight") {
             blockEl.draggable = true;
             blockEl.addEventListener("dragstart", (e) => {
                 e.dataTransfer.setData("text/plain", b.target_name);
@@ -2714,6 +3154,7 @@ function renderTimeline(blocks, solar_times, moon_plot) {
             blockEl.addEventListener("drop", (e) => {
                 e.preventDefault();
                 const draggedName = e.dataTransfer.getData("text/plain");
+                console.log("Timeline drop listener called, draggedName:", draggedName, "targetName:", b.target_name);
                 if (draggedName && draggedName !== b.target_name) {
                     handleTimelineReorder(draggedName, b.target_name);
                 }
@@ -2805,12 +3246,27 @@ function renderAlerts(conflicts, unobservable, empty_blocks, scheduled_count) {
         return;
     }
     
-    const items = [];
+    const highItems = [];
+    const lowItems = [];
     
+    // High alerts: Unobservable targets
+    unobservable.forEach(name => {
+        const t = targetPool.find(target => target.name === name);
+        highItems.push(`
+            <div class="alert-item alert-danger">
+                <div>
+                    <div class="alert-title">Unobservable: Target "${name}" (Priority ${t ? t.priority : 'N/A'}) cannot be observed</div>
+                    <div class="alert-desc">It does not meet minimum altitude, DEC, hour angle, or twilight limits at any point during the night. Action: Check target coordinates or adjust observatory constraints.</div>
+                </div>
+            </div>
+        `);
+    });
+    
+    // Low alerts: Conflicts (scheduling overlaps)
     conflicts.forEach(name => {
         const t = targetPool.find(target => target.name === name);
-        items.push(`
-            <div class="alert-item alert-danger">
+        lowItems.push(`
+            <div class="alert-item alert-warning">
                 <div>
                     <div class="alert-title">Conflict: Target "${name}" (Priority ${t ? t.priority : 'N/A'}) cannot be scheduled</div>
                     <div class="alert-desc">It overlaps with other targets at this priority level. Action: Try changing its priority, enabling twilight observations, or allowing higher airmass.</div>
@@ -2819,6 +3275,7 @@ function renderAlerts(conflicts, unobservable, empty_blocks, scheduled_count) {
         `);
     });
     
+    // Low alerts: Unused telescope time
     if (scheduled_count > 0 && empty_blocks.length > 0) {
         const totalUnused = empty_blocks.reduce((acc, b) => acc + b.duration_minutes, 0);
         const listStr = empty_blocks.map(b => {
@@ -2827,7 +3284,7 @@ function renderAlerts(conflicts, unobservable, empty_blocks, scheduled_count) {
             return `${start}-${end} (${b.duration_minutes}m)`;
         }).join(', ');
         
-        items.push(`
+        lowItems.push(`
             <div class="alert-item alert-warning" style="background: rgba(59, 130, 246, 0.1); border-color: rgba(59, 130, 246, 0.3); color: #93c5fd;">
                 <div>
                     <div class="alert-title">Unused Time Remaining: ${totalUnused} minutes empty</div>
@@ -2837,17 +3294,85 @@ function renderAlerts(conflicts, unobservable, empty_blocks, scheduled_count) {
         `);
     }
     
-    if (items.length > 0) {
+    const totalCount = highItems.length + lowItems.length;
+    if (totalCount > 0) {
+        // Reset collapse states on fresh render
+        if (highItems.length > 0) {
+            highAlertsCollapsed = false; // uncollapse high alerts
+        }
+        lowAlertsCollapsed = true; // keep low alerts collapsed
+        
         const headerHtml = `
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; border-bottom: 1px solid var(--border-color); padding-bottom: 8px;">
                 <span style="font-weight: bold; color: #fff; font-size: 0.95rem;">Alerts & Conflicts</span>
                 <button onclick="clearAlerts()" class="btn" style="padding: 2px 8px; font-size: 0.75rem; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 4px; cursor: pointer; color: #fca5a5;">Clear Alerts</button>
             </div>
         `;
-        consoleEl.innerHTML = headerHtml + items.join('');
+        
+        let sectionsHtml = "";
+        
+        if (highItems.length > 0) {
+            const bodyClass = highAlertsCollapsed ? "card-body-collapse collapsed" : "card-body-collapse";
+            sectionsHtml += `
+                <div class="alert-section" style="margin-bottom: 12px;">
+                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px; cursor: pointer; user-select: none;" onclick="toggleAlertsSection('high')">
+                        <span style="font-size: 0.8rem; font-weight: 600; color: #f87171; text-transform: uppercase; letter-spacing: 0.05em;">High Severity Alerts (${highItems.length})</span>
+                        <span id="high-alerts-toggle-icon" style="font-size: 0.8rem; color: var(--text-secondary); font-family: monospace;">${highAlertsCollapsed ? '+' : '−'}</span>
+                    </div>
+                    <div id="high-alerts-body" class="${bodyClass}">
+                        ${highItems.join('')}
+                    </div>
+                </div>
+            `;
+        }
+        
+        if (lowItems.length > 0) {
+            const bodyClass = lowAlertsCollapsed ? "card-body-collapse collapsed" : "card-body-collapse";
+            sectionsHtml += `
+                <div class="alert-section">
+                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px; cursor: pointer; user-select: none;" onclick="toggleAlertsSection('low')">
+                        <span style="font-size: 0.8rem; font-weight: 600; color: #fde68a; text-transform: uppercase; letter-spacing: 0.05em;">Low Severity Alerts (${lowItems.length})</span>
+                        <span id="low-alerts-toggle-icon" style="font-size: 0.8rem; color: var(--text-secondary); font-family: monospace;">${lowAlertsCollapsed ? '+' : '−'}</span>
+                    </div>
+                    <div id="low-alerts-body" class="${bodyClass}">
+                        ${lowItems.join('')}
+                    </div>
+                </div>
+            `;
+        }
+        
+        consoleEl.innerHTML = headerHtml + sectionsHtml;
         consoleEl.style.display = "block";
     } else {
         consoleEl.style.display = "none";
+    }
+}
+
+function toggleAlertsSection(sec) {
+    if (sec === 'high') {
+        const body = document.getElementById("high-alerts-body");
+        const icon = document.getElementById("high-alerts-toggle-icon");
+        if (!body || !icon) return;
+        highAlertsCollapsed = !highAlertsCollapsed;
+        if (highAlertsCollapsed) {
+            body.classList.add("collapsed");
+            icon.textContent = "+";
+        } else {
+            body.classList.remove("collapsed");
+            icon.textContent = "−";
+        }
+    } else if (sec === 'low') {
+        const body = document.getElementById("low-alerts-body");
+        const icon = document.getElementById("low-alerts-toggle-icon");
+        if (!body || !icon) return;
+        lowAlertsCollapsed = !lowAlertsCollapsed;
+        if (lowAlertsCollapsed) {
+            body.classList.add("collapsed");
+            icon.textContent = "+";
+        } else {
+            body.classList.remove("collapsed");
+            icon.textContent = "−";
+        }
     }
 }
 
@@ -2986,6 +3511,29 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
             });
         }
     });
+
+    stickyHighlightedTargets.forEach(tName => {
+        if (airmass_plots[tName]) {
+            const plotData = airmass_plots[tName];
+            const highlightPoints = plotData.map(p => {
+                return {
+                    x: new Date(p.time).getTime(),
+                    y: (p.airmass <= 0) ? null : p.airmass
+                };
+            });
+            datasets.push({
+                label: `${tName} (Highlighted)`,
+                data: highlightPoints,
+                borderColor: '#ffffff',
+                borderWidth: 4,
+                fill: false,
+                tension: 0.1,
+                pointRadius: 0,
+                pointHoverRadius: 4,
+                yAxisID: 'y'
+            });
+        }
+    });
     
     // Twilight Plugin to draw gradients & vertical lines in Chart.js
     const twilightPlugin = {
@@ -3120,13 +3668,13 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
                         font: { family: 'Inter', size: 11 },
                         usePointStyle: true,
                         filter: function(item) {
-                            // Exclude night-profile dotted series and Moon series
-                            return !item.text.includes('(Night Profile)') && item.text !== 'Moon (Airmass)';
+                            // Exclude night-profile dotted series, Moon series, and clicked highlighted series
+                            return !item.text.includes('(Night Profile)') && item.text !== 'Moon (Airmass)' && !item.text.includes('(Highlighted)');
                         },
                         generateLabels: function(chart) {
                             const original = Chart.defaults.plugins.legend.labels.generateLabels(chart);
                             return original
-                                .filter(item => !item.text.includes('(Night Profile)') && item.text !== 'Moon (Airmass)')
+                                .filter(item => !item.text.includes('(Night Profile)') && item.text !== 'Moon (Airmass)' && !item.text.includes('(Highlighted)'))
                                 .map(item => {
                                     // Issue #20: horizontal line icon instead of filled rectangle
                                     item.pointStyle = 'line';

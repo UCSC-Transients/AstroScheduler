@@ -43,6 +43,7 @@ def test_bugs():
             ):
                 page.goto("http://127.0.0.1:8055")
             page.wait_for_timeout(500)
+            page.check("#auto-update-toggle")
             
             # Force date to 2026-06-18 to ensure valid IERS data
             date_input = page.locator("#obs-date")
@@ -205,10 +206,11 @@ def test_bugs():
             alpha_in_sched = page.locator("#schedule-table tbody tr", has_text="Alpha Centauri").count()
             assert alpha_in_sched > 0, "Locking Vega caused Alpha Centauri to drop from schedule!"
             
-            # With Vega locked, change exposure time in the schedule table (which should trigger a refit)
+            # With Vega locked, change exposure time in the schedule table (which should update visually)
             duration_input = vega_row.locator("input[type=number]").first
             duration_input.fill("45")
-            trigger_and_wait(page, lambda: duration_input.evaluate("node => node.dispatchEvent(new Event('change'))"))
+            duration_input.evaluate("node => node.dispatchEvent(new Event('change'))")
+            page.wait_for_timeout(1000)
             
             # Verify exposure time is updated and Vega stays locked
             vega_row_updated = page.locator("#schedule-table tbody tr", has_text="Vega").first
@@ -235,12 +237,14 @@ def test_bugs():
             
             pbk_dur_input = pbk_row.locator("input[type=number]").first
             pbk_dur_input.fill("20")
-            trigger_and_wait(page, lambda: pbk_dur_input.evaluate("node => node.dispatchEvent(new Event('change'))"))
+            pbk_dur_input.evaluate("node => node.dispatchEvent(new Event('change'))")
+            page.wait_for_timeout(1000)
             
             pbk_row_updated = page.locator("#schedule-table tbody tr", has_text="2026pbk").first
             pbk_start_input = pbk_row_updated.locator("input[type=text]").nth(0)
             pbk_start_input.fill("06:48")
-            trigger_and_wait(page, lambda: pbk_start_input.evaluate("node => node.dispatchEvent(new Event('change'))"))
+            pbk_start_input.evaluate("node => node.dispatchEvent(new Event('change'))")
+            page.wait_for_timeout(1000)
             
             alpha_in_sched_final = page.locator("#schedule-table tbody tr", has_text="Alpha Centauri").count()
             assert alpha_in_sched_final > 0, "Changing locked priority 3 target exposure/start caused Alpha Centauri to disappear!"
@@ -272,6 +276,7 @@ def test_user_target_list_solving():
             ):
                 page.goto("http://127.0.0.1:8056")
             page.wait_for_timeout(500)
+            page.check("#auto-update-toggle")
             
             # Dismiss confirmation dialog for clearing targets
             page.on("dialog", lambda dialog: dialog.accept())
@@ -316,12 +321,14 @@ def test_user_target_list_solving():
             pbk_row = page.locator("#target-row-2026pbk")
             dur_input = pbk_row.locator("input[type=number]").nth(2)
             dur_input.fill("20")
-            trigger_and_wait(page, lambda: dur_input.evaluate("node => node.dispatchEvent(new Event('change'))"))
+            dur_input.evaluate("node => node.dispatchEvent(new Event('change'))")
+            page.wait_for_timeout(1000)
             
             pbk_row_updated = page.locator("#target-row-2026pbk")
             start_input = pbk_row_updated.locator("input[type=text]").nth(0)
             start_input.fill("06:48")
-            trigger_and_wait(page, lambda: start_input.evaluate("node => node.dispatchEvent(new Event('change'))"))
+            start_input.evaluate("node => node.dispatchEvent(new Event('change'))")
+            page.wait_for_timeout(1000)
             
             # Count scheduled targets in the schedule table
             rows = page.locator("#schedule-table tbody tr")
