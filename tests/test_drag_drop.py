@@ -29,7 +29,10 @@ def test_drag_drop_behavior():
             # Navigating to page
             page.goto("http://127.0.0.1:8077")
             page.evaluate("localStorage.clear();")
-            page.reload()
+            
+            # Wait dynamically for initial solver call to complete on reload
+            with page.expect_response("**/api/schedule", timeout=60000):
+                page.reload()
             page.wait_for_timeout(2000)
             
             # 1. Verify Auto-Update defaults to off
@@ -110,7 +113,7 @@ def test_drag_drop_behavior():
                 after_first.append({"name": name, "time": time_val})
                 
             # Verification:
-            # 1. Touched blocks should adjust times sequentially based on new order
+            # 1. Touched blocks should swap/adjust times sequentially based on new order
             b0_first = next(x for x in after_first if x["name"] == b0_name)
             b1_first = next(x for x in after_first if x["name"] == b1_name)
             b0_orig = next(x for x in original_blocks if x["name"] == b0_name)
