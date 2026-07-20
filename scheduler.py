@@ -1778,9 +1778,11 @@ class Scheduler:
             # We just append them to the end with rank = infinity.
             topo_rank = {name: i for i, name in enumerate(topo_order)}
             
+            S_active_names = {t.name for t in S_active}
             targets_sorted_for_solve = sorted(
                 targets_to_schedule,
                 key=lambda x: (
+                    x.name not in S_active_names,
                     not has_constraint[x.name],
                     topo_rank.get(x.name, 999999),
                     x.priority,
@@ -1788,7 +1790,6 @@ class Scheduler:
                 )
             )
             
-            S_active_names = {t.name for t in S_active}
             new_active_names = {t.name for t in new_active}
             
             initial_schedule = {k: v for k, v in current_schedule.items() if k in manually_scheduled}

@@ -5088,6 +5088,9 @@ function runLocalJSSolver(payload) {
             });
 
             const solverTargets = [...targetsToSchedule].sort((a,b) => {
+                const actA = S_active_names.has(a.name) ? 0 : 1;
+                const actB = S_active_names.has(b.name) ? 0 : 1;
+                if (actA !== actB) return actA - actB;
                 const hcA = hasConstraint[a.name] ? 0 : 1;
                 const hcB = hasConstraint[b.name] ? 0 : 1;
                 if (hcA !== hcB) return hcA - hcB;
