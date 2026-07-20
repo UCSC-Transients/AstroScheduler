@@ -3413,10 +3413,6 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
         };
     }
     
-    if (airmassChart) {
-        airmassChart.destroy();
-    }
-    
     originalXMin = null;
     originalXMax = null;
     
@@ -3430,7 +3426,7 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
     
     // Plot Moon airmass curve if available (solid grey line)
     if (moon_plot && moon_plot.length > 0) {
-        const moonPoints = moon_plot.map(p => {
+        const moonPoints = moon_plot.filter((_, idx) => idx % 5 === 0).map(p => {
             return {
                 x: new Date(p.time).getTime(),
                 y: (p.airmass <= 0) ? null : p.airmass
@@ -3456,7 +3452,7 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
         
         const block = blocks.find(b => b.target_name === tName);
         
-        const fullNightPoints = plotData.map(p => {
+        const fullNightPoints = plotData.filter((_, idx) => idx % 5 === 0).map(p => {
             return {
                 x: new Date(p.time).getTime(),
                 y: (p.airmass <= 0) ? null : p.airmass,
@@ -3521,7 +3517,7 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
     stickyHighlightedTargets.forEach(tName => {
         if (airmass_plots[tName]) {
             const plotData = airmass_plots[tName];
-            const highlightPoints = plotData.map(p => {
+            const highlightPoints = plotData.filter((_, idx) => idx % 5 === 0).map(p => {
                 return {
                     x: new Date(p.time).getTime(),
                     y: (p.airmass <= 0) ? null : p.airmass
@@ -3549,6 +3545,7 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
             const xAxis = chart.scales.x;
             const yAxis = chart.scales.y;
             
+            const solar_times = chart.solarTimes;
             if (!xAxis || !yAxis || !solar_times) return;
             
             const sunsetMs = new Date(solar_times.sunset).getTime();
@@ -3649,10 +3646,34 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
     const chartMin = Math.floor(sunsetMs / 3600000) * 3600000;
     const chartMax = Math.ceil(sunriseMs / 3600000) * 3600000;
 
+    const maxAirmassVal = (() => {
+        let maxAirmass = 1.7;
+        blocks.forEach(b => {
+            if (b.airmass_median && b.airmass_median > maxAirmass) maxAirmass = b.airmass_median;
+            if (b.airmass_start && b.airmass_start > maxAirmass) maxAirmass = b.airmass_start;
+            if (b.airmass_end && b.airmass_end > maxAirmass) maxAirmass = b.airmass_end;
+        });
+        return Math.max(1.7, maxAirmass + 0.1);
+    })();
+
+    if (airmassChart) {
+        airmassChart.solarTimes = solar_times;
+        airmassChart.data.datasets = datasets;
+        airmassChart.options.scales.x.min = chartMin;
+        airmassChart.options.scales.x.max = chartMax;
+        if (airmassChart.options.scales.x2) {
+            airmassChart.options.scales.x2.min = chartMin;
+            airmassChart.options.scales.x2.max = chartMax;
+        }
+        airmassChart.options.scales.y.max = maxAirmassVal;
+        airmassChart.update('none');
+        return;
+    }
+
     airmassChart = new Chart(ctx, {
         type: 'line',
         data: { datasets },
-        plugins: [twilightPlugin, boxZoomPlugin],
+        plugins: [twTwilightPluginWorkaround(), boxZoomPlugin],
         options: {
             responsive: true,
             maintainAspectRatio: false,
@@ -3763,15 +3784,7 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
                     reverse: true,
                     min: 1.0,
                     // Issue #6: Dynamic Y-axis max = max(1.7, highest scheduled airmass + 0.1)
-                    max: (() => {
-                        let maxAirmass = 1.7;
-                        blocks.forEach(b => {
-                            if (b.airmass_median && b.airmass_median > maxAirmass) maxAirmass = b.airmass_median;
-                            if (b.airmass_start && b.airmass_start > maxAirmass) maxAirmass = b.airmass_start;
-                            if (b.airmass_end && b.airmass_end > maxAirmass) maxAirmass = b.airmass_end;
-                        });
-                        return Math.max(1.7, maxAirmass + 0.1);
-                    })(),
+                    max: maxAirmassVal,
                     title: {
                         display: true,
                         text: 'Airmass (sec z)',
@@ -3784,6 +3797,11 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
             }
         }
     });
+    airmassChart.solarTimes = solar_times;
+
+    function twTwilightPluginWorkaround() {
+        return twilightPlugin;
+    }
 }
 
 let originalXMin = null;
