@@ -1749,201 +1749,220 @@ class Scheduler:
                 airmass_costs[t.name] = costs
                     
             # Search
-            # Build precedence graph for topological sorting
-            graph = {t.name: [] for t in targets_to_schedule}
-            in_degree = {t.name: 0 for t in targets_to_schedule}
-            
-            for t in targets_to_schedule:
-                if t.schedule_before:
-                    for after in t.schedule_before:
-                        if after in graph:
-                            graph[t.name].append(after)
-                            in_degree[after] += 1
-            
-            has_constraint = {}
-            for t in targets_to_schedule:
-                has_constraint[t.name] = (len(graph[t.name]) > 0) or (in_degree[t.name] > 0)
-                
-            topo_order = []
-            zero_in = [name for name, deg in in_degree.items() if deg == 0 and has_constraint[name]]
-            while zero_in:
-                curr = zero_in.pop(0)
-                topo_order.append(curr)
-                for neighbor in graph[curr]:
-                    in_degree[neighbor] -= 1
-                    if in_degree[neighbor] == 0:
-                        zero_in.append(neighbor)
-                        
-            # If there's a cycle, the remaining nodes won't be in topo_order. 
-            # We just append them to the end with rank = infinity.
-            topo_rank = {name: i for i, name in enumerate(topo_order)}
-            
             S_active_names = {t.name for t in S_active}
-            targets_sorted_for_solve = sorted(
-                targets_to_schedule,
-                key=lambda x: (
-                    x.name not in S_active_names,
-                    not has_constraint[x.name],
-                    topo_rank.get(x.name, 999999),
-                    x.priority,
-                    -durations[x.name]
-                )
-            )
-            
             new_active_names = {t.name for t in new_active}
             
-            initial_schedule = {k: v for k, v in current_schedule.items() if k in manually_scheduled}
+            pruned_optional = []
+            mandatory_has_no_slots = False
+            for t in targets_to_schedule:
+                if len(valid_slots[t.name]) == 0:
+                    if t.name in S_active_names:
+                        mandatory_has_no_slots = True
+                    elif t.name in new_active_names:
+                        pruned_optional.append(t)
             
-            def check_overlap(s1: int, d1: int, s2: int, d2: int) -> bool:
-                return not (s1 + d1 <= s2 or s2 + d2 <= s1)
+            for t in pruned_optional:
+                targets_to_schedule.remove(t)
+                if t.name not in conflicts:
+                    conflicts.append(t.name)
+            
+            best_schedule = None
+            best_cost = float('inf')
+            
+            if not mandatory_has_no_slots:
+                # Build precedence graph for topological sorting
+                graph = {t.name: [] for t in targets_to_schedule}
+                in_degree = {t.name: 0 for t in targets_to_schedule}
                 
-            # 1. Greedy initialization to establish a high-quality upper bound and speed up search
-            greedy_sched = initial_schedule.copy()
-            greedy_cost = 0.0
-            for t in targets_sorted_for_solve:
-                t_name = t.name
-                t_dur = durations[t_name]
-                slots = valid_slots[t_name]
+                for t in targets_to_schedule:
+                    if t.schedule_before:
+                        for after in t.schedule_before:
+                            if after in graph:
+                                graph[t.name].append(after)
+                                in_degree[after] += 1
                 
-                s_prev = current_schedule.get(t_name)
-                if s_prev is None and previous_start_chunks is not None:
-                    s_prev = previous_start_chunks.get(t_name)
+                has_constraint = {}
+                for t in targets_to_schedule:
+                    has_constraint[t.name] = (len(graph[t.name]) > 0) or (in_degree[t.name] > 0)
                     
-                if s_prev is not None and s_prev in slots:
-                    sorted_slots = [s_prev] + sorted([s for s in slots if s != s_prev], key=lambda s: airmass_costs[t_name][s])
-                else:
-                    sorted_slots = sorted(slots, key=lambda s: airmass_costs[t_name][s])
+                topo_order = []
+                zero_in = [name for name, deg in in_degree.items() if deg == 0 and has_constraint[name]]
+                while zero_in:
+                    curr = zero_in.pop(0)
+                    topo_order.append(curr)
+                    for neighbor in graph[curr]:
+                        in_degree[neighbor] -= 1
+                        if in_degree[neighbor] == 0:
+                            zero_in.append(neighbor)
+                            
+                # If there's a cycle, the remaining nodes won't be in topo_order. 
+                # We just append them to the end with rank = infinity.
+                topo_rank = {name: i for i, name in enumerate(topo_order)}
+                
+                targets_sorted_for_solve = sorted(
+                    targets_to_schedule,
+                    key=lambda x: (
+                        x.name not in S_active_names,
+                        not has_constraint[x.name],
+                        topo_rank.get(x.name, 999999),
+                        x.priority,
+                        -durations[x.name]
+                    )
+                )
+                
+                initial_schedule = {k: v for k, v in current_schedule.items() if k in manually_scheduled}
+                
+                def check_overlap(s1: int, d1: int, s2: int, d2: int) -> bool:
+                    return not (s1 + d1 <= s2 or s2 + d2 <= s1)
                     
-                placed = False
-                for s in sorted_slots:
-                    overlap = False
-                    for p_name, p_start in greedy_sched.items():
-                        if check_overlap(s, t_dur, p_start, durations[p_name]):
-                            overlap = True
-                            break
-                    if overlap:
-                        continue
+                # 1. Greedy initialization to establish a high-quality upper bound and speed up search
+                greedy_sched = initial_schedule.copy()
+                greedy_cost = 0.0
+                for t in targets_sorted_for_solve:
+                    t_name = t.name
+                    t_dur = durations[t_name]
+                    slots = valid_slots[t_name]
+                    
+                    s_prev = current_schedule.get(t_name)
+                    if s_prev is None and previous_start_chunks is not None:
+                        s_prev = previous_start_chunks.get(t_name)
                         
-                    precedence_ok = True
-                    for p_name, p_start in greedy_sched.items():
-                        p_dur = durations[p_name]
-                        if p_name in t.schedule_before:
-                            if not (s + t_dur <= p_start):
-                                precedence_ok = False
-                                break
-                        p_obj = next((tg for tg in targets if tg.name == p_name), None)
-                        if p_obj is not None and t_name in p_obj.schedule_before:
-                            if not (p_start + p_dur <= s):
-                                precedence_ok = False
-                                break
-                    if not precedence_ok:
-                        continue
+                    if s_prev is not None and s_prev in slots:
+                        sorted_slots = [s_prev] + sorted([s for s in slots if s != s_prev], key=lambda s: airmass_costs[t_name][s])
+                    else:
+                        sorted_slots = sorted(slots, key=lambda s: airmass_costs[t_name][s])
                         
-                    greedy_sched[t_name] = s
-                    greedy_cost += airmass_costs[t_name][s]
-                    placed = True
-                    break
+                    placed = False
+                    for s in sorted_slots:
+                        overlap = False
+                        for p_name, p_start in greedy_sched.items():
+                            if check_overlap(s, t_dur, p_start, durations[p_name]):
+                                overlap = True
+                                break
+                        if overlap:
+                            continue
+                            
+                        precedence_ok = True
+                        for p_name, p_start in greedy_sched.items():
+                            p_dur = durations[p_name]
+                            if p_name in t.schedule_before:
+                                if not (s + t_dur <= p_start):
+                                    precedence_ok = False
+                                    break
+                            p_obj = next((tg for tg in targets if tg.name == p_name), None)
+                            if p_obj is not None and t_name in p_obj.schedule_before:
+                                if not (p_start + p_dur <= s):
+                                    precedence_ok = False
+                                    break
+                        if not precedence_ok:
+                            continue
+                            
+                        greedy_sched[t_name] = s
+                        greedy_cost += airmass_costs[t_name][s]
+                        placed = True
+                        break
+                        
+                    if not placed:
+                        if t_name in new_active_names:
+                            greedy_cost += 100000.0
+                            
+                # Only use greedy schedule as fallback if it scheduled all S_active targets (which are mandatory)
+                has_all_s_active = all(name in greedy_sched for name in S_active_names)
+                
+                best_schedule = greedy_sched if has_all_s_active else None
+                best_cost = greedy_cost if has_all_s_active else float('inf')
+                
+                # Precompute minimum possible costs for suffix-based pruning
+                min_costs = [min(airmass_costs[t.name].values()) if airmass_costs[t.name] else 0.0 for t in targets_sorted_for_solve]
+                suffix_min_costs = []
+                current_sum = 0.0
+                for val in reversed(min_costs):
+                    current_sum += val
+                    suffix_min_costs.append(current_sum)
+                suffix_min_costs.reverse()
+                suffix_min_costs.append(0.0) # For idx == len(targets_sorted_for_solve)
+                
+                search_iterations = 0
+                max_search_iterations = 20000
+                
+                def search(idx: int, schedule: Dict[str, int], cost: float):
+                    nonlocal best_schedule, best_cost, search_iterations
                     
-                if not placed:
+                    search_iterations += 1
+                    if search_iterations > max_search_iterations:
+                        return
+                    
+                    if idx == len(targets_sorted_for_solve):
+                        if cost < best_cost:
+                            best_cost = cost
+                            best_schedule = schedule.copy()
+                        return
+                    
+                    target = targets_sorted_for_solve[idx]
+                    t_name = target.name
+                    t_dur = durations[t_name]
+                    
+                    # Check branch cost bound
+                    if cost + suffix_min_costs[idx] >= best_cost:
+                        return
+                        
+                    slots = valid_slots[t_name]
+                    s_prev = current_schedule.get(t_name)
+                    if s_prev is None and previous_start_chunks is not None:
+                        s_prev = previous_start_chunks.get(t_name)
+                    if s_prev is not None and s_prev in slots:
+                        other_slots = [s for s in slots if s != s_prev]
+                        sorted_slots = [s_prev] + sorted(other_slots, key=lambda s: airmass_costs[t_name][s])
+                    else:
+                        sorted_slots = sorted(slots, key=lambda s: airmass_costs[t_name][s])
+                    
+                    for s in sorted_slots:
+                        overlap = False
+                        for p_name, p_start in schedule.items():
+                            if check_overlap(s, t_dur, p_start, durations[p_name]):
+                                overlap = True
+                                break
+                        if overlap:
+                            continue
+                            
+                        # Precedence constraints check
+                        precedence_ok = True
+                        for p_name, p_start in schedule.items():
+                            p_dur = durations[p_name]
+                            if p_name in target.schedule_before:
+                                if not (s + t_dur <= p_start):
+                                    precedence_ok = False
+                                    break
+                            p_obj = next((tg for tg in targets if tg.name == p_name), None)
+                            if p_obj is not None and t_name in p_obj.schedule_before:
+                                if not (p_start + p_dur <= s):
+                                    precedence_ok = False
+                                    break
+                                    
+                        if not precedence_ok:
+                            continue
+                            
+                        schedule[t_name] = s
+                        search(idx + 1, schedule, cost + airmass_costs[t_name][s])
+                        del schedule[t_name]
+                    
+                    # If target is new, we can skip it (with a large penalty)
                     if t_name in new_active_names:
-                        greedy_cost += 100000.0
+                        search(idx + 1, schedule, cost + 100000.0)
                         
-            # Only use greedy schedule as fallback if it scheduled all S_active targets (which are mandatory)
-            has_all_s_active = all(name in greedy_sched for name in S_active_names)
-            
-            best_schedule = greedy_sched if has_all_s_active else None
-            best_cost = greedy_cost if has_all_s_active else float('inf')
-            
-            # Precompute minimum possible costs for suffix-based pruning
-            min_costs = [min(airmass_costs[t.name].values()) if airmass_costs[t.name] else 0.0 for t in targets_sorted_for_solve]
-            suffix_min_costs = []
-            current_sum = 0.0
-            for val in reversed(min_costs):
-                current_sum += val
-                suffix_min_costs.append(current_sum)
-            suffix_min_costs.reverse()
-            suffix_min_costs.append(0.0) # For idx == len(targets_sorted_for_solve)
-            
-            search_iterations = 0
-            max_search_iterations = 20000
-            
-            def search(idx: int, schedule: Dict[str, int], cost: float):
-                nonlocal best_schedule, best_cost, search_iterations
-                
-                search_iterations += 1
-                if search_iterations > max_search_iterations:
-                    return
-                
-                if idx == len(targets_sorted_for_solve):
-                    if cost < best_cost:
-                        best_cost = cost
-                        best_schedule = schedule.copy()
-                    return
-                
-                target = targets_sorted_for_solve[idx]
-                t_name = target.name
-                t_dur = durations[t_name]
-                
-                # Check branch cost bound
-                if cost + suffix_min_costs[idx] >= best_cost:
-                    return
-                    
-                slots = valid_slots[t_name]
-                s_prev = current_schedule.get(t_name)
-                if s_prev is None and previous_start_chunks is not None:
-                    s_prev = previous_start_chunks.get(t_name)
-                if s_prev is not None and s_prev in slots:
-                    other_slots = [s for s in slots if s != s_prev]
-                    sorted_slots = [s_prev] + sorted(other_slots, key=lambda s: airmass_costs[t_name][s])
-                else:
-                    sorted_slots = sorted(slots, key=lambda s: airmass_costs[t_name][s])
-                
-                for s in sorted_slots:
-                    overlap = False
-                    for p_name, p_start in schedule.items():
-                        if check_overlap(s, t_dur, p_start, durations[p_name]):
-                            overlap = True
-                            break
-                    if overlap:
-                        continue
-                        
-                    # Precedence constraints check
-                    precedence_ok = True
-                    for p_name, p_start in schedule.items():
-                        p_dur = durations[p_name]
-                        if p_name in target.schedule_before:
-                            if not (s + t_dur <= p_start):
-                                precedence_ok = False
-                                break
-                        p_obj = next((tg for tg in targets if tg.name == p_name), None)
-                        if p_obj is not None and t_name in p_obj.schedule_before:
-                            if not (p_start + p_dur <= s):
-                                precedence_ok = False
-                                break
-                                
-                    if not precedence_ok:
-                        continue
-                        
-                    schedule[t_name] = s
-                    search(idx + 1, schedule, cost + airmass_costs[t_name][s])
-                    del schedule[t_name]
-                
-                # If target is new, we can skip it (with a large penalty)
-                if t_name in new_active_names:
-                    search(idx + 1, schedule, cost + 100000.0)
-                    
-            initial_schedule = {k: v for k, v in current_schedule.items() if k in manually_scheduled}
-            search(0, initial_schedule, 0.0)
+                initial_schedule = {k: v for k, v in current_schedule.items() if k in manually_scheduled}
+                search(0, initial_schedule, 0.0)
             
             if best_schedule is not None:
                 current_schedule = best_schedule
                 previously_scheduled = set(current_schedule.keys())
                 for t in new_active:
-                    if t.name not in current_schedule:
+                    if t.name not in current_schedule and t.name not in conflicts:
                         conflicts.append(t.name)
             else:
                 for t in new_active:
-                    conflicts.append(t.name)
+                    if t.name not in conflicts:
+                        conflicts.append(t.name)
                         
         scheduled_blocks: List[ObservationBlock] = []
         for t_name, start_idx in current_schedule.items():
