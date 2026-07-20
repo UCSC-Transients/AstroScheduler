@@ -1126,6 +1126,18 @@ class Scheduler:
         for s in standards:
             self.precompute_target_airmass(s['target'])
 
+        # Precompute target visibility to optimize performance
+        self.visibility_cache = {}
+        all_t = targets + [s['target'] for s in standards]
+        for t in all_t:
+            if t.name not in self.visibility_cache:
+                self.visibility_cache[t.name] = {
+                    'manual_ignore': [self.is_chunk_valid(t, c, is_manual=True, ignore_scheduling_limits=True) for c in range(self.num_chunks)],
+                    'auto_ignore': [self.is_chunk_valid(t, c, ignore_scheduling_limits=True) for c in range(self.num_chunks)],
+                    'manual': [self.is_chunk_valid(t, c, is_manual=True) for c in range(self.num_chunks)],
+                    'auto': [self.is_chunk_valid(t, c) for c in range(self.num_chunks)]
+                }
+
         # Pre-schedule manual start standard stars
         reserved_chunks = set()
         manual_standard_blocks = []
@@ -1140,7 +1152,7 @@ class Scheduler:
                     
                     block_valid = True
                     for c_idx in range(manual_chunk, manual_chunk + dur_chunks):
-                        if c_idx >= self.num_chunks or c_idx in reserved_chunks or not self.is_chunk_valid(t, c_idx, is_manual=True):
+                        if c_idx >= self.num_chunks or c_idx in reserved_chunks or not self.visibility_cache[t.name]['manual'][c_idx]:
                             block_valid = False
                             break
                     if block_valid:
@@ -1186,7 +1198,7 @@ class Scheduler:
                     dur_chunks = target_exposures_dict[t.name]["duration_minutes"]
                     block_valid = True
                     for c_idx in range(manual_chunk, manual_chunk + dur_chunks):
-                        if c_idx >= self.num_chunks or c_idx in reserved_chunks or not self.is_chunk_valid(t, c_idx, is_manual=True):
+                        if c_idx >= self.num_chunks or c_idx in reserved_chunks or not self.visibility_cache[t.name]['manual'][c_idx]:
                             block_valid = False
                             break
                     if block_valid:
@@ -1497,7 +1509,7 @@ class Scheduler:
             curve = []
             for c_idx in range(self.num_chunks):
                 dt = self.chunk_times[c_idx]
-                is_obs = self.is_chunk_valid(t, c_idx)
+                is_obs = self.visibility_cache[t.name]['auto'][c_idx]
                 curve.append({
                     'time': dt.isoformat(),
                     'airmass': round(self.get_airmass_for_target(t, dt), 3),
@@ -1510,7 +1522,7 @@ class Scheduler:
             curve = []
             for c_idx in range(self.num_chunks):
                 dt = self.chunk_times[c_idx]
-                is_obs = self.is_chunk_valid(block.target, c_idx)
+                is_obs = self.visibility_cache[block.target.name]['auto'][c_idx]
                 curve.append({
                     'time': dt.isoformat(),
                     'airmass': round(self.get_airmass_for_target(block.target, dt), 3),
@@ -1599,6 +1611,18 @@ class Scheduler:
         for t in targets:
             manual_start_chunks[t.name] = self.get_chunk_idx_from_time_str(t.manual_start_time)
             
+        # Ensure visibility cache exists for all targets being solved
+        if not hasattr(self, 'visibility_cache'):
+            self.visibility_cache = {}
+        for t in targets:
+            if t.name not in self.visibility_cache:
+                self.visibility_cache[t.name] = {
+                    'manual_ignore': [self.is_chunk_valid(t, c, is_manual=True, ignore_scheduling_limits=True) for c in range(self.num_chunks)],
+                    'auto_ignore': [self.is_chunk_valid(t, c, ignore_scheduling_limits=True) for c in range(self.num_chunks)],
+                    'manual': [self.is_chunk_valid(t, c, is_manual=True) for c in range(self.num_chunks)],
+                    'auto': [self.is_chunk_valid(t, c) for c in range(self.num_chunks)]
+                }
+
         # Filter impossible targets and conflicts
         conflicts: List[str] = []
         unobservable_targets: List[str] = []
@@ -1609,11 +1633,11 @@ class Scheduler:
             has_physical_chunk = False
             manual_chunk = manual_start_chunks[t.name]
             if manual_chunk is not None:
-                if self.is_chunk_valid(t, manual_chunk, is_manual=True, ignore_scheduling_limits=True):
+                if manual_chunk < self.num_chunks and self.visibility_cache[t.name]['manual_ignore'][manual_chunk]:
                     has_physical_chunk = True
             else:
                 for c_idx in range(self.num_chunks):
-                    if self.is_chunk_valid(t, c_idx, ignore_scheduling_limits=True):
+                    if self.visibility_cache[t.name]['auto_ignore'][c_idx]:
                         has_physical_chunk = True
                         break
             
@@ -1624,11 +1648,11 @@ class Scheduler:
             # 2. Check scheduling availability (considering reserved_chunks)
             has_avail_chunk = False
             if manual_chunk is not None:
-                if manual_chunk not in reserved_chunks and self.is_chunk_valid(t, manual_chunk, is_manual=True):
+                if manual_chunk < self.num_chunks and manual_chunk not in reserved_chunks and self.visibility_cache[t.name]['manual'][manual_chunk]:
                     has_avail_chunk = True
             else:
                 for c_idx in range(self.num_chunks):
-                    if c_idx not in reserved_chunks and self.is_chunk_valid(t, c_idx):
+                    if c_idx not in reserved_chunks and self.visibility_cache[t.name]['auto'][c_idx]:
                         has_avail_chunk = True
                         break
             
@@ -1653,7 +1677,7 @@ class Scheduler:
                 dur_chunks = target_exposures_dict[t.name]["duration_minutes"]
                 block_valid = True
                 for c_idx in range(manual_chunk, manual_chunk + dur_chunks):
-                    if c_idx >= self.num_chunks or c_idx in reserved_chunks or not self.is_chunk_valid(t, c_idx, is_manual=True):
+                    if c_idx >= self.num_chunks or c_idx in reserved_chunks or not self.visibility_cache[t.name]['manual'][c_idx]:
                         block_valid = False
                         break
                 if block_valid:
@@ -1694,7 +1718,7 @@ class Scheduler:
                     block_valid = True
                     airmasses = []
                     for c_idx in range(s_idx, s_idx + dur_chunks):
-                        if c_idx in reserved_chunks or not self.is_chunk_valid(t, c_idx):
+                        if c_idx in reserved_chunks or not self.visibility_cache[t.name]['auto'][c_idx]:
                             block_valid = False
                             break
                         airmasses.append(self.get_airmass_for_target(t, self.chunk_times[c_idx]))

@@ -2507,7 +2507,13 @@ function saveExposureAndReTime(name, oldDuration) {
     
     localStorage.setItem("targetPool", JSON.stringify(targetPool));
     renderTargetsTable();
-    adjustAbuttingBlocks(name, deltaMinutes);
+    if (deltaMinutes === 0) {
+        if (typeof lastScheduleResult !== 'undefined' && lastScheduleResult) {
+            updateScheduleUI(lastScheduleResult);
+        }
+    } else {
+        adjustAbuttingBlocks(name, deltaMinutes);
+    }
 }
 
 // Issue #34: Debounce triggerScheduling to prevent flicker from rapid re-runs
