@@ -5070,229 +5070,262 @@ function runLocalJSSolver(payload) {
                 airmassCosts[t.name] = costs;
             });
             
-            const hasConstraint = {};
-            targetsToSchedule.forEach(tg => {
-                let hc = false;
-                if (tg.schedule_before && tg.schedule_before.length > 0) {
-                    hc = true;
-                } else {
-                    for (let i = 0; i < targetsToSchedule.length; i++) {
-                        const other = targetsToSchedule[i];
-                        if (other.schedule_before && other.schedule_before.includes(tg.name)) {
-                            hc = true;
-                            break;
-                        }
-                    }
-                }
-                hasConstraint[tg.name] = hc;
-            });
-
-            const solverTargets = [...targetsToSchedule].sort((a,b) => {
-                const actA = S_active_names.has(a.name) ? 0 : 1;
-                const actB = S_active_names.has(b.name) ? 0 : 1;
-                if (actA !== actB) return actA - actB;
-                const hcA = hasConstraint[a.name] ? 0 : 1;
-                const hcB = hasConstraint[b.name] ? 0 : 1;
-                if (hcA !== hcB) return hcA - hcB;
-                if (a.priority !== b.priority) return a.priority - b.priority;
-                return durations[b.name] - durations[a.name];
-            });
-            
-            const initialSchedule = {};
-            manuallyScheduled.forEach(name => {
-                if (currentSchedule[name] !== undefined) {
-                    initialSchedule[name] = currentSchedule[name];
-                }
-            });
-
-            // 1. Greedy initialization to establish a high-quality upper bound and fallback
-            const greedySched = Object.assign({}, initialSchedule);
-            let greedyCost = 0.0;
-            
-            for (let i = 0; i < solverTargets.length; i++) {
-                const t = solverTargets[i];
-                const tName = t.name;
-                const tDur = durations[tName];
-                const slots = validSlots[tName] || [];
-                
-                const sPrev = currentSchedule[tName];
-                
-                let sortedSlots;
-                if (sPrev !== undefined && slots.includes(sPrev)) {
-                    const otherSlots = slots.filter(s => s !== sPrev).sort((a,b) => airmassCosts[tName][a] - airmassCosts[tName][b]);
-                    sortedSlots = [sPrev, ...otherSlots];
-                } else {
-                    sortedSlots = [...slots].sort((a,b) => airmassCosts[tName][a] - airmassCosts[tName][b]);
-                }
-                
-                let placed = false;
-                for (let j = 0; j < sortedSlots.length; j++) {
-                    const s = sortedSlots[j];
-                    
-                    // Check overlap
-                    let isOverlap = false;
-                    const keys = Object.keys(greedySched);
-                    for (let k = 0; k < keys.length; k++) {
-                        const pName = keys[k];
-                        if (overlap(s, tDur, greedySched[pName], durations[pName])) {
-                            isOverlap = true;
-                            break;
-                        }
-                    }
-                    if (isOverlap) continue;
-                    
-                    // Check precedence
-                    let precedenceOk = true;
-                    for (let k = 0; k < keys.length; k++) {
-                        const pName = keys[k];
-                        const pStart = greedySched[pName];
-                        const pDur = durations[pName];
-                        
-                        if (t.schedule_before && t.schedule_before.includes(pName)) {
-                            if (!(s + tDur <= pStart)) {
-                                precedenceOk = false;
-                                break;
-                            }
-                        }
-                        const pObj = targetsList.find(tg => tg.name === pName);
-                        if (pObj && pObj.schedule_before && pObj.schedule_before.includes(tName)) {
-                            if (!(pStart + pDur <= s)) {
-                                precedenceOk = false;
-                                break;
-                            }
-                        }
-                    }
-                    if (!precedenceOk) continue;
-                    
-                    greedySched[tName] = s;
-                    greedyCost += airmassCosts[tName][s];
-                    placed = true;
-                    break;
-                }
-                
-                if (!placed) {
-                    if (new_active_names.has(tName)) {
-                        greedyCost += 100000.0;
-                    }
-                }
-            }
-            
-            // Only use greedy schedule as fallback if it scheduled all S_active targets (which are mandatory)
-            let hasAllSActive = true;
-            S_active_names.forEach(name => {
-                if (greedySched[name] === undefined) {
-                    hasAllSActive = false;
-                }
-            });
-            
-            let bestSchedule = hasAllSActive ? Object.assign({}, greedySched) : null;
-            let bestCost = hasAllSActive ? greedyCost : Infinity;
-            let searchIterations = 0;
-            const maxSearchIterations = 10000;
-            
             function overlap(s1, d1, s2, d2) {
                 return !(s1 + d1 <= s2 || s2 + d2 <= s1);
             }
             
-            function search(idx, sched, cost) {
-                searchIterations++;
-                if (searchIterations > maxSearchIterations) {
-                    return;
-                }
-                if (idx === solverTargets.length) {
-                    if (cost < bestCost) {
-                        bestCost = cost;
-                        bestSchedule = Object.assign({}, sched);
-                    }
-                    return;
-                }
-                
-                const target = solverTargets[idx];
-                const name = target.name;
-                const dur = durations[name];
-                
-                let lb = 0;
-                for (let r = idx; r < solverTargets.length; r++) {
-                    const rName = solverTargets[r].name;
-                    const rCosts = Object.values(airmassCosts[rName] || {});
-                    if (rCosts.length > 0) {
-                        lb += Math.min(...rCosts);
+            const prunedOptional = [];
+            let mandatoryHasNoSlots = false;
+            
+            targetsToSchedule.forEach(t => {
+                const slots = validSlots[t.name] || [];
+                if (slots.length === 0) {
+                    if (S_active_names.has(t.name)) {
+                        mandatoryHasNoSlots = true;
+                    } else if (new_active_names.has(t.name)) {
+                        prunedOptional.push(t);
                     }
                 }
-                
-                if (cost + lb >= bestCost) return;
-                
-                const slots = validSlots[name] || [];
-                let sortedSlots;
-                const sPrev = currentSchedule[name];
-                if (sPrev !== undefined && slots.includes(sPrev)) {
-                    const otherSlots = slots.filter(s => s !== sPrev).sort((a,b) => airmassCosts[name][a] - airmassCosts[name][b]);
-                    sortedSlots = [sPrev, ...otherSlots];
-                } else {
-                    sortedSlots = [...slots].sort((a,b) => airmassCosts[name][a] - airmassCosts[name][b]);
+            });
+            
+            prunedOptional.forEach(t => {
+                const idx = targetsToSchedule.findIndex(tg => tg.name === t.name);
+                if (idx !== -1) {
+                    targetsToSchedule.splice(idx, 1);
                 }
-                
-                for (let i = 0; i < sortedSlots.length; i++) {
-                    const s = sortedSlots[i];
-                    let isOverlap = false;
-                    const keys = Object.keys(sched);
-                    for (let k = 0; k < keys.length; k++) {
-                        const pName = keys[k];
-                        if (overlap(s, dur, sched[pName], durations[pName])) {
-                            isOverlap = true;
-                            break;
-                        }
-                    }
-                    if (isOverlap) continue;
-                    
-                    let precedenceOk = true;
-                    const keysSched = Object.keys(sched);
-                    for (let k = 0; k < keysSched.length; k++) {
-                        const pName = keysSched[k];
-                        const pStart = sched[pName];
-                        const pDur = durations[pName];
-                        
-                        if (target.schedule_before && target.schedule_before.includes(pName)) {
-                            if (!(s + dur <= pStart)) {
-                                precedenceOk = false;
-                                break;
-                            }
-                        }
-                        
-                        const pObj = targetsList.find(tg => tg.name === pName);
-                        if (pObj && pObj.schedule_before && pObj.schedule_before.includes(name)) {
-                            if (!(pStart + pDur <= s)) {
-                                precedenceOk = false;
+                if (!conflicts.includes(t.name)) {
+                    conflicts.push(t.name);
+                }
+            });
+            
+            let bestSchedule = null;
+            let bestCost = Infinity;
+            
+            if (!mandatoryHasNoSlots) {
+                const hasConstraint = {};
+                targetsToSchedule.forEach(tg => {
+                    let hc = false;
+                    if (tg.schedule_before && tg.schedule_before.length > 0) {
+                        hc = true;
+                    } else {
+                        for (let i = 0; i < targetsToSchedule.length; i++) {
+                            const other = targetsToSchedule[i];
+                            if (other.schedule_before && other.schedule_before.includes(tg.name)) {
+                                hc = true;
                                 break;
                             }
                         }
                     }
+                    hasConstraint[tg.name] = hc;
+                });
+
+                const solverTargets = [...targetsToSchedule].sort((a,b) => {
+                    const actA = S_active_names.has(a.name) ? 0 : 1;
+                    const actB = S_active_names.has(b.name) ? 0 : 1;
+                    if (actA !== actB) return actA - actB;
+                    const hcA = hasConstraint[a.name] ? 0 : 1;
+                    const hcB = hasConstraint[b.name] ? 0 : 1;
+                    if (hcA !== hcB) return hcA - hcB;
+                    if (a.priority !== b.priority) return a.priority - b.priority;
+                    return durations[b.name] - durations[a.name];
+                });
+                
+                const initialSchedule = {};
+                manuallyScheduled.forEach(name => {
+                    if (currentSchedule[name] !== undefined) {
+                        initialSchedule[name] = currentSchedule[name];
+                    }
+                });
+
+                // 1. Greedy initialization to establish a high-quality upper bound and fallback
+                const greedySched = Object.assign({}, initialSchedule);
+                let greedyCost = 0.0;
+                
+                for (let i = 0; i < solverTargets.length; i++) {
+                    const t = solverTargets[i];
+                    const tName = t.name;
+                    const tDur = durations[tName];
+                    const slots = validSlots[tName] || [];
                     
-                    if (!precedenceOk) continue;
+                    const sPrev = currentSchedule[tName];
                     
-                    sched[name] = s;
-                    search(idx + 1, sched, cost + airmassCosts[name][s]);
-                    delete sched[name];
+                    let sortedSlots;
+                    if (sPrev !== undefined && slots.includes(sPrev)) {
+                        const otherSlots = slots.filter(s => s !== sPrev).sort((a,b) => airmassCosts[tName][a] - airmassCosts[tName][b]);
+                        sortedSlots = [sPrev, ...otherSlots];
+                    } else {
+                        sortedSlots = [...slots].sort((a,b) => airmassCosts[tName][a] - airmassCosts[tName][b]);
+                    }
+                    
+                    let placed = false;
+                    for (let j = 0; j < sortedSlots.length; j++) {
+                        const s = sortedSlots[j];
+                        
+                        // Check overlap
+                        let isOverlap = false;
+                        const keys = Object.keys(greedySched);
+                        for (let k = 0; k < keys.length; k++) {
+                            const pName = keys[k];
+                            if (overlap(s, tDur, greedySched[pName], durations[pName])) {
+                                isOverlap = true;
+                                break;
+                            }
+                        }
+                        if (isOverlap) continue;
+                        
+                        // Check precedence
+                        let precedenceOk = true;
+                        for (let k = 0; k < keys.length; k++) {
+                            const pName = keys[k];
+                            const pStart = greedySched[pName];
+                            const pDur = durations[pName];
+                            
+                            if (t.schedule_before && t.schedule_before.includes(pName)) {
+                                if (!(s + tDur <= pStart)) {
+                                    precedenceOk = false;
+                                    break;
+                                }
+                            }
+                            const pObj = targetsList.find(tg => tg.name === pName);
+                            if (pObj && pObj.schedule_before && pObj.schedule_before.includes(tName)) {
+                                if (!(pStart + pDur <= s)) {
+                                    precedenceOk = false;
+                                    break;
+                                }
+                            }
+                        }
+                        if (!precedenceOk) continue;
+                        
+                        greedySched[tName] = s;
+                        greedyCost += airmassCosts[tName][s];
+                        placed = true;
+                        break;
+                    }
+                    
+                    if (!placed) {
+                        if (new_active_names.has(tName)) {
+                            greedyCost += 100000.0;
+                        }
+                    }
                 }
                 
-                // If target is new, we can skip it (with a large penalty)
-                if (new_active_names.has(name)) {
-                    search(idx + 1, sched, cost + 100000.0);
+                // Only use greedy schedule as fallback if it scheduled all S_active targets (which are mandatory)
+                let hasAllSActive = true;
+                S_active_names.forEach(name => {
+                    if (greedySched[name] === undefined) {
+                        hasAllSActive = false;
+                    }
+                });
+                
+                if (hasAllSActive) {
+                    bestSchedule = Object.assign({}, greedySched);
+                    bestCost = greedyCost;
                 }
+                let searchIterations = 0;
+                const maxSearchIterations = 10000;
+                
+                function search(idx, sched, cost) {
+                    searchIterations++;
+                    if (searchIterations > maxSearchIterations) {
+                        return;
+                    }
+                    if (idx === solverTargets.length) {
+                        if (cost < bestCost) {
+                            bestCost = cost;
+                            bestSchedule = Object.assign({}, sched);
+                        }
+                        return;
+                    }
+                    
+                    const target = solverTargets[idx];
+                    const name = target.name;
+                    const dur = durations[name];
+                    
+                    let lb = 0;
+                    for (let r = idx; r < solverTargets.length; r++) {
+                        const rName = solverTargets[r].name;
+                        const rCosts = Object.values(airmassCosts[rName] || {});
+                        if (rCosts.length > 0) {
+                            lb += Math.min(...rCosts);
+                        }
+                    }
+                    
+                    if (cost + lb >= bestCost) return;
+                    
+                    const slots = validSlots[name] || [];
+                    let sortedSlots;
+                    const sPrev = currentSchedule[name];
+                    if (sPrev !== undefined && slots.includes(sPrev)) {
+                        const otherSlots = slots.filter(s => s !== sPrev).sort((a,b) => airmassCosts[name][a] - airmassCosts[name][b]);
+                        sortedSlots = [sPrev, ...otherSlots];
+                    } else {
+                        sortedSlots = [...slots].sort((a,b) => airmassCosts[name][a] - airmassCosts[name][b]);
+                    }
+                    
+                    for (let i = 0; i < sortedSlots.length; i++) {
+                        const s = sortedSlots[i];
+                        let isOverlap = false;
+                        const keys = Object.keys(sched);
+                        for (let k = 0; k < keys.length; k++) {
+                            const pName = keys[k];
+                            if (overlap(s, dur, sched[pName], durations[pName])) {
+                                isOverlap = true;
+                                break;
+                            }
+                        }
+                        if (isOverlap) continue;
+                        
+                        let precedenceOk = true;
+                        const keysSched = Object.keys(sched);
+                        for (let k = 0; k < keysSched.length; k++) {
+                            const pName = keysSched[k];
+                            const pStart = sched[pName];
+                            const pDur = durations[pName];
+                            
+                            if (target.schedule_before && target.schedule_before.includes(pName)) {
+                                if (!(s + dur <= pStart)) {
+                                    precedenceOk = false;
+                                    break;
+                                }
+                            }
+                            
+                            const pObj = targetsList.find(tg => tg.name === pName);
+                            if (pObj && pObj.schedule_before && pObj.schedule_before.includes(name)) {
+                                if (!(pStart + pDur <= s)) {
+                                    precedenceOk = false;
+                                    break;
+                                }
+                            }
+                        }
+                        
+                        if (!precedenceOk) continue;
+                        
+                        sched[name] = s;
+                        search(idx + 1, sched, cost + airmassCosts[name][s]);
+                        delete sched[name];
+                    }
+                    
+                    // If target is new, we can skip it (with a large penalty)
+                    if (new_active_names.has(name)) {
+                        search(idx + 1, sched, cost + 100000.0);
+                    }
+                }
+                search(0, initialSchedule, 0);
             }
-            search(0, initialSchedule, 0);
             
             if (bestSchedule !== null) {
                 currentSchedule = bestSchedule;
                 previouslyScheduled = new Set(Object.keys(currentSchedule));
                 new_active.forEach(t => {
-                    if (currentSchedule[t.name] === undefined) {
+                    if (currentSchedule[t.name] === undefined && !conflicts.includes(t.name)) {
                         conflicts.push(t.name);
                     }
                 });
             } else {
                 new_active.forEach(t => {
-                    conflicts.push(t.name);
+                    if (!conflicts.includes(t.name)) {
+                        conflicts.push(t.name);
+                    }
                 });
             }
         });
