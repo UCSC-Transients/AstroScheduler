@@ -5371,6 +5371,20 @@ function runLocalJSSolver(payload) {
     }
 }
 
+// Cache for the polar sky map mask to avoid expensive pixel-loop calculations on every draw
+let skyMapCache = {
+    canvas: null,
+    size: null,
+    minAlt: null,
+    maxAlt: null,
+    minAz: null,
+    maxAz: null,
+    decMin: null,
+    decMax: null,
+    haLimitEast: null,
+    haLimitWest: null
+};
+
 // ==============================================================================
 // SKY ALT/AZ POLAR MAP RENDERING
 // ==============================================================================
@@ -5426,58 +5440,95 @@ function drawPolarSkyMap(blocks, targetPool, solar_times) {
         haLimitWest = !isNaN(haWestVal) ? haWestVal : 3.75;
     }
 
-    // Grid-based shading for all restricted limits
-    ctx.fillStyle = "rgba(255, 255, 255, 0.08)";
-    const latRad = 37.3414 * Math.PI / 180.0;
-    const sinLat = Math.sin(latRad);
-    const cosLat = Math.cos(latRad);
-    const step = 2;
-    for (let y = 0; y < size; y += step) {
-        for (let x = 0; x < size; x += step) {
-            const dx = x - cx;
-            const dy = y - cy;
-            const r = Math.sqrt(dx * dx + dy * dy);
-            if (r <= rMax) {
-                const alt = 90.0 * (1.0 - r / rMax);
-                const angleRad = Math.atan2(dy, dx);
-                const az = (angleRad * 180.0 / Math.PI + 90.0 + 360.0) % 360.0;
-                
-                const altRad = alt * Math.PI / 180.0;
-                const azRad = az * Math.PI / 180.0;
-                const sinAlt = Math.sin(altRad);
-                const cosAlt = Math.cos(altRad);
-                const sinDec = sinAlt * sinLat + cosAlt * cosLat * Math.cos(azRad);
-                const dec = Math.asin(Math.max(-1.0, Math.min(1.0, sinDec))) * 180.0 / Math.PI;
-                
-                const y_coord = -Math.sin(azRad) * cosAlt;
-                const x_coord = sinAlt * cosLat - cosAlt * Math.cos(azRad) * sinLat;
-                const haRad = Math.atan2(y_coord, x_coord);
-                let ha = haRad * 12.0 / Math.PI;
-                ha = (ha + 12.0) % 24.0 - 12.0;
-                
-                let restricted = false;
-                if (alt < minAlt || alt > maxAlt) {
-                    restricted = true;
-                } else if (minAz <= maxAz) {
-                    if (az < minAz || az > maxAz) restricted = true;
-                } else {
-                    if (az < minAz && az > maxAz) restricted = true;
-                }
-                
-                if (!restricted) {
-                    if (dec < decMin || dec > decMax) {
+    // Check cache validity
+    const cacheMatch = skyMapCache.canvas &&
+        skyMapCache.size === size &&
+        skyMapCache.minAlt === minAlt &&
+        skyMapCache.maxAlt === maxAlt &&
+        skyMapCache.minAz === minAz &&
+        skyMapCache.maxAz === maxAz &&
+        skyMapCache.decMin === decMin &&
+        skyMapCache.decMax === decMax &&
+        skyMapCache.haLimitEast === haLimitEast &&
+        skyMapCache.haLimitWest === haLimitWest;
+
+    if (!cacheMatch) {
+        // Recreate/clear the offscreen canvas to fit the new size/ratio
+        if (!skyMapCache.canvas) {
+            skyMapCache.canvas = document.createElement("canvas");
+        }
+        skyMapCache.canvas.width = size * window.devicePixelRatio;
+        skyMapCache.canvas.height = size * window.devicePixelRatio;
+        
+        const offCtx = skyMapCache.canvas.getContext("2d");
+        offCtx.scale(window.devicePixelRatio, window.devicePixelRatio);
+        offCtx.fillStyle = "rgba(255, 255, 255, 0.08)";
+        
+        const latRad = 37.3414 * Math.PI / 180.0;
+        const sinLat = Math.sin(latRad);
+        const cosLat = Math.cos(latRad);
+        const step = 2;
+        for (let y = 0; y < size; y += step) {
+            for (let x = 0; x < size; x += step) {
+                const dx = x - cx;
+                const dy = y - cy;
+                const r = Math.sqrt(dx * dx + dy * dy);
+                if (r <= rMax) {
+                    const alt = 90.0 * (1.0 - r / rMax);
+                    const angleRad = Math.atan2(dy, dx);
+                    const az = (angleRad * 180.0 / Math.PI + 90.0 + 360.0) % 360.0;
+                    
+                    const altRad = alt * Math.PI / 180.0;
+                    const azRad = az * Math.PI / 180.0;
+                    const sinAlt = Math.sin(altRad);
+                    const cosAlt = Math.cos(altRad);
+                    const sinDec = sinAlt * sinLat + cosAlt * cosLat * Math.cos(azRad);
+                    const dec = Math.asin(Math.max(-1.0, Math.min(1.0, sinDec))) * 180.0 / Math.PI;
+                    
+                    const y_coord = -Math.sin(azRad) * cosAlt;
+                    const x_coord = sinAlt * cosLat - cosAlt * Math.cos(azRad) * sinLat;
+                    const haRad = Math.atan2(y_coord, x_coord);
+                    let ha = haRad * 12.0 / Math.PI;
+                    ha = (ha + 12.0) % 24.0 - 12.0;
+                    
+                    let restricted = false;
+                    if (alt < minAlt || alt > maxAlt) {
                         restricted = true;
-                    } else if (ha < haLimitEast || ha > haLimitWest) {
-                        restricted = true;
+                    } else if (minAz <= maxAz) {
+                        if (az < minAz || az > maxAz) restricted = true;
+                    } else {
+                        if (az < minAz && az > maxAz) restricted = true;
                     }
-                }
-                
-                if (restricted) {
-                    ctx.fillRect(x, y, step, step);
+                    
+                    if (!restricted) {
+                        if (dec < decMin || dec > decMax) {
+                            restricted = true;
+                        } else if (ha < haLimitEast || ha > haLimitWest) {
+                            restricted = true;
+                        }
+                    }
+                    
+                    if (restricted) {
+                        offCtx.fillRect(x, y, step, step);
+                    }
                 }
             }
         }
+        
+        // Update cache parameters
+        skyMapCache.size = size;
+        skyMapCache.minAlt = minAlt;
+        skyMapCache.maxAlt = maxAlt;
+        skyMapCache.minAz = minAz;
+        skyMapCache.maxAz = maxAz;
+        skyMapCache.decMin = decMin;
+        skyMapCache.decMax = decMax;
+        skyMapCache.haLimitEast = haLimitEast;
+        skyMapCache.haLimitWest = haLimitWest;
     }
+
+    // Draw the cached offscreen canvas onto the main canvas
+    ctx.drawImage(skyMapCache.canvas, 0, 0, size, size);
 
     // Draw outer horizon circle
     ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
