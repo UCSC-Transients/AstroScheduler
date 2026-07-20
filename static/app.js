@@ -2507,7 +2507,13 @@ function saveExposureAndReTime(name, oldDuration) {
     
     localStorage.setItem("targetPool", JSON.stringify(targetPool));
     renderTargetsTable();
-    adjustAbuttingBlocks(name, deltaMinutes);
+    if (deltaMinutes === 0) {
+        if (typeof lastScheduleResult !== 'undefined' && lastScheduleResult) {
+            updateScheduleUI(lastScheduleResult);
+        }
+    } else {
+        adjustAbuttingBlocks(name, deltaMinutes);
+    }
 }
 
 // Issue #34: Debounce triggerScheduling to prevent flicker from rapid re-runs
@@ -3407,10 +3413,6 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
         };
     }
     
-    if (airmassChart) {
-        airmassChart.destroy();
-    }
-    
     originalXMin = null;
     originalXMax = null;
     
@@ -3424,7 +3426,7 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
     
     // Plot Moon airmass curve if available (solid grey line)
     if (moon_plot && moon_plot.length > 0) {
-        const moonPoints = moon_plot.map(p => {
+        const moonPoints = moon_plot.filter((_, idx) => idx % 5 === 0).map(p => {
             return {
                 x: new Date(p.time).getTime(),
                 y: (p.airmass <= 0) ? null : p.airmass
@@ -3450,7 +3452,7 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
         
         const block = blocks.find(b => b.target_name === tName);
         
-        const fullNightPoints = plotData.map(p => {
+        const fullNightPoints = plotData.filter((_, idx) => idx % 5 === 0).map(p => {
             return {
                 x: new Date(p.time).getTime(),
                 y: (p.airmass <= 0) ? null : p.airmass,
@@ -3515,7 +3517,7 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
     stickyHighlightedTargets.forEach(tName => {
         if (airmass_plots[tName]) {
             const plotData = airmass_plots[tName];
-            const highlightPoints = plotData.map(p => {
+            const highlightPoints = plotData.filter((_, idx) => idx % 5 === 0).map(p => {
                 return {
                     x: new Date(p.time).getTime(),
                     y: (p.airmass <= 0) ? null : p.airmass
@@ -3543,6 +3545,7 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
             const xAxis = chart.scales.x;
             const yAxis = chart.scales.y;
             
+            const solar_times = chart.solarTimes;
             if (!xAxis || !yAxis || !solar_times) return;
             
             const sunsetMs = new Date(solar_times.sunset).getTime();
@@ -3643,10 +3646,34 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
     const chartMin = Math.floor(sunsetMs / 3600000) * 3600000;
     const chartMax = Math.ceil(sunriseMs / 3600000) * 3600000;
 
+    const maxAirmassVal = (() => {
+        let maxAirmass = 1.7;
+        blocks.forEach(b => {
+            if (b.airmass_median && b.airmass_median > maxAirmass) maxAirmass = b.airmass_median;
+            if (b.airmass_start && b.airmass_start > maxAirmass) maxAirmass = b.airmass_start;
+            if (b.airmass_end && b.airmass_end > maxAirmass) maxAirmass = b.airmass_end;
+        });
+        return Math.max(1.7, maxAirmass + 0.1);
+    })();
+
+    if (airmassChart) {
+        airmassChart.solarTimes = solar_times;
+        airmassChart.data.datasets = datasets;
+        airmassChart.options.scales.x.min = chartMin;
+        airmassChart.options.scales.x.max = chartMax;
+        if (airmassChart.options.scales.x2) {
+            airmassChart.options.scales.x2.min = chartMin;
+            airmassChart.options.scales.x2.max = chartMax;
+        }
+        airmassChart.options.scales.y.max = maxAirmassVal;
+        airmassChart.update('none');
+        return;
+    }
+
     airmassChart = new Chart(ctx, {
         type: 'line',
         data: { datasets },
-        plugins: [twilightPlugin, boxZoomPlugin],
+        plugins: [twTwilightPluginWorkaround(), boxZoomPlugin],
         options: {
             responsive: true,
             maintainAspectRatio: false,
@@ -3757,15 +3784,7 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
                     reverse: true,
                     min: 1.0,
                     // Issue #6: Dynamic Y-axis max = max(1.7, highest scheduled airmass + 0.1)
-                    max: (() => {
-                        let maxAirmass = 1.7;
-                        blocks.forEach(b => {
-                            if (b.airmass_median && b.airmass_median > maxAirmass) maxAirmass = b.airmass_median;
-                            if (b.airmass_start && b.airmass_start > maxAirmass) maxAirmass = b.airmass_start;
-                            if (b.airmass_end && b.airmass_end > maxAirmass) maxAirmass = b.airmass_end;
-                        });
-                        return Math.max(1.7, maxAirmass + 0.1);
-                    })(),
+                    max: maxAirmassVal,
                     title: {
                         display: true,
                         text: 'Airmass (sec z)',
@@ -3778,6 +3797,11 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
             }
         }
     });
+    airmassChart.solarTimes = solar_times;
+
+    function twTwilightPluginWorkaround() {
+        return twilightPlugin;
+    }
 }
 
 let originalXMin = null;
@@ -5064,226 +5088,262 @@ function runLocalJSSolver(payload) {
                 airmassCosts[t.name] = costs;
             });
             
-            const hasConstraint = {};
-            targetsToSchedule.forEach(tg => {
-                let hc = false;
-                if (tg.schedule_before && tg.schedule_before.length > 0) {
-                    hc = true;
-                } else {
-                    for (let i = 0; i < targetsToSchedule.length; i++) {
-                        const other = targetsToSchedule[i];
-                        if (other.schedule_before && other.schedule_before.includes(tg.name)) {
-                            hc = true;
-                            break;
-                        }
-                    }
-                }
-                hasConstraint[tg.name] = hc;
-            });
-
-            const solverTargets = [...targetsToSchedule].sort((a,b) => {
-                const hcA = hasConstraint[a.name] ? 0 : 1;
-                const hcB = hasConstraint[b.name] ? 0 : 1;
-                if (hcA !== hcB) return hcA - hcB;
-                if (a.priority !== b.priority) return a.priority - b.priority;
-                return durations[b.name] - durations[a.name];
-            });
-            
-            const initialSchedule = {};
-            manuallyScheduled.forEach(name => {
-                if (currentSchedule[name] !== undefined) {
-                    initialSchedule[name] = currentSchedule[name];
-                }
-            });
-
-            // 1. Greedy initialization to establish a high-quality upper bound and fallback
-            const greedySched = Object.assign({}, initialSchedule);
-            let greedyCost = 0.0;
-            
-            for (let i = 0; i < solverTargets.length; i++) {
-                const t = solverTargets[i];
-                const tName = t.name;
-                const tDur = durations[tName];
-                const slots = validSlots[tName] || [];
-                
-                const sPrev = currentSchedule[tName];
-                
-                let sortedSlots;
-                if (sPrev !== undefined && slots.includes(sPrev)) {
-                    const otherSlots = slots.filter(s => s !== sPrev).sort((a,b) => airmassCosts[tName][a] - airmassCosts[tName][b]);
-                    sortedSlots = [sPrev, ...otherSlots];
-                } else {
-                    sortedSlots = [...slots].sort((a,b) => airmassCosts[tName][a] - airmassCosts[tName][b]);
-                }
-                
-                let placed = false;
-                for (let j = 0; j < sortedSlots.length; j++) {
-                    const s = sortedSlots[j];
-                    
-                    // Check overlap
-                    let isOverlap = false;
-                    const keys = Object.keys(greedySched);
-                    for (let k = 0; k < keys.length; k++) {
-                        const pName = keys[k];
-                        if (overlap(s, tDur, greedySched[pName], durations[pName])) {
-                            isOverlap = true;
-                            break;
-                        }
-                    }
-                    if (isOverlap) continue;
-                    
-                    // Check precedence
-                    let precedenceOk = true;
-                    for (let k = 0; k < keys.length; k++) {
-                        const pName = keys[k];
-                        const pStart = greedySched[pName];
-                        const pDur = durations[pName];
-                        
-                        if (t.schedule_before && t.schedule_before.includes(pName)) {
-                            if (!(s + tDur <= pStart)) {
-                                precedenceOk = false;
-                                break;
-                            }
-                        }
-                        const pObj = targetsList.find(tg => tg.name === pName);
-                        if (pObj && pObj.schedule_before && pObj.schedule_before.includes(tName)) {
-                            if (!(pStart + pDur <= s)) {
-                                precedenceOk = false;
-                                break;
-                            }
-                        }
-                    }
-                    if (!precedenceOk) continue;
-                    
-                    greedySched[tName] = s;
-                    greedyCost += airmassCosts[tName][s];
-                    placed = true;
-                    break;
-                }
-                
-                if (!placed) {
-                    if (new_active_names.has(tName)) {
-                        greedyCost += 100000.0;
-                    }
-                }
-            }
-            
-            // Only use greedy schedule as fallback if it scheduled all S_active targets (which are mandatory)
-            let hasAllSActive = true;
-            S_active_names.forEach(name => {
-                if (greedySched[name] === undefined) {
-                    hasAllSActive = false;
-                }
-            });
-            
-            let bestSchedule = hasAllSActive ? Object.assign({}, greedySched) : null;
-            let bestCost = hasAllSActive ? greedyCost : Infinity;
-            let searchIterations = 0;
-            const maxSearchIterations = 10000;
-            
             function overlap(s1, d1, s2, d2) {
                 return !(s1 + d1 <= s2 || s2 + d2 <= s1);
             }
             
-            function search(idx, sched, cost) {
-                searchIterations++;
-                if (searchIterations > maxSearchIterations) {
-                    return;
-                }
-                if (idx === solverTargets.length) {
-                    if (cost < bestCost) {
-                        bestCost = cost;
-                        bestSchedule = Object.assign({}, sched);
-                    }
-                    return;
-                }
-                
-                const target = solverTargets[idx];
-                const name = target.name;
-                const dur = durations[name];
-                
-                let lb = 0;
-                for (let r = idx; r < solverTargets.length; r++) {
-                    const rName = solverTargets[r].name;
-                    const rCosts = Object.values(airmassCosts[rName] || {});
-                    if (rCosts.length > 0) {
-                        lb += Math.min(...rCosts);
+            const prunedOptional = [];
+            let mandatoryHasNoSlots = false;
+            
+            targetsToSchedule.forEach(t => {
+                const slots = validSlots[t.name] || [];
+                if (slots.length === 0) {
+                    if (S_active_names.has(t.name)) {
+                        mandatoryHasNoSlots = true;
+                    } else if (new_active_names.has(t.name)) {
+                        prunedOptional.push(t);
                     }
                 }
-                
-                if (cost + lb >= bestCost) return;
-                
-                const slots = validSlots[name] || [];
-                let sortedSlots;
-                const sPrev = currentSchedule[name];
-                if (sPrev !== undefined && slots.includes(sPrev)) {
-                    const otherSlots = slots.filter(s => s !== sPrev).sort((a,b) => airmassCosts[name][a] - airmassCosts[name][b]);
-                    sortedSlots = [sPrev, ...otherSlots];
-                } else {
-                    sortedSlots = [...slots].sort((a,b) => airmassCosts[name][a] - airmassCosts[name][b]);
+            });
+            
+            prunedOptional.forEach(t => {
+                const idx = targetsToSchedule.findIndex(tg => tg.name === t.name);
+                if (idx !== -1) {
+                    targetsToSchedule.splice(idx, 1);
                 }
-                
-                for (let i = 0; i < sortedSlots.length; i++) {
-                    const s = sortedSlots[i];
-                    let isOverlap = false;
-                    const keys = Object.keys(sched);
-                    for (let k = 0; k < keys.length; k++) {
-                        const pName = keys[k];
-                        if (overlap(s, dur, sched[pName], durations[pName])) {
-                            isOverlap = true;
-                            break;
-                        }
-                    }
-                    if (isOverlap) continue;
-                    
-                    let precedenceOk = true;
-                    const keysSched = Object.keys(sched);
-                    for (let k = 0; k < keysSched.length; k++) {
-                        const pName = keysSched[k];
-                        const pStart = sched[pName];
-                        const pDur = durations[pName];
-                        
-                        if (target.schedule_before && target.schedule_before.includes(pName)) {
-                            if (!(s + dur <= pStart)) {
-                                precedenceOk = false;
-                                break;
-                            }
-                        }
-                        
-                        const pObj = targetsList.find(tg => tg.name === pName);
-                        if (pObj && pObj.schedule_before && pObj.schedule_before.includes(name)) {
-                            if (!(pStart + pDur <= s)) {
-                                precedenceOk = false;
+                if (!conflicts.includes(t.name)) {
+                    conflicts.push(t.name);
+                }
+            });
+            
+            let bestSchedule = null;
+            let bestCost = Infinity;
+            
+            if (!mandatoryHasNoSlots) {
+                const hasConstraint = {};
+                targetsToSchedule.forEach(tg => {
+                    let hc = false;
+                    if (tg.schedule_before && tg.schedule_before.length > 0) {
+                        hc = true;
+                    } else {
+                        for (let i = 0; i < targetsToSchedule.length; i++) {
+                            const other = targetsToSchedule[i];
+                            if (other.schedule_before && other.schedule_before.includes(tg.name)) {
+                                hc = true;
                                 break;
                             }
                         }
                     }
+                    hasConstraint[tg.name] = hc;
+                });
+
+                const solverTargets = [...targetsToSchedule].sort((a,b) => {
+                    const actA = S_active_names.has(a.name) ? 0 : 1;
+                    const actB = S_active_names.has(b.name) ? 0 : 1;
+                    if (actA !== actB) return actA - actB;
+                    const hcA = hasConstraint[a.name] ? 0 : 1;
+                    const hcB = hasConstraint[b.name] ? 0 : 1;
+                    if (hcA !== hcB) return hcA - hcB;
+                    if (a.priority !== b.priority) return a.priority - b.priority;
+                    return durations[b.name] - durations[a.name];
+                });
+                
+                const initialSchedule = {};
+                manuallyScheduled.forEach(name => {
+                    if (currentSchedule[name] !== undefined) {
+                        initialSchedule[name] = currentSchedule[name];
+                    }
+                });
+
+                // 1. Greedy initialization to establish a high-quality upper bound and fallback
+                const greedySched = Object.assign({}, initialSchedule);
+                let greedyCost = 0.0;
+                
+                for (let i = 0; i < solverTargets.length; i++) {
+                    const t = solverTargets[i];
+                    const tName = t.name;
+                    const tDur = durations[tName];
+                    const slots = validSlots[tName] || [];
                     
-                    if (!precedenceOk) continue;
+                    const sPrev = currentSchedule[tName];
                     
-                    sched[name] = s;
-                    search(idx + 1, sched, cost + airmassCosts[name][s]);
-                    delete sched[name];
+                    let sortedSlots;
+                    if (sPrev !== undefined && slots.includes(sPrev)) {
+                        const otherSlots = slots.filter(s => s !== sPrev).sort((a,b) => airmassCosts[tName][a] - airmassCosts[tName][b]);
+                        sortedSlots = [sPrev, ...otherSlots];
+                    } else {
+                        sortedSlots = [...slots].sort((a,b) => airmassCosts[tName][a] - airmassCosts[tName][b]);
+                    }
+                    
+                    let placed = false;
+                    for (let j = 0; j < sortedSlots.length; j++) {
+                        const s = sortedSlots[j];
+                        
+                        // Check overlap
+                        let isOverlap = false;
+                        const keys = Object.keys(greedySched);
+                        for (let k = 0; k < keys.length; k++) {
+                            const pName = keys[k];
+                            if (overlap(s, tDur, greedySched[pName], durations[pName])) {
+                                isOverlap = true;
+                                break;
+                            }
+                        }
+                        if (isOverlap) continue;
+                        
+                        // Check precedence
+                        let precedenceOk = true;
+                        for (let k = 0; k < keys.length; k++) {
+                            const pName = keys[k];
+                            const pStart = greedySched[pName];
+                            const pDur = durations[pName];
+                            
+                            if (t.schedule_before && t.schedule_before.includes(pName)) {
+                                if (!(s + tDur <= pStart)) {
+                                    precedenceOk = false;
+                                    break;
+                                }
+                            }
+                            const pObj = targetsList.find(tg => tg.name === pName);
+                            if (pObj && pObj.schedule_before && pObj.schedule_before.includes(tName)) {
+                                if (!(pStart + pDur <= s)) {
+                                    precedenceOk = false;
+                                    break;
+                                }
+                            }
+                        }
+                        if (!precedenceOk) continue;
+                        
+                        greedySched[tName] = s;
+                        greedyCost += airmassCosts[tName][s];
+                        placed = true;
+                        break;
+                    }
+                    
+                    if (!placed) {
+                        if (new_active_names.has(tName)) {
+                            greedyCost += 100000.0;
+                        }
+                    }
                 }
                 
-                // If target is new, we can skip it (with a large penalty)
-                if (new_active_names.has(name)) {
-                    search(idx + 1, sched, cost + 100000.0);
+                // Only use greedy schedule as fallback if it scheduled all S_active targets (which are mandatory)
+                let hasAllSActive = true;
+                S_active_names.forEach(name => {
+                    if (greedySched[name] === undefined) {
+                        hasAllSActive = false;
+                    }
+                });
+                
+                if (hasAllSActive) {
+                    bestSchedule = Object.assign({}, greedySched);
+                    bestCost = greedyCost;
                 }
+                let searchIterations = 0;
+                const maxSearchIterations = 10000;
+                
+                function search(idx, sched, cost) {
+                    searchIterations++;
+                    if (searchIterations > maxSearchIterations) {
+                        return;
+                    }
+                    if (idx === solverTargets.length) {
+                        if (cost < bestCost) {
+                            bestCost = cost;
+                            bestSchedule = Object.assign({}, sched);
+                        }
+                        return;
+                    }
+                    
+                    const target = solverTargets[idx];
+                    const name = target.name;
+                    const dur = durations[name];
+                    
+                    let lb = 0;
+                    for (let r = idx; r < solverTargets.length; r++) {
+                        const rName = solverTargets[r].name;
+                        const rCosts = Object.values(airmassCosts[rName] || {});
+                        if (rCosts.length > 0) {
+                            lb += Math.min(...rCosts);
+                        }
+                    }
+                    
+                    if (cost + lb >= bestCost) return;
+                    
+                    const slots = validSlots[name] || [];
+                    let sortedSlots;
+                    const sPrev = currentSchedule[name];
+                    if (sPrev !== undefined && slots.includes(sPrev)) {
+                        const otherSlots = slots.filter(s => s !== sPrev).sort((a,b) => airmassCosts[name][a] - airmassCosts[name][b]);
+                        sortedSlots = [sPrev, ...otherSlots];
+                    } else {
+                        sortedSlots = [...slots].sort((a,b) => airmassCosts[name][a] - airmassCosts[name][b]);
+                    }
+                    
+                    for (let i = 0; i < sortedSlots.length; i++) {
+                        const s = sortedSlots[i];
+                        let isOverlap = false;
+                        const keys = Object.keys(sched);
+                        for (let k = 0; k < keys.length; k++) {
+                            const pName = keys[k];
+                            if (overlap(s, dur, sched[pName], durations[pName])) {
+                                isOverlap = true;
+                                break;
+                            }
+                        }
+                        if (isOverlap) continue;
+                        
+                        let precedenceOk = true;
+                        const keysSched = Object.keys(sched);
+                        for (let k = 0; k < keysSched.length; k++) {
+                            const pName = keysSched[k];
+                            const pStart = sched[pName];
+                            const pDur = durations[pName];
+                            
+                            if (target.schedule_before && target.schedule_before.includes(pName)) {
+                                if (!(s + dur <= pStart)) {
+                                    precedenceOk = false;
+                                    break;
+                                }
+                            }
+                            
+                            const pObj = targetsList.find(tg => tg.name === pName);
+                            if (pObj && pObj.schedule_before && pObj.schedule_before.includes(name)) {
+                                if (!(pStart + pDur <= s)) {
+                                    precedenceOk = false;
+                                    break;
+                                }
+                            }
+                        }
+                        
+                        if (!precedenceOk) continue;
+                        
+                        sched[name] = s;
+                        search(idx + 1, sched, cost + airmassCosts[name][s]);
+                        delete sched[name];
+                    }
+                    
+                    // If target is new, we can skip it (with a large penalty)
+                    if (new_active_names.has(name)) {
+                        search(idx + 1, sched, cost + 100000.0);
+                    }
+                }
+                search(0, initialSchedule, 0);
             }
-            search(0, initialSchedule, 0);
             
             if (bestSchedule !== null) {
                 currentSchedule = bestSchedule;
                 previouslyScheduled = new Set(Object.keys(currentSchedule));
                 new_active.forEach(t => {
-                    if (currentSchedule[t.name] === undefined) {
+                    if (currentSchedule[t.name] === undefined && !conflicts.includes(t.name)) {
                         conflicts.push(t.name);
                     }
                 });
             } else {
                 new_active.forEach(t => {
-                    conflicts.push(t.name);
+                    if (!conflicts.includes(t.name)) {
+                        conflicts.push(t.name);
+                    }
                 });
             }
         });
@@ -5328,6 +5388,20 @@ function runLocalJSSolver(payload) {
         };
     }
 }
+
+// Cache for the polar sky map mask to avoid expensive pixel-loop calculations on every draw
+let skyMapCache = {
+    canvas: null,
+    size: null,
+    minAlt: null,
+    maxAlt: null,
+    minAz: null,
+    maxAz: null,
+    decMin: null,
+    decMax: null,
+    haLimitEast: null,
+    haLimitWest: null
+};
 
 // ==============================================================================
 // SKY ALT/AZ POLAR MAP RENDERING
@@ -5384,58 +5458,95 @@ function drawPolarSkyMap(blocks, targetPool, solar_times) {
         haLimitWest = !isNaN(haWestVal) ? haWestVal : 3.75;
     }
 
-    // Grid-based shading for all restricted limits
-    ctx.fillStyle = "rgba(255, 255, 255, 0.08)";
-    const latRad = 37.3414 * Math.PI / 180.0;
-    const sinLat = Math.sin(latRad);
-    const cosLat = Math.cos(latRad);
-    const step = 2;
-    for (let y = 0; y < size; y += step) {
-        for (let x = 0; x < size; x += step) {
-            const dx = x - cx;
-            const dy = y - cy;
-            const r = Math.sqrt(dx * dx + dy * dy);
-            if (r <= rMax) {
-                const alt = 90.0 * (1.0 - r / rMax);
-                const angleRad = Math.atan2(dy, dx);
-                const az = (angleRad * 180.0 / Math.PI + 90.0 + 360.0) % 360.0;
-                
-                const altRad = alt * Math.PI / 180.0;
-                const azRad = az * Math.PI / 180.0;
-                const sinAlt = Math.sin(altRad);
-                const cosAlt = Math.cos(altRad);
-                const sinDec = sinAlt * sinLat + cosAlt * cosLat * Math.cos(azRad);
-                const dec = Math.asin(Math.max(-1.0, Math.min(1.0, sinDec))) * 180.0 / Math.PI;
-                
-                const y_coord = -Math.sin(azRad) * cosAlt;
-                const x_coord = sinAlt * cosLat - cosAlt * Math.cos(azRad) * sinLat;
-                const haRad = Math.atan2(y_coord, x_coord);
-                let ha = haRad * 12.0 / Math.PI;
-                ha = (ha + 12.0) % 24.0 - 12.0;
-                
-                let restricted = false;
-                if (alt < minAlt || alt > maxAlt) {
-                    restricted = true;
-                } else if (minAz <= maxAz) {
-                    if (az < minAz || az > maxAz) restricted = true;
-                } else {
-                    if (az < minAz && az > maxAz) restricted = true;
-                }
-                
-                if (!restricted) {
-                    if (dec < decMin || dec > decMax) {
+    // Check cache validity
+    const cacheMatch = skyMapCache.canvas &&
+        skyMapCache.size === size &&
+        skyMapCache.minAlt === minAlt &&
+        skyMapCache.maxAlt === maxAlt &&
+        skyMapCache.minAz === minAz &&
+        skyMapCache.maxAz === maxAz &&
+        skyMapCache.decMin === decMin &&
+        skyMapCache.decMax === decMax &&
+        skyMapCache.haLimitEast === haLimitEast &&
+        skyMapCache.haLimitWest === haLimitWest;
+
+    if (!cacheMatch) {
+        // Recreate/clear the offscreen canvas to fit the new size/ratio
+        if (!skyMapCache.canvas) {
+            skyMapCache.canvas = document.createElement("canvas");
+        }
+        skyMapCache.canvas.width = size * window.devicePixelRatio;
+        skyMapCache.canvas.height = size * window.devicePixelRatio;
+        
+        const offCtx = skyMapCache.canvas.getContext("2d");
+        offCtx.scale(window.devicePixelRatio, window.devicePixelRatio);
+        offCtx.fillStyle = "rgba(255, 255, 255, 0.08)";
+        
+        const latRad = 37.3414 * Math.PI / 180.0;
+        const sinLat = Math.sin(latRad);
+        const cosLat = Math.cos(latRad);
+        const step = 2;
+        for (let y = 0; y < size; y += step) {
+            for (let x = 0; x < size; x += step) {
+                const dx = x - cx;
+                const dy = y - cy;
+                const r = Math.sqrt(dx * dx + dy * dy);
+                if (r <= rMax) {
+                    const alt = 90.0 * (1.0 - r / rMax);
+                    const angleRad = Math.atan2(dy, dx);
+                    const az = (angleRad * 180.0 / Math.PI + 90.0 + 360.0) % 360.0;
+                    
+                    const altRad = alt * Math.PI / 180.0;
+                    const azRad = az * Math.PI / 180.0;
+                    const sinAlt = Math.sin(altRad);
+                    const cosAlt = Math.cos(altRad);
+                    const sinDec = sinAlt * sinLat + cosAlt * cosLat * Math.cos(azRad);
+                    const dec = Math.asin(Math.max(-1.0, Math.min(1.0, sinDec))) * 180.0 / Math.PI;
+                    
+                    const y_coord = -Math.sin(azRad) * cosAlt;
+                    const x_coord = sinAlt * cosLat - cosAlt * Math.cos(azRad) * sinLat;
+                    const haRad = Math.atan2(y_coord, x_coord);
+                    let ha = haRad * 12.0 / Math.PI;
+                    ha = (ha + 12.0) % 24.0 - 12.0;
+                    
+                    let restricted = false;
+                    if (alt < minAlt || alt > maxAlt) {
                         restricted = true;
-                    } else if (ha < haLimitEast || ha > haLimitWest) {
-                        restricted = true;
+                    } else if (minAz <= maxAz) {
+                        if (az < minAz || az > maxAz) restricted = true;
+                    } else {
+                        if (az < minAz && az > maxAz) restricted = true;
                     }
-                }
-                
-                if (restricted) {
-                    ctx.fillRect(x, y, step, step);
+                    
+                    if (!restricted) {
+                        if (dec < decMin || dec > decMax) {
+                            restricted = true;
+                        } else if (ha < haLimitEast || ha > haLimitWest) {
+                            restricted = true;
+                        }
+                    }
+                    
+                    if (restricted) {
+                        offCtx.fillRect(x, y, step, step);
+                    }
                 }
             }
         }
+        
+        // Update cache parameters
+        skyMapCache.size = size;
+        skyMapCache.minAlt = minAlt;
+        skyMapCache.maxAlt = maxAlt;
+        skyMapCache.minAz = minAz;
+        skyMapCache.maxAz = maxAz;
+        skyMapCache.decMin = decMin;
+        skyMapCache.decMax = decMax;
+        skyMapCache.haLimitEast = haLimitEast;
+        skyMapCache.haLimitWest = haLimitWest;
     }
+
+    // Draw the cached offscreen canvas onto the main canvas
+    ctx.drawImage(skyMapCache.canvas, 0, 0, size, size);
 
     // Draw outer horizon circle
     ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
