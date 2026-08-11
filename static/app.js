@@ -4134,6 +4134,9 @@ function runLocalJSSolver(payload) {
     if (observatory.id === 'keck1' || observatory.id === 'keck2') {
         lat = 19.8267; lon = -155.4733; elevation = 4123; offsetHours = 10.3648;
     }
+    observatory.lat = lat;
+    observatory.lon = lon;
+    observatory.elevation = elevation;
     const utcNoon = new Date(localNoon.getTime() + offsetHours * 60 * 60 * 1000);
     
     const solarTimes = getSolarTimesFallback(utcNoon, lat, lon, elevation);
@@ -5597,7 +5600,13 @@ function drawPolarSkyMap(blocks, targetPool, solar_times) {
         '#3b82f6', '#8b5cf6', '#ec4899', '#14b8a6'
     ];
     
+    const obsSelect = document.getElementById("obs-select");
+    const obsId = obsSelect ? obsSelect.value : "lick";
     const obs = { lat: 37.3414, lon: -121.6429 };
+    if (obsId === 'keck1' || obsId === 'keck2') {
+        obs.lat = 19.8267;
+        obs.lon = -155.4733;
+    }
     
     blocks.forEach((b, idx) => {
         const color = colorPalette[idx % colorPalette.length];

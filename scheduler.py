@@ -927,8 +927,8 @@ class Scheduler:
                 ha_limit_east = rt.get('ha_limit_east')
                 ha_limit_west = rt.get('ha_limit_west')
                 try:
-                    limit_east = float(ha_limit_east) if ha_limit_east is not None and ha_limit_east != "" else self.telescope.ha_limit_east
-                    limit_west = float(ha_limit_west) if ha_limit_west is not None and ha_limit_west != "" else self.telescope.ha_limit_west
+                    limit_east = float(ha_limit_east) if ha_limit_east is not None and ha_limit_east != "" else getattr(self.telescope, 'ha_limit_east', -12.0)
+                    limit_west = float(ha_limit_west) if ha_limit_west is not None and ha_limit_west != "" else getattr(self.telescope, 'ha_limit_west', 12.0)
                     lst = get_lst(t, self.observatory.longitude)
                     ha = get_hour_angle(lst, target.ra)
                     if not (limit_east <= ha <= limit_west):
