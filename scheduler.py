@@ -463,6 +463,58 @@ class ShaneTelescope(Telescope):
         return True
 
 
+class Keck1Telescope(Telescope):
+    """Keck I 10m telescope pointing limits."""
+    
+    def __init__(self):
+        super().__init__(name="Keck I", dec_min=-90.0, dec_max=90.0)
+        
+    def is_visible(self, ra: float, dec: float, dt_utc: datetime.datetime, observatory: Observatory) -> bool:
+        if not super().is_visible(ra, dec, dt_utc, observatory):
+            return False
+            
+        alt, az = get_alt_az(dt_utc, observatory.latitude, observatory.longitude, ra, dec)
+        
+        # Stable guiding limit
+        if alt > 85.0:
+            return False
+            
+        if 5.3 <= az <= 146.2:
+            if not (33.3 <= alt <= 88.9):
+                return False
+        else:
+            if not (18.0 <= alt <= 88.9):
+                return False
+                
+        return True
+
+
+class Keck2Telescope(Telescope):
+    """Keck II 10m telescope pointing limits."""
+    
+    def __init__(self):
+        super().__init__(name="Keck II", dec_min=-90.0, dec_max=90.0)
+        
+    def is_visible(self, ra: float, dec: float, dt_utc: datetime.datetime, observatory: Observatory) -> bool:
+        if not super().is_visible(ra, dec, dt_utc, observatory):
+            return False
+            
+        alt, az = get_alt_az(dt_utc, observatory.latitude, observatory.longitude, ra, dec)
+        
+        # Stable guiding limit
+        if alt > 85.0:
+            return False
+            
+        if 185.3 <= az <= 332.8:
+            if not (36.8 <= alt <= 89.5):
+                return False
+        else:
+            if not (18.0 <= alt <= 89.5):
+                return False
+                
+        return True
+
+
 class Target:
     """Represents a scheduling target and its user parameters."""
     
