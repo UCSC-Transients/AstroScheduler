@@ -9,7 +9,7 @@ import json
 import datetime
 import mimetypes
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from scheduler import Observatory, ShaneTelescope, Target, Scheduler
+from scheduler import Observatory, ShaneTelescope, Keck1Telescope, Keck2Telescope, Target, Scheduler
 
 try:
     from fastapi import FastAPI, Request, HTTPException
@@ -36,14 +36,27 @@ def run_schedule_logic(data: dict) -> dict:
         
     date_local = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
     
-    obs_name = obs_data.get('name', 'Lick Observatory')
-    obs_lat = float(obs_data.get('lat', 37.3414))
-    obs_lon = float(obs_data.get('lon', -121.6429))
-    obs_elev = float(obs_data.get('elevation', 1283))
-    
-    # ShaneTelescope is our default
+    obs_id = obs_data.get('id', 'lick')
+    if obs_id == 'keck1':
+        obs_name = 'Keck I'
+        obs_lat = 19.8267
+        obs_lon = -155.4733
+        obs_elev = 4123
+        telescope = Keck1Telescope()
+    elif obs_id == 'keck2':
+        obs_name = 'Keck II'
+        obs_lat = 19.8267
+        obs_lon = -155.4733
+        obs_elev = 4123
+        telescope = Keck2Telescope()
+    else:
+        obs_name = 'Lick Observatory'
+        obs_lat = 37.3414
+        obs_lon = -121.6429
+        obs_elev = 1283
+        telescope = ShaneTelescope()
+        
     observatory = Observatory(obs_name, obs_lat, obs_lon, obs_elev)
-    telescope = ShaneTelescope()
     
     disabled_standards = set(data.get('disabled_standards', []))
     selected_standards = data.get('selected_standards', [])

@@ -361,6 +361,11 @@ document.addEventListener("DOMContentLoaded", async () => {
     document.getElementById("load-sample-btn").addEventListener("click", loadSampleTargets);
     document.getElementById("clear-targets-btn").addEventListener("click", clearAllTargets);
     
+    const obsSelectElem = document.getElementById("obs-select");
+    if (obsSelectElem) {
+        obsSelectElem.addEventListener("change", () => triggerScheduling(true));
+    }
+    
     // Add real-time linkage listeners to Add Target form exposure override fields
     const redExpIn = document.getElementById("t-red-exptime");
     const redNumIn = document.getElementById("t-red-num");
@@ -2227,13 +2232,13 @@ async function recalculateStartingNow() {
         }
     });
 
+    const obsSelect = document.getElementById("obs-select");
+    const obsId = obsSelect ? obsSelect.value : "lick";
+
     const requestPayload = {
         date,
         observatory: {
-            name: "Lick Observatory",
-            lat: 37.3414,
-            lon: -121.6429,
-            elevation: 1283
+            id: obsId
         },
         targets: targetPool,
         disabled_standards: disabledArray,
@@ -2599,13 +2604,13 @@ async function _doSchedule() {
         }
     });
 
+    const obsSelect = document.getElementById("obs-select");
+    const obsId = obsSelect ? obsSelect.value : "lick";
+
     const requestPayload = {
         date,
         observatory: {
-            name: "Lick Observatory",
-            lat: 37.3414,
-            lon: -121.6429,
-            elevation: 1283
+            id: obsId
         },
         targets: targetPool,
         disabled_standards: disabledArray,
@@ -4130,10 +4135,16 @@ function runLocalJSSolver(payload) {
     const dateParts = date.split('-');
     
     const localNoon = new Date(dateParts[0], dateParts[1] - 1, dateParts[2], 12, 0, 0);
-    const offsetHours = 8.109; // Lick offset W
+    let lat = 37.3414, lon = -121.6429, elevation = 1283, offsetHours = 8.109;
+    if (observatory.id === 'keck1' || observatory.id === 'keck2') {
+        lat = 19.8267; lon = -155.4733; elevation = 4123; offsetHours = 10.3648;
+    }
+    observatory.lat = lat;
+    observatory.lon = lon;
+    observatory.elevation = elevation;
     const utcNoon = new Date(localNoon.getTime() + offsetHours * 60 * 60 * 1000);
     
-    const solarTimes = getSolarTimesFallback(utcNoon, observatory.lat, observatory.lon, observatory.elevation);
+    const solarTimes = getSolarTimesFallback(utcNoon, lat, lon, elevation);
     
     let sunset = solarTimes.sunset;
     let sunrise = solarTimes.sunrise;
@@ -5430,6 +5441,10 @@ function drawPolarSkyMap(blocks, targetPool, solar_times) {
     
     // Draw restricted pointing regions as grey shading
     const isRealTime = document.getElementById("mode-realtime-btn")?.classList.contains("active");
+    const obsSelect = document.getElementById("obs-select");
+    const obsId = obsSelect ? obsSelect.value : "lick";
+    const obs = { lat: 37.3414, lon: -121.6429 };
+    
     let minAlt = 20;
     let maxAlt = 90;
     let minAz = 0;
@@ -5439,27 +5454,37 @@ function drawPolarSkyMap(blocks, targetPool, solar_times) {
     let haLimitEast = -5.6667;
     let haLimitWest = 3.75;
     
+    if (obsId === 'keck1' || obsId === 'keck2') {
+        obs.lat = 19.8267;
+        obs.lon = -155.4733;
+        decMin = -90;
+        decMax = 90;
+        haLimitEast = -12.0;
+        haLimitWest = 12.0;
+    }
+    
     if (isRealTime) {
         const altLimitVal = parseFloat(document.getElementById("rt-alt-limit")?.value);
-        minAlt = !isNaN(altLimitVal) ? altLimitVal : 20;
+        minAlt = !isNaN(altLimitVal) ? altLimitVal : minAlt;
         const altMaxVal = parseFloat(document.getElementById("rt-alt-max")?.value);
-        maxAlt = !isNaN(altMaxVal) ? altMaxVal : 90;
+        maxAlt = !isNaN(altMaxVal) ? altMaxVal : maxAlt;
         const azMinVal = parseFloat(document.getElementById("rt-az-min")?.value);
-        minAz = !isNaN(azMinVal) ? azMinVal : 0;
+        minAz = !isNaN(azMinVal) ? azMinVal : minAz;
         const azMaxVal = parseFloat(document.getElementById("rt-az-max")?.value);
-        maxAz = !isNaN(azMaxVal) ? azMaxVal : 360;
+        maxAz = !isNaN(azMaxVal) ? azMaxVal : maxAz;
         const decMinVal = parseFloat(document.getElementById("rt-dec-min")?.value);
-        decMin = !isNaN(decMinVal) ? decMinVal : -35;
+        decMin = !isNaN(decMinVal) ? decMinVal : decMin;
         const decMaxVal = parseFloat(document.getElementById("rt-dec-max")?.value);
-        decMax = !isNaN(decMaxVal) ? decMaxVal : 72;
+        decMax = !isNaN(decMaxVal) ? decMaxVal : decMax;
         const haEastVal = parseFloat(document.getElementById("rt-ha-limit-east")?.value);
-        haLimitEast = !isNaN(haEastVal) ? haEastVal : -5.6667;
+        haLimitEast = !isNaN(haEastVal) ? haEastVal : haLimitEast;
         const haWestVal = parseFloat(document.getElementById("rt-ha-limit-west")?.value);
-        haLimitWest = !isNaN(haWestVal) ? haWestVal : 3.75;
+        haLimitWest = !isNaN(haWestVal) ? haWestVal : haLimitWest;
     }
 
     // Check cache validity
     const cacheMatch = skyMapCache.canvas &&
+        skyMapCache.obsId === obsId &&
         skyMapCache.size === size &&
         skyMapCache.minAlt === minAlt &&
         skyMapCache.maxAlt === maxAlt &&
@@ -5482,7 +5507,7 @@ function drawPolarSkyMap(blocks, targetPool, solar_times) {
         offCtx.scale(window.devicePixelRatio, window.devicePixelRatio);
         offCtx.fillStyle = "rgba(255, 255, 255, 0.08)";
         
-        const latRad = 37.3414 * Math.PI / 180.0;
+        const latRad = obs.lat * Math.PI / 180.0;
         const sinLat = Math.sin(latRad);
         const cosLat = Math.cos(latRad);
         const step = 2;
@@ -5510,19 +5535,35 @@ function drawPolarSkyMap(blocks, targetPool, solar_times) {
                     ha = (ha + 12.0) % 24.0 - 12.0;
                     
                     let restricted = false;
-                    if (alt < minAlt || alt > maxAlt) {
-                        restricted = true;
-                    } else if (minAz <= maxAz) {
-                        if (az < minAz || az > maxAz) restricted = true;
+                    if (obsId === 'keck1') {
+                        if (alt > 85.0) restricted = true;
+                        else if (az >= 5.3 && az <= 146.2) {
+                            if (alt < 33.3 || alt > 88.9) restricted = true;
+                        } else {
+                            if (alt < 18.0 || alt > 88.9) restricted = true;
+                        }
+                    } else if (obsId === 'keck2') {
+                        if (alt > 85.0) restricted = true;
+                        else if (az >= 185.3 && az <= 332.8) {
+                            if (alt < 36.8 || alt > 89.5) restricted = true;
+                        } else {
+                            if (alt < 18.0 || alt > 89.5) restricted = true;
+                        }
                     } else {
-                        if (az < minAz && az > maxAz) restricted = true;
-                    }
-                    
-                    if (!restricted) {
-                        if (dec < decMin || dec > decMax) {
+                        if (alt < minAlt || alt > maxAlt) {
                             restricted = true;
-                        } else if (ha < haLimitEast || ha > haLimitWest) {
-                            restricted = true;
+                        } else if (minAz <= maxAz) {
+                            if (az < minAz || az > maxAz) restricted = true;
+                        } else {
+                            if (az < minAz && az > maxAz) restricted = true;
+                        }
+                        
+                        if (!restricted) {
+                            if (dec < decMin || dec > decMax) {
+                                restricted = true;
+                            } else if (ha < haLimitEast || ha > haLimitWest) {
+                                restricted = true;
+                            }
                         }
                     }
                     
@@ -5534,6 +5575,7 @@ function drawPolarSkyMap(blocks, targetPool, solar_times) {
         }
         
         // Update cache parameters
+        skyMapCache.obsId = obsId;
         skyMapCache.size = size;
         skyMapCache.minAlt = minAlt;
         skyMapCache.maxAlt = maxAlt;
@@ -5594,7 +5636,6 @@ function drawPolarSkyMap(blocks, targetPool, solar_times) {
         '#3b82f6', '#8b5cf6', '#ec4899', '#14b8a6'
     ];
     
-    const obs = { lat: 37.3414, lon: -121.6429 };
     
     blocks.forEach((b, idx) => {
         const color = colorPalette[idx % colorPalette.length];
