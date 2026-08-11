@@ -2227,13 +2227,13 @@ async function recalculateStartingNow() {
         }
     });
 
+    const obsSelect = document.getElementById("obs-select");
+    const obsId = obsSelect ? obsSelect.value : "lick";
+
     const requestPayload = {
         date,
         observatory: {
-            name: "Lick Observatory",
-            lat: 37.3414,
-            lon: -121.6429,
-            elevation: 1283
+            id: obsId
         },
         targets: targetPool,
         disabled_standards: disabledArray,
@@ -2599,13 +2599,13 @@ async function _doSchedule() {
         }
     });
 
+    const obsSelect = document.getElementById("obs-select");
+    const obsId = obsSelect ? obsSelect.value : "lick";
+
     const requestPayload = {
         date,
         observatory: {
-            name: "Lick Observatory",
-            lat: 37.3414,
-            lon: -121.6429,
-            elevation: 1283
+            id: obsId
         },
         targets: targetPool,
         disabled_standards: disabledArray,
@@ -4130,10 +4130,13 @@ function runLocalJSSolver(payload) {
     const dateParts = date.split('-');
     
     const localNoon = new Date(dateParts[0], dateParts[1] - 1, dateParts[2], 12, 0, 0);
-    const offsetHours = 8.109; // Lick offset W
+    let lat = 37.3414, lon = -121.6429, elevation = 1283, offsetHours = 8.109;
+    if (observatory.id === 'keck1' || observatory.id === 'keck2') {
+        lat = 19.8267; lon = -155.4733; elevation = 4123; offsetHours = 10.3648;
+    }
     const utcNoon = new Date(localNoon.getTime() + offsetHours * 60 * 60 * 1000);
     
-    const solarTimes = getSolarTimesFallback(utcNoon, observatory.lat, observatory.lon, observatory.elevation);
+    const solarTimes = getSolarTimesFallback(utcNoon, lat, lon, elevation);
     
     let sunset = solarTimes.sunset;
     let sunrise = solarTimes.sunrise;
