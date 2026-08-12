@@ -143,8 +143,13 @@ function getTargetExposureDetailsJS(t) {
         const T_seq = Math.max(T_R, T_B);
         return {
             red_exptime: std.red_exp,
-            total_time: 0,
-            duration_minutes: 7
+            red_num: std.red_num,
+            blue_exptime: std.blue_exp,
+            blue_num: std.blue_num,
+            red_exp: std.red_exp,
+            blue_exp: std.blue_exp,
+            total_time: Math.round(T_seq),
+            duration_minutes: 7 + Math.ceil(T_seq / 60.0)
         };
     }
     

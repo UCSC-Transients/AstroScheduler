@@ -1361,7 +1361,7 @@ class Scheduler:
         remaining_targets = [t for t in targets if t.name not in manually_scheduled_names]
 
         # 1. Run preliminary solve to see what gets scheduled and if we need high-airmass calibrations
-        prelim_solve = self._solve_internal(remaining_targets, reserved_chunks=set(reserved_chunks), previous_start_chunks=previous_start_chunks)
+        prelim_solve = self._solve_internal(remaining_targets, reserved_chunks=set(reserved_chunks), previous_start_chunks=previous_start_chunks, instrument=instrument)
         all_scheduled_science = prelim_solve['blocks'] + manual_science_blocks
         
         need_high_airmass = False
@@ -1603,13 +1603,13 @@ class Scheduler:
                             best_mb_score = score
                             s_mb = s
             if s_mb is not None:
-                details_mb = get_target_exposure_details(target if 'target' in locals() else t, self.moon, extinction, self.observatory.latitude, instrument=instrument)
+                details_mb = get_target_exposure_details(s_mb['target'], self.moon, extinction, self.observatory.latitude, instrument=instrument)
                 dur_mb = details_mb[4]
                 morn_start_blue = morn_start_red - dur_mb
                 add_standard_block(s_mb, morn_start_blue)
                 
         # 6. Run final solver pass with the reserved standard chunks
-        final_solve = self._solve_internal(remaining_targets, reserved_chunks, previous_start_chunks=previous_start_chunks)
+        final_solve = self._solve_internal(remaining_targets, reserved_chunks, previous_start_chunks=previous_start_chunks, instrument=instrument)
         
         # Merge scheduled blocks
         scheduled_blocks = final_solve['blocks'] + standard_blocks + manual_science_blocks
@@ -1725,7 +1725,7 @@ class Scheduler:
             'solar_times': {k: v.isoformat() for k, v in self.solar_times.items()}
         }
 
-    def _solve_internal(self, targets: List[Target], reserved_chunks: Set[int], previous_start_chunks: Optional[Dict[str, int]] = None) -> Dict[str, Any]:
+    def _solve_internal(self, targets: List[Target], reserved_chunks: Set[int], previous_start_chunks: Optional[Dict[str, int]] = None, instrument: str = 'kast') -> Dict[str, Any]:
         """
         Schedules science targets using a priority-sequential Branch and Bound algorithm.
         Enforces precedence constraints (schedule_before) and manual schedule adjustments.
