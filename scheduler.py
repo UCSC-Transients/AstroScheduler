@@ -53,6 +53,20 @@ KAST_SCIENCE_LOOKUP = {
     20.0: {"blue_exp": 2145.0, "blue_num": 2, "red_exp": 600.0, "red_num": 7},
 }
 
+LRIS_SCIENCE_LOOKUP = {
+    13.0: 60, 13.5: 60, 14.0: 60, 14.5: 60, 15.0: 60, 15.5: 60,
+    16.0: 120, 16.5: 120, 17.0: 180, 17.5: 240, 18.0: 300, 18.5: 480,
+    19.0: 600, 19.5: 720, 20.0: 900, 20.5: 1020, 21.0: 1200, 21.5: 1320,
+    22.0: 1500, 22.5: 1720, 23.0: 1800, 23.5: 2100, 24.0: 2400
+}
+
+KCWI_SCIENCE_LOOKUP = {
+    13.0: 60, 13.5: 60, 14.0: 60, 14.5: 60, 15.0: 60, 15.5: 60,
+    16.0: 120, 16.5: 120, 17.0: 180, 17.5: 240, 18.0: 300, 18.5: 480,
+    19.0: 600, 19.5: 720, 20.0: 900, 20.5: 1020, 21.0: 1200, 21.5: 1320,
+    22.0: 1500, 22.5: 1720, 23.0: 1800, 23.5: 2100, 24.0: 2400
+}
+
 KAST_STANDARD_LOOKUP = {
     "Feige 34": {"blue_exp": 180.0, "blue_num": 1, "red_exp": 100.0, "red_num": 1},
     "BD+284211": {"blue_exp": 180.0, "blue_num": 1, "red_exp": 100.0, "red_num": 1},
@@ -87,6 +101,36 @@ def split_exposure_kast(total_exposure_seconds: float) -> Tuple[float, int, floa
     if exptime_red < 0:
         exptime_red = 0.0
         
+    return exptime_red, num_red, exptime_blue, num_blue
+
+
+def split_exposure_lris(total_exposure_seconds: float) -> Tuple[float, int, float, int]:
+    t_seq = total_exposure_seconds
+    # Blue: max 1899s. Blue readout: 54s.
+    num_blue = int(math.ceil((t_seq + 54.0) / 1953.0))
+    if num_blue < 1: num_blue = 1
+    exptime_blue = max(0.0, (t_seq + 54.0) / num_blue - 54.0)
+    
+    # Red: max 600s. Red readout: 65s.
+    num_red = int(math.ceil((t_seq + 65.0) / 665.0))
+    if num_red < 1: num_red = 1
+    exptime_red = max(0.0, (t_seq + 65.0) / num_red - 65.0)
+    
+    return exptime_red, num_red, exptime_blue, num_blue
+
+
+def split_exposure_kcwi(total_exposure_seconds: float) -> Tuple[float, int, float, int]:
+    t_seq = total_exposure_seconds
+    # Blue: max 1899s. Blue readout: 170s.
+    num_blue = int(math.ceil((t_seq + 170.0) / 2069.0))
+    if num_blue < 1: num_blue = 1
+    exptime_blue = max(0.0, (t_seq + 170.0) / num_blue - 170.0)
+    
+    # Red: max 600s. Red readout: 102s.
+    num_red = int(math.ceil((t_seq + 102.0) / 702.0))
+    if num_red < 1: num_red = 1
+    exptime_red = max(0.0, (t_seq + 102.0) / num_red - 102.0)
+    
     return exptime_red, num_red, exptime_blue, num_blue
 
 
@@ -441,6 +485,10 @@ class Telescope:
             return False
         return True
 
+    def get_slew_time(self, prev_target, target) -> int:
+        """Returns the expected slew time to this target from the previous target in minutes."""
+        return 7
+
 
 class ShaneTelescope(Telescope):
     """Lick Shane 3m telescope equatorial pointing limits."""
@@ -488,6 +536,13 @@ class Keck1Telescope(Telescope):
                 
         return True
 
+    def get_slew_time(self, prev_target, target) -> int:
+        """Keck cable wrap penalty stub: 15 minutes if crossing the equator, else 7 minutes."""
+        if prev_target is None:
+            return 7
+        if (prev_target.dec > 0 and target.dec < 0) or (prev_target.dec < 0 and target.dec > 0):
+            return 15
+        return 7
 
 class Keck2Telescope(Telescope):
     """Keck II 10m telescope pointing limits."""
@@ -513,6 +568,14 @@ class Keck2Telescope(Telescope):
                 return False
                 
         return True
+
+    def get_slew_time(self, prev_target, target) -> int:
+        """Keck cable wrap penalty stub: 15 minutes if crossing the equator, else 7 minutes."""
+        if prev_target is None:
+            return 7
+        if (prev_target.dec > 0 and target.dec < 0) or (prev_target.dec < 0 and target.dec > 0):
+            return 15
+        return 7
 
 
 class Target:
@@ -658,24 +721,30 @@ def parse_hour_minute(time_str: str, is_start: bool = False, is_local_tz: bool =
     return hh, mm
 
 
-def get_target_exposure_details(target: Target, moon: Dict[str, Any], extinction: float, latitude: float) -> Tuple[float, int, float, int, int]:
+def get_target_exposure_details(target: Target, moon: Dict[str, Any], extinction: float, latitude: float, instrument: str = 'kast') -> Tuple[float, int, float, int, int]:
     """
     Returns (red_exp, red_num, blue_exp, blue_num, duration_minutes) for a target.
     Accounts for manual overrides, standard star rules, lookup tables, and overheads.
     """
-    # 1. Check standard star lookup:
-    if target.name in KAST_STANDARD_LOOKUP:
+    # 1. Check standard star lookup (only Kast standards for now, Keck typically doesn't use this list, but harmless to leave):
+    if target.name in KAST_STANDARD_LOOKUP and instrument == 'kast':
         std = KAST_STANDARD_LOOKUP[target.name]
-        # Standard stars are observed once
         t_seq = max(std["blue_exp"], std["red_exp"])
-        # Total duration is 7 mins slew + ceil(t_seq / 60.0)
         dur_mins = 7 + int(math.ceil(t_seq / 60.0))
         return std["red_exp"], std["red_num"], std["blue_exp"], std["blue_num"], dur_mins
 
+    # Overheads based on instrument
+    if instrument == 'lris':
+        r_erase, b_erase, r_read, b_read = 0.0, 0.0, 65.0, 54.0
+    elif instrument == 'kcwi':
+        r_erase, b_erase, r_read, b_read = 0.0, 0.0, 102.0, 170.0
+    else:
+        r_erase, b_erase, r_read, b_read = RED_ERASE, BLUE_ERASE, RED_READOUT, BLUE_READOUT
+
     # 2. Check if exposure overrides are set:
     if target.red_exptime is not None and target.red_num is not None and target.blue_exptime is not None and target.blue_num is not None:
-        t_red = target.red_num * (target.red_exptime + RED_ERASE) + (target.red_num - 1) * RED_READOUT
-        t_blue = target.blue_num * (target.blue_exptime + BLUE_ERASE) + (target.blue_num - 1) * BLUE_READOUT
+        t_red = target.red_num * (target.red_exptime + r_erase) + (target.red_num - 1) * r_read
+        t_blue = target.blue_num * (target.blue_exptime + b_erase) + (target.blue_num - 1) * b_read
         t_seq = max(t_red, t_blue)
         dur_mins = 7 + int(math.ceil(t_seq / 60.0))
         return target.red_exptime, target.red_num, target.blue_exptime, target.blue_num, dur_mins
@@ -683,37 +752,54 @@ def get_target_exposure_details(target: Target, moon: Dict[str, Any], extinction
     # 3. If manual duration is set:
     if target.manual_duration is not None:
         t_seq = max(0.0, target.manual_duration * 60.0 - 420.0)
-        red_exp, red_num, blue_exp, blue_num = split_exposure_kast(t_seq)
+        if instrument == 'lris':
+            red_exp, red_num, blue_exp, blue_num = split_exposure_lris(t_seq)
+        elif instrument == 'kcwi':
+            red_exp, red_num, blue_exp, blue_num = split_exposure_kcwi(t_seq)
+        else:
+            red_exp, red_num, blue_exp, blue_num = split_exposure_kast(t_seq)
         dur_mins = int(math.ceil(target.manual_duration))
         return red_exp, red_num, blue_exp, blue_num, dur_mins
 
     # 4. Use lookup table based on magnitude rounded to nearest 0.5:
     mag_val = target.magnitude
     mag_rounded = round(mag_val * 2.0) / 2.0
-    if mag_rounded < 13.0:
-        mag_rounded = 13.0
-    elif mag_rounded > 20.0:
-        mag_rounded = 20.0
-
-    entry = KAST_SCIENCE_LOOKUP.get(mag_rounded)
-    if entry:
-        red_exp = entry["red_exp"]
-        red_num = entry["red_num"]
-        blue_exp = entry["blue_exp"]
-        blue_num = entry["blue_num"]
-        t_red = red_num * (red_exp + RED_ERASE) + (red_num - 1) * RED_READOUT
-        t_blue = blue_num * (blue_exp + BLUE_ERASE) + (blue_num - 1) * BLUE_READOUT
-        t_seq = max(t_red, t_blue)
+    
+    if instrument in ('lris', 'kcwi'):
+        if mag_rounded < 13.0: mag_rounded = 13.0
+        elif mag_rounded > 24.0: mag_rounded = 24.0
+        
+        lookup = LRIS_SCIENCE_LOOKUP if instrument == 'lris' else KCWI_SCIENCE_LOOKUP
+        t_seq = lookup.get(mag_rounded, lookup[15.0])
+        
+        if instrument == 'lris':
+            red_exp, red_num, blue_exp, blue_num = split_exposure_lris(t_seq)
+        else:
+            red_exp, red_num, blue_exp, blue_num = split_exposure_kcwi(t_seq)
+            
         dur_mins = 7 + int(math.ceil(t_seq / 60.0))
         return red_exp, red_num, blue_exp, blue_num, dur_mins
 
-    # Fallback:
-    red_exp, red_num, blue_exp, blue_num = 300.0, 1, 300.0, 1
-    t_red = red_num * (red_exp + RED_ERASE) + (red_num - 1) * RED_READOUT
-    t_blue = blue_num * (blue_exp + BLUE_ERASE) + (blue_num - 1) * BLUE_READOUT
-    t_seq = max(t_red, t_blue)
-    dur_mins = 7 + int(math.ceil(t_seq / 60.0))
-    return red_exp, red_num, blue_exp, blue_num, dur_mins
+    else:
+        if mag_rounded < 13.0: mag_rounded = 13.0
+        elif mag_rounded > 20.0: mag_rounded = 20.0
+
+        entry = KAST_SCIENCE_LOOKUP.get(mag_rounded)
+        if entry:
+            red_exp, red_num, blue_exp, blue_num = entry["red_exp"], entry["red_num"], entry["blue_exp"], entry["blue_num"]
+            t_red = red_num * (red_exp + r_erase) + (red_num - 1) * r_read
+            t_blue = blue_num * (blue_exp + b_erase) + (blue_num - 1) * b_read
+            t_seq = max(t_red, t_blue)
+            dur_mins = 7 + int(math.ceil(t_seq / 60.0))
+            return red_exp, red_num, blue_exp, blue_num, dur_mins
+
+        # Fallback:
+        red_exp, red_num, blue_exp, blue_num = 300.0, 1, 300.0, 1
+        t_red = red_num * (red_exp + r_erase) + (red_num - 1) * r_read
+        t_blue = blue_num * (blue_exp + b_erase) + (blue_num - 1) * b_read
+        t_seq = max(t_red, t_blue)
+        dur_mins = 7 + int(math.ceil(t_seq / 60.0))
+        return red_exp, red_num, blue_exp, blue_num, dur_mins
 
 
 class Scheduler:
@@ -994,7 +1080,7 @@ class Scheduler:
             return best_idx
         return None
 
-    def solve(self, targets: List[Target], disabled_standards: Optional[Set[str]] = None, selected_standards: Optional[List[str]] = None, auto_standards: bool = True, realtime_constraints: Optional[Dict[str, Any]] = None, standards_overrides: Optional[Dict[str, Any]] = None, previous_schedule: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    def solve(self, targets: List[Target], instrument: str = 'kast', disabled_standards: Optional[Set[str]] = None, selected_standards: Optional[List[str]] = None, auto_standards: bool = True, realtime_constraints: Optional[Dict[str, Any]] = None, standards_overrides: Optional[Dict[str, Any]] = None, previous_schedule: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
         """
         Main entry point for scheduling. Schedules standard stars first, then science targets.
         """
@@ -1234,7 +1320,7 @@ class Scheduler:
         target_exposures_dict = {}
         extinction = float(self.realtime_constraints.get('extinction', 0.0))
         for t in targets:
-            red_exp, red_num, blue_exp, blue_num, dur_mins = get_target_exposure_details(t, self.moon, extinction, self.observatory.latitude)
+            red_exp, red_num, blue_exp, blue_num, dur_mins = get_target_exposure_details(t, self.moon, extinction, self.observatory.latitude, instrument=instrument)
             target_exposures_dict[t.name] = {
                 "red_exp": red_exp,
                 "red_num": red_num,
@@ -1275,7 +1361,7 @@ class Scheduler:
         remaining_targets = [t for t in targets if t.name not in manually_scheduled_names]
 
         # 1. Run preliminary solve to see what gets scheduled and if we need high-airmass calibrations
-        prelim_solve = self._solve_internal(remaining_targets, reserved_chunks=set(reserved_chunks), previous_start_chunks=previous_start_chunks)
+        prelim_solve = self._solve_internal(remaining_targets, reserved_chunks=set(reserved_chunks), previous_start_chunks=previous_start_chunks, instrument=instrument)
         all_scheduled_science = prelim_solve['blocks'] + manual_science_blocks
         
         need_high_airmass = False
@@ -1330,7 +1416,7 @@ class Scheduler:
 
         def add_standard_block(star_dict, chunk_idx):
             target = star_dict['target']
-            red_exp, red_num, blue_exp, blue_num, dur_chunks = get_target_exposure_details(target, self.moon, extinction, self.observatory.latitude)
+            red_exp, red_num, blue_exp, blue_num, dur_chunks = get_target_exposure_details(target, self.moon, extinction, self.observatory.latitude, instrument=instrument)
 
             reserved_chunks.update(range(chunk_idx, chunk_idx + dur_chunks))
 
@@ -1363,7 +1449,7 @@ class Scheduler:
 
             for s in standards:
                 t = s['target']
-                red_exp, red_num, blue_exp, blue_num, dur_chunks = get_target_exposure_details(t, self.moon, extinction, self.observatory.latitude)
+                red_exp, red_num, blue_exp, blue_num, dur_chunks = get_target_exposure_details(t, self.moon, extinction, self.observatory.latitude, instrument=instrument)
 
                 # Helper search function with dynamic constraints relaxation
                 def find_best_chunk(allowed_chunks, max_airmass):
@@ -1423,7 +1509,7 @@ class Scheduler:
             dur_eb = 8
             for s in blue_standards:
                 t = s['target']
-                red_exp, red_num, blue_exp, blue_num, current_dur = get_target_exposure_details(t, self.moon, extinction, self.observatory.latitude)
+                red_exp, red_num, blue_exp, blue_num, current_dur = get_target_exposure_details(t, self.moon, extinction, self.observatory.latitude, instrument=instrument)
                 if any(c in reserved_chunks or c >= self.num_chunks for c in range(eve_slot_1, eve_slot_1 + current_dur)):
                     continue
                 if self.telescope.is_visible(t.ra, t.dec, self.chunk_times[eve_slot_1], self.observatory):
@@ -1449,7 +1535,7 @@ class Scheduler:
             s_er = None
             for s in red_standards:
                 t = s['target']
-                red_exp, red_num, blue_exp, blue_num, current_dur = get_target_exposure_details(t, self.moon, extinction, self.observatory.latitude)
+                red_exp, red_num, blue_exp, blue_num, current_dur = get_target_exposure_details(t, self.moon, extinction, self.observatory.latitude, instrument=instrument)
                 if any(c in reserved_chunks or c >= self.num_chunks for c in range(eve_slot_2, eve_slot_2 + current_dur)):
                     continue
                 if self.telescope.is_visible(t.ra, t.dec, self.chunk_times[eve_slot_2], self.observatory):
@@ -1474,7 +1560,7 @@ class Scheduler:
             dur_mr = 8
             for s in red_standards:
                 t = s['target']
-                red_exp, red_num, blue_exp, blue_num, current_dur = get_target_exposure_details(t, self.moon, extinction, self.observatory.latitude)
+                red_exp, red_num, blue_exp, blue_num, current_dur = get_target_exposure_details(t, self.moon, extinction, self.observatory.latitude, instrument=instrument)
                 current_start = morn_sequence_end - current_dur
                 if any(c in reserved_chunks or c < 0 for c in range(current_start, current_start + current_dur)):
                     continue
@@ -1501,7 +1587,7 @@ class Scheduler:
             s_mb = None
             for s in blue_standards:
                 t = s['target']
-                red_exp, red_num, blue_exp, blue_num, current_dur = get_target_exposure_details(t, self.moon, extinction, self.observatory.latitude)
+                red_exp, red_num, blue_exp, blue_num, current_dur = get_target_exposure_details(t, self.moon, extinction, self.observatory.latitude, instrument=instrument)
                 current_start = morn_start_red - current_dur
                 if any(c in reserved_chunks or c < 0 for c in range(current_start, current_start + current_dur)):
                     continue
@@ -1517,13 +1603,13 @@ class Scheduler:
                             best_mb_score = score
                             s_mb = s
             if s_mb is not None:
-                details_mb = get_target_exposure_details(s_mb['target'], self.moon, extinction, self.observatory.latitude)
+                details_mb = get_target_exposure_details(s_mb['target'], self.moon, extinction, self.observatory.latitude, instrument=instrument)
                 dur_mb = details_mb[4]
                 morn_start_blue = morn_start_red - dur_mb
                 add_standard_block(s_mb, morn_start_blue)
                 
         # 6. Run final solver pass with the reserved standard chunks
-        final_solve = self._solve_internal(remaining_targets, reserved_chunks, previous_start_chunks=previous_start_chunks)
+        final_solve = self._solve_internal(remaining_targets, reserved_chunks, previous_start_chunks=previous_start_chunks, instrument=instrument)
         
         # Merge scheduled blocks
         scheduled_blocks = final_solve['blocks'] + standard_blocks + manual_science_blocks
@@ -1639,7 +1725,7 @@ class Scheduler:
             'solar_times': {k: v.isoformat() for k, v in self.solar_times.items()}
         }
 
-    def _solve_internal(self, targets: List[Target], reserved_chunks: Set[int], previous_start_chunks: Optional[Dict[str, int]] = None) -> Dict[str, Any]:
+    def _solve_internal(self, targets: List[Target], reserved_chunks: Set[int], previous_start_chunks: Optional[Dict[str, int]] = None, instrument: str = 'kast') -> Dict[str, Any]:
         """
         Schedules science targets using a priority-sequential Branch and Bound algorithm.
         Enforces precedence constraints (schedule_before) and manual schedule adjustments.
@@ -1649,7 +1735,7 @@ class Scheduler:
         target_exposures_dict = {}
         extinction = float(getattr(self, 'realtime_constraints', {}).get('extinction', 0.0))
         for t in targets:
-            red_exp, red_num, blue_exp, blue_num, dur_mins = get_target_exposure_details(t, self.moon, extinction, self.observatory.latitude)
+            red_exp, red_num, blue_exp, blue_num, dur_mins = get_target_exposure_details(t, self.moon, extinction, self.observatory.latitude, instrument=instrument)
             target_exposures_dict[t.name] = {
                 "red_exp": red_exp,
                 "red_num": red_num,
@@ -2017,8 +2103,13 @@ class Scheduler:
                         conflicts.append(t.name)
                         
         scheduled_blocks: List[ObservationBlock] = []
-        for t_name, start_idx in current_schedule.items():
+        sorted_schedule = sorted(current_schedule.items(), key=lambda item: item[1])
+        prev_target = None
+        for t_name, start_idx in sorted_schedule:
             target = next(t for t in targets if t.name == t_name)
+            slew_time = self.telescope.get_slew_time(prev_target, target)
+            prev_target = target
+            
             dur_chunks = target_exposures_dict[t_name]["duration_minutes"]
             airmasses = []
             for c_idx in range(start_idx, start_idx + dur_chunks):
@@ -2030,7 +2121,7 @@ class Scheduler:
             airmass_median = airmasses[mid] if len(airmasses) % 2 != 0 else (airmasses[mid-1] + airmasses[mid]) / 2.0
             
             exp_info = target_exposures_dict[t_name]
-            comment_prefix = f"Slew: 7m. Blue: {exp_info['blue_num']}x{exp_info['blue_exp']:.0f}s, Red: {exp_info['red_num']}x{exp_info['red_exp']:.0f}s."
+            comment_prefix = f"Slew: {slew_time}m. Blue: {exp_info['blue_num']}x{exp_info['blue_exp']:.0f}s, Red: {exp_info['red_num']}x{exp_info['red_exp']:.0f}s."
             block_comment = f"{comment_prefix} {target.comment}" if target.comment else comment_prefix
             block = ObservationBlock(
                 target=target,

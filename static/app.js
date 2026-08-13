@@ -25,6 +25,20 @@ const KAST_SCIENCE_LOOKUP = {
     20.0: { blue_exp: 2145.0, blue_num: 2, red_exp: 600.0, red_num: 7 }
 };
 
+const LRIS_SCIENCE_LOOKUP = {
+    13.0: 60, 13.5: 60, 14.0: 60, 14.5: 60, 15.0: 60, 15.5: 60,
+    16.0: 120, 16.5: 120, 17.0: 180, 17.5: 240, 18.0: 300, 18.5: 480,
+    19.0: 600, 19.5: 720, 20.0: 900, 20.5: 1020, 21.0: 1200, 21.5: 1320,
+    22.0: 1500, 22.5: 1720, 23.0: 1800, 23.5: 2100, 24.0: 2400
+};
+
+const KCWI_SCIENCE_LOOKUP = {
+    13.0: 60, 13.5: 60, 14.0: 60, 14.5: 60, 15.0: 60, 15.5: 60,
+    16.0: 120, 16.5: 120, 17.0: 180, 17.5: 240, 18.0: 300, 18.5: 480,
+    19.0: 600, 19.5: 720, 20.0: 900, 20.5: 1020, 21.0: 1200, 21.5: 1320,
+    22.0: 1500, 22.5: 1720, 23.0: 1800, 23.5: 2100, 24.0: 2400
+};
+
 const KAST_STANDARD_LOOKUP = {
     "Feige 34": { blue_exp: 180.0, blue_num: 1, red_exp: 100.0, red_num: 1 },
     "BD+284211": { blue_exp: 180.0, blue_num: 1, red_exp: 100.0, red_num: 1 },
@@ -52,6 +66,46 @@ function splitExposureKast(totalExposureSeconds) {
     let numRed = Math.ceil((tSeq + 22.0) / 642.0);
     if (numRed < 1) numRed = 1;
     const exptimeRed = (tSeq + 22.0) / numRed - 42.0;
+    
+    return {
+        red_exptime: Math.max(0.0, exptimeRed),
+        red_num: numRed,
+        blue_exptime: Math.max(0.0, exptimeBlue),
+        blue_num: numBlue
+    };
+}
+
+function splitExposureLRIS(totalExposureSeconds) {
+    const tSeq = totalExposureSeconds;
+    // Blue: max 1899s. Blue readout: 54s.
+    let numBlue = Math.ceil((tSeq + 54.0) / 1953.0);
+    if (numBlue < 1) numBlue = 1;
+    const exptimeBlue = (tSeq + 54.0) / numBlue - 54.0;
+    
+    // Red: max 600s. Red readout: 65s.
+    let numRed = Math.ceil((tSeq + 65.0) / 665.0);
+    if (numRed < 1) numRed = 1;
+    const exptimeRed = (tSeq + 65.0) / numRed - 65.0;
+    
+    return {
+        red_exptime: Math.max(0.0, exptimeRed),
+        red_num: numRed,
+        blue_exptime: Math.max(0.0, exptimeBlue),
+        blue_num: numBlue
+    };
+}
+
+function splitExposureKCWI(totalExposureSeconds) {
+    const tSeq = totalExposureSeconds;
+    // Blue: max 1899s. Blue readout: 170s.
+    let numBlue = Math.ceil((tSeq + 170.0) / 2069.0);
+    if (numBlue < 1) numBlue = 1;
+    const exptimeBlue = (tSeq + 170.0) / numBlue - 170.0;
+    
+    // Red: max 600s. Red readout: 102s.
+    let numRed = Math.ceil((tSeq + 102.0) / 702.0);
+    if (numRed < 1) numRed = 1;
+    const exptimeRed = (tSeq + 102.0) / numRed - 102.0;
     
     return {
         red_exptime: Math.max(0.0, exptimeRed),
@@ -99,9 +153,16 @@ function getTargetExposureDetailsJS(t) {
         };
     }
     
+    const instSelect = document.getElementById('inst-select');
+    const instrument = instSelect ? instSelect.value : 'kast';
+    
     if (t.manual_duration !== null && t.manual_duration !== undefined) {
         const T_seq = Math.max(0.0, t.manual_duration * 60.0 - 420.0);
-        const split = splitExposureKast(T_seq);
+        let split;
+        if (instrument === 'lris') split = splitExposureLRIS(T_seq);
+        else if (instrument === 'kcwi') split = splitExposureKCWI(T_seq);
+        else split = splitExposureKast(T_seq);
+        
         return {
             red_exptime: Math.round(split.red_exptime * 10) / 10,
             red_num: split.red_num,
@@ -116,25 +177,47 @@ function getTargetExposureDetailsJS(t) {
     
     const mag = t.magnitude;
     let key = 13.0;
-    if (mag <= 15.0) key = 15.0;
-    else if (mag >= 20.0) key = 20.0;
-    else {
-        key = Math.round(mag * 2.0) / 2.0;
+    
+    if (instrument === 'lris' || instrument === 'kcwi') {
+        if (mag <= 13.0) key = 13.0;
+        else if (mag >= 24.0) key = 24.0;
+        else key = Math.round(mag * 2.0) / 2.0;
+        
+        const lookup = instrument === 'lris' ? LRIS_SCIENCE_LOOKUP : KCWI_SCIENCE_LOOKUP;
+        const tSeq = lookup[key] || lookup[15.0];
+        const split = instrument === 'lris' ? splitExposureLRIS(tSeq) : splitExposureKCWI(tSeq);
+        
+        return {
+            red_exptime: Math.round(split.red_exptime * 10) / 10,
+            red_num: split.red_num,
+            blue_exptime: Math.round(split.blue_exptime * 10) / 10,
+            blue_num: split.blue_num,
+            red_exp: Math.round(split.red_exptime * 10) / 10,
+            blue_exp: Math.round(split.blue_exptime * 10) / 10,
+            total_time: Math.round(tSeq),
+            duration_minutes: 7 + Math.ceil(tSeq / 60.0)
+        };
+    } else {
+        if (mag <= 15.0) key = 15.0;
+        else if (mag >= 20.0) key = 20.0;
+        else key = Math.round(mag * 2.0) / 2.0;
+        
+        const lut = KAST_SCIENCE_LOOKUP[key] || KAST_SCIENCE_LOOKUP[15.0];
+        const T_R = lut.red_num * (lut.red_exp + 20.0) + (lut.red_num - 1) * 22.0;
+        const T_B = lut.blue_num * (lut.blue_exp + 5.0) + (lut.blue_num - 1) * 30.0;
+        const T_seq = Math.max(T_R, T_B);
+        
+        return {
+            red_exptime: lut.red_exp,
+            red_num: lut.red_num,
+            blue_exptime: lut.blue_exp,
+            blue_num: lut.blue_num,
+            red_exp: lut.red_exp,
+            blue_exp: lut.blue_exp,
+            total_time: Math.round(T_seq),
+            duration_minutes: 7 + Math.ceil(T_seq / 60.0)
+        };
     }
-    const lut = KAST_SCIENCE_LOOKUP[key] || KAST_SCIENCE_LOOKUP[15.0];
-    const T_R = lut.red_num * (lut.red_exp + 20.0) + (lut.red_num - 1) * 22.0;
-    const T_B = lut.blue_num * (lut.blue_exp + 5.0) + (lut.blue_num - 1) * 30.0;
-    const T_seq = Math.max(T_R, T_B);
-    return {
-        red_exptime: lut.red_exp,
-        red_num: lut.red_num,
-        blue_exptime: lut.blue_exp,
-        blue_num: lut.blue_num,
-        red_exp: lut.red_exp,
-        blue_exp: lut.blue_exp,
-        total_time: Math.round(T_seq),
-        duration_minutes: 7 + Math.ceil(T_seq / 60.0)
-    };
 }
 
 
@@ -362,8 +445,27 @@ document.addEventListener("DOMContentLoaded", async () => {
     document.getElementById("clear-targets-btn").addEventListener("click", clearAllTargets);
     
     const obsSelectElem = document.getElementById("obs-select");
+    const instSelectElem = document.getElementById("inst-select");
     if (obsSelectElem) {
-        obsSelectElem.addEventListener("change", () => triggerScheduling(true));
+        obsSelectElem.addEventListener("change", () => {
+            if (instSelectElem) {
+                instSelectElem.innerHTML = '';
+                const obsId = obsSelectElem.value;
+                if (obsId === 'lick') {
+                    instSelectElem.add(new Option('Kast Spectrograph', 'kast'));
+                } else if (obsId === 'keck1') {
+                    instSelectElem.add(new Option('LRIS', 'lris'));
+                } else if (obsId === 'keck2') {
+                    instSelectElem.add(new Option('KCWI', 'kcwi'));
+                }
+                instSelectElem.disabled = false;
+            }
+            triggerScheduling(true);
+        });
+        // Populate inst-select on load
+        if (instSelectElem) {
+            obsSelectElem.dispatchEvent(new Event('change'));
+        }
     }
     
     // Add real-time linkage listeners to Add Target form exposure override fields
@@ -2235,11 +2337,15 @@ async function recalculateStartingNow() {
     const obsSelect = document.getElementById("obs-select");
     const obsId = obsSelect ? obsSelect.value : "lick";
 
+    const instSelect = document.getElementById("inst-select");
+    const instId = instSelect ? instSelect.value : "kast";
+
     const requestPayload = {
         date,
         observatory: {
             id: obsId
         },
+        instrument: instId,
         targets: targetPool,
         disabled_standards: disabledArray,
         auto_standards: autoStandardsMode,
@@ -2607,11 +2713,15 @@ async function _doSchedule() {
     const obsSelect = document.getElementById("obs-select");
     const obsId = obsSelect ? obsSelect.value : "lick";
 
+    const instSelect = document.getElementById("inst-select");
+    const instId = instSelect ? instSelect.value : "kast";
+
     const requestPayload = {
         date,
         observatory: {
             id: obsId
         },
+        instrument: instId,
         targets: targetPool,
         disabled_standards: disabledArray,
         auto_standards: autoStandardsMode,

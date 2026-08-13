@@ -58,6 +58,8 @@ def run_schedule_logic(data: dict) -> dict:
         
     observatory = Observatory(obs_name, obs_lat, obs_lon, obs_elev)
     
+    instrument = data.get('instrument', 'kast')
+    
     disabled_standards = set(data.get('disabled_standards', []))
     selected_standards = data.get('selected_standards', [])
     auto_standards = bool(data.get('auto_standards', True))
@@ -192,6 +194,7 @@ def run_schedule_logic(data: dict) -> dict:
 
     return scheduler.solve(
         targets,
+        instrument=instrument,
         disabled_standards=disabled_standards,
         selected_standards=selected_standards,
         auto_standards=auto_standards,
