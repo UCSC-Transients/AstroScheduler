@@ -25,6 +25,34 @@ except ImportError:
 # SCHEDULING DISPATCHER HANDLER
 # ==============================================================================
 
+OBSERVATORIES = {
+    'lick': {
+        'name': 'Lick Observatory',
+        'lat': 37.3414,
+        'lon': -121.6429,
+        'elevation': 1283,
+        'timezone': 'America/Los_Angeles',
+        'telescope_class': ShaneTelescope
+    },
+    'keck1': {
+        'name': 'Keck I',
+        'lat': 19.8267,
+        'lon': -155.4733,
+        'elevation': 4123,
+        'timezone': 'Pacific/Honolulu',
+        'telescope_class': Keck1Telescope
+    },
+    'keck2': {
+        'name': 'Keck II',
+        'lat': 19.8267,
+        'lon': -155.4733,
+        'elevation': 4123,
+        'timezone': 'Pacific/Honolulu',
+        'telescope_class': Keck2Telescope
+    }
+}
+
+
 def run_schedule_logic(data: dict) -> dict:
     """Core request processing for scheduling API."""
     date_str = data.get('date')
@@ -37,26 +65,16 @@ def run_schedule_logic(data: dict) -> dict:
     date_local = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
     
     obs_id = obs_data.get('id', 'lick')
-    if obs_id == 'keck1':
-        obs_name = 'Keck I'
-        obs_lat = 19.8267
-        obs_lon = -155.4733
-        obs_elev = 4123
-        telescope = Keck1Telescope()
-    elif obs_id == 'keck2':
-        obs_name = 'Keck II'
-        obs_lat = 19.8267
-        obs_lon = -155.4733
-        obs_elev = 4123
-        telescope = Keck2Telescope()
-    else:
-        obs_name = 'Lick Observatory'
-        obs_lat = 37.3414
-        obs_lon = -121.6429
-        obs_elev = 1283
-        telescope = ShaneTelescope()
+    obs_info = OBSERVATORIES.get(obs_id, OBSERVATORIES['lick'])
+    
+    obs_name = obs_data.get('name', obs_info['name'])
+    obs_lat = float(obs_data.get('lat', obs_info['lat']))
+    obs_lon = float(obs_data.get('lon', obs_info['lon']))
+    obs_elev = float(obs_data.get('elevation', obs_info['elevation']))
+    obs_tz = obs_data.get('timezone', obs_info['timezone'])
+    telescope = obs_info['telescope_class']()
         
-    observatory = Observatory(obs_name, obs_lat, obs_lon, obs_elev)
+    observatory = Observatory(obs_name, obs_lat, obs_lon, obs_elev, timezone=obs_tz)
     
     instrument = data.get('instrument', 'kast')
     

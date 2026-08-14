@@ -250,7 +250,8 @@ function formatDec(decDeg) {
 function parseCoordinate(val, isRa = false) {
     if (typeof val === 'number') {
         if (isRa) {
-            return val > 24.0 ? val / 15.0 : val;
+            let r = Math.abs(val) > 24.0 ? val / 15.0 : val;
+            return ((r % 24.0) + 24.0) % 24.0;
         }
         return val;
     }
@@ -277,13 +278,17 @@ function parseCoordinate(val, isRa = false) {
         const sec = parseFloat(parts[2]) || 0.0;
         
         const decimalVal = sign * (d + m / 60.0 + sec / 3600.0);
+        if (isRa) {
+            return ((decimalVal % 24.0) + 24.0) % 24.0;
+        }
         return decimalVal;
     }
     
     const valFloat = parseFloat(s);
     if (isNaN(valFloat)) return NaN;
     if (isRa) {
-        return valFloat > 24.0 ? valFloat / 15.0 : valFloat;
+        let r = Math.abs(valFloat) > 24.0 ? valFloat / 15.0 : valFloat;
+        return ((r % 24.0) + 24.0) % 24.0;
     }
     return valFloat;
 }
@@ -447,7 +452,64 @@ document.addEventListener("DOMContentLoaded", async () => {
     const obsSelectElem = document.getElementById("obs-select");
     const instSelectElem = document.getElementById("inst-select");
     if (obsSelectElem) {
+        const storedObs = localStorage.getItem("obsId");
+        if (storedObs) {
+            obsSelectElem.value = storedObs;
+        }
+        
+        const updateObsInfoCard = () => {
+            const obsDetailsEl = document.getElementById("obs-details-container");
+            if (obsDetailsEl) {
+                const obs = getSelectedObservatory();
+                const latStr = (obs.lat >= 0 ? `+${obs.lat.toFixed(4)}` : obs.lat.toFixed(4));
+                const lonStr = (obs.lon >= 0 ? `+${obs.lon.toFixed(4)}` : obs.lon.toFixed(4));
+                let limitsHtml = '';
+                if (obs.id === 'keck1') {
+                    limitsHtml = `<p><strong>Keck I Limits (Alt/Az):</strong> Alt [18°–85°] (Az 5.3°–146.2°: Alt ≥ 33.3°)</p>`;
+                } else if (obs.id === 'keck2') {
+                    limitsHtml = `<p><strong>Keck II Limits (Alt/Az):</strong> Alt [18°–85°] (Az 185.3°–332.8°: Alt ≥ 36.8°)</p>`;
+                } else {
+                    const [dMin, dMax] = obs.decLimits || [-35.0, 72.0];
+                    const [hMin, hMax] = obs.haLimits || [-5.6667, 3.75];
+                    const formatHA = (h) => {
+                        const sign = h < 0 ? '-' : '+';
+                        const absH = Math.abs(h);
+                        const hours = Math.floor(absH);
+                        const mins = Math.round((absH - hours) * 60);
+                        return `${sign}${hours}h${String(mins).padStart(2, '0')}m`;
+                    };
+                    limitsHtml = `<p><strong>${obs.name} Limits:</strong> Dec [${dMin >= 0 ? '+' : ''}${dMin}°, ${dMax >= 0 ? '+' : ''}${dMax}°] | HA [${formatHA(hMin)}, ${formatHA(hMax)}]</p>`;
+                }
+                obsDetailsEl.innerHTML = `
+                    <p><strong>Latitude:</strong> ${latStr}° | <strong>Longitude:</strong> ${lonStr}° | <strong>Elevation:</strong> ${obs.elevation}m</p>
+                    ${limitsHtml}
+                `;
+            }
+        };
+
+        const updateObsLimitsInputs = () => {
+            const obs = getSelectedObservatory();
+            const altLimitEl = document.getElementById("rt-alt-limit");
+            const altMaxEl = document.getElementById("rt-alt-max");
+            const decMinEl = document.getElementById("rt-dec-min");
+            const decMaxEl = document.getElementById("rt-dec-max");
+            const azMinEl = document.getElementById("rt-az-min");
+            const azMaxEl = document.getElementById("rt-az-max");
+            const haEastEl = document.getElementById("rt-ha-limit-east");
+            const haWestEl = document.getElementById("rt-ha-limit-west");
+            
+            if (altLimitEl) altLimitEl.value = obs.altLimits ? obs.altLimits[0] : 20;
+            if (altMaxEl) altMaxEl.value = obs.altLimits ? obs.altLimits[1] : 90;
+            if (decMinEl) decMinEl.value = obs.decLimits ? obs.decLimits[0] : -90;
+            if (decMaxEl) decMaxEl.value = obs.decLimits ? obs.decLimits[1] : 90;
+            if (azMinEl) azMinEl.value = obs.azLimits ? obs.azLimits[0] : 0;
+            if (azMaxEl) azMaxEl.value = obs.azLimits ? obs.azLimits[1] : 360;
+            if (haEastEl) haEastEl.value = obs.haLimits ? obs.haLimits[0].toFixed(2) : "-12.00";
+            if (haWestEl) haWestEl.value = obs.haLimits ? obs.haLimits[1].toFixed(2) : "12.00";
+        };
+
         obsSelectElem.addEventListener("change", () => {
+            localStorage.setItem("obsId", obsSelectElem.value);
             if (instSelectElem) {
                 instSelectElem.innerHTML = '';
                 const obsId = obsSelectElem.value;
@@ -460,8 +522,13 @@ document.addEventListener("DOMContentLoaded", async () => {
                 }
                 instSelectElem.disabled = false;
             }
+            updateObsInfoCard();
+            updateObsLimitsInputs();
             triggerScheduling(true);
         });
+        
+        updateObsInfoCard();
+        updateObsLimitsInputs();
         // Populate inst-select on load
         if (instSelectElem) {
             obsSelectElem.dispatchEvent(new Event('change'));
@@ -1612,7 +1679,56 @@ function stickyHighlightTarget(name) {
 
 }
 
+const OBSERVATORIES = {
+    lick: {
+        id: 'lick',
+        name: 'Lick Observatory',
+        lat: 37.3414,
+        lon: -121.6429,
+        elevation: 1283,
+        timezone: 'America/Los_Angeles',
+        decLimits: [-35.0, 72.0],
+        haLimits: [-5.6667, 3.75],
+        altLimits: [20.0, 90.0],
+        azLimits: [0.0, 360.0]
+    },
+    keck1: {
+        id: 'keck1',
+        name: 'Keck I',
+        lat: 19.8267,
+        lon: -155.4733,
+        elevation: 4123,
+        timezone: 'Pacific/Honolulu',
+        decLimits: [-40.0, 85.0],
+        haLimits: [-5.0, 5.0],
+        altLimits: [18.0, 88.9],
+        azLimits: [0.0, 360.0]
+    },
+    keck2: {
+        id: 'keck2',
+        name: 'Keck II',
+        lat: 19.8267,
+        lon: -155.4733,
+        elevation: 4123,
+        timezone: 'Pacific/Honolulu',
+        decLimits: [-40.0, 85.0],
+        haLimits: [-5.0, 5.0],
+        altLimits: [18.0, 89.5],
+        azLimits: [0.0, 360.0]
+    }
+};
+
 // Timezone & Formatting Utilities
+function getSelectedObservatory() {
+    const obsSelect = document.getElementById("obs-select");
+    const obsId = obsSelect ? obsSelect.value : "lick";
+    const obs = OBSERVATORIES[obsId] || OBSERVATORIES['lick'];
+    return {
+        ...obs,
+        offsetHours: -obs.lon / 15.0
+    };
+}
+
 function formatTimeForTimezone(isoStr, tz) {
     if (!isoStr) return "";
     const date = new Date(isoStr);
@@ -1627,12 +1743,14 @@ function formatTimeForTimezone(isoStr, tz) {
         const mm = String(date.getMinutes()).padStart(2, '0');
         return `${hh}:${mm}`;
     } else if (tz === 'obs') {
+        const obs = getSelectedObservatory();
         try {
-            const options = { timeZone: "America/Los_Angeles", hour: "2-digit", minute: "2-digit", hour12: false };
+            const options = { timeZone: obs.timezone, hour: "2-digit", minute: "2-digit", hour12: false };
             const formatted = new Intl.DateTimeFormat("en-US", options).format(date);
             return formatted;
         } catch (e) {
-            const pdtDate = new Date(date.getTime() - 7 * 60 * 60 * 1000);
+            const fallbackOffset = obs.timezone === 'Pacific/Honolulu' ? -10 : -7;
+            const pdtDate = new Date(date.getTime() + fallbackOffset * 60 * 60 * 1000);
             const hh = String(pdtDate.getUTCHours()).padStart(2, '0');
             const mm = String(pdtDate.getUTCMinutes()).padStart(2, '0');
             return `${hh}:${mm}`;
@@ -1696,7 +1814,7 @@ function parseTimeInputToISO(timeStr, dateStr, tz, isStart = false) {
     if (!parsed) return null;
     const { hh, mm } = parsed;
     
-    const observatory = { lat: 37.3414, lon: -121.6429, elevation: 1283 };
+    const observatory = getSelectedObservatory();
     const dateParts = dateStr.split('-');
     const year = parseInt(dateParts[0], 10);
     const month = parseInt(dateParts[1], 10) - 1;
@@ -1729,12 +1847,12 @@ function parseTimeInputToISO(timeStr, dateStr, tz, isStart = false) {
             date = new Date(refYear, refMonth, candidateDay, hh, mm);
         } else if (tz === 'obs') {
             const temp = new Date(Date.UTC(refYear, refMonth, candidateDay, hh, mm));
-            let offset = -7;
+            let offset = observatory.timezone === 'Pacific/Honolulu' ? -10 : -7;
             try {
-                const formatter = new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", timeZoneName: "longOffset" });
+                const formatter = new Intl.DateTimeFormat("en-US", { timeZone: observatory.timezone, timeZoneName: "longOffset" });
                 const formatted = formatter.format(temp);
                 const match = formatted.match(/GMT([-+]\d+)/);
-                offset = match ? parseInt(match[1], 10) : -7;
+                offset = match ? parseInt(match[1], 10) : (observatory.timezone === 'Pacific/Honolulu' ? -10 : -7);
             } catch (e) {}
             date = new Date(Date.UTC(refYear, refMonth, candidateDay, hh - offset, mm));
         } else if (tz && tz.startsWith('UTC')) {
@@ -1907,7 +2025,7 @@ function renderStandardsTable() {
         return;
     }
     
-    const obs = { lat: 37.3414, lon: -121.6429, elevation: 1283 };
+    const obs = getSelectedObservatory();
     // Issue #13: Only check stars that are actually scheduled in the current plan
     const scheduledNames = new Set(currentBlocksList.map(b => b.target_name));
 
@@ -2014,8 +2132,10 @@ function resetToAutoStandards() {
 }
 
 function isStandardStarObservable(s, solar_times, observatory) {
+    observatory = observatory || getSelectedObservatory();
     const dec = typeof s.dec === 'number' ? s.dec : parseCoordinate(s.dec, false);
-    if (dec < -35.0 || dec > 72.0) return false;
+    const [dMin, dMax] = observatory.decLimits || [-90, 90];
+    if (dec < dMin || dec > dMax) return false;
     
     const dateInput = document.getElementById("obs-date").value;
     const dateParts = dateInput.split('-');
@@ -2023,10 +2143,12 @@ function isStandardStarObservable(s, solar_times, observatory) {
     const offsetHours = -observatory.lon / 15.0;
     const utcNoon = new Date(localNoon.getTime() + offsetHours * 60 * 60 * 1000);
     const st = solar_times || getSolarTimesFallback(utcNoon, observatory.lat, observatory.lon, observatory.elevation);
+    const sunsetDate = (st.sunset instanceof Date) ? st.sunset : new Date(st.sunset);
+    const sunriseDate = (st.sunrise instanceof Date) ? st.sunrise : new Date(st.sunrise);
     
     // Checked standard stars can only be scheduled from sunset + 30m to sunrise - 30m
-    const limitStart = st.sunset.getTime() + 30 * 60 * 1000;
-    const limitEnd = st.sunrise.getTime() - 30 * 60 * 1000;
+    const limitStart = sunsetDate.getTime() + 30 * 60 * 1000;
+    const limitEnd = sunriseDate.getTime() - 30 * 60 * 1000;
     
     // Standard star duration is typically 5 minutes (300 seconds)
     const durMs = 5 * 60 * 1000;
@@ -2061,15 +2183,39 @@ function isStandardStarObservable(s, solar_times, observatory) {
 }
 
 function isShaneVisible(t, dt, observatory) {
+    observatory = observatory || getSelectedObservatory();
     const dec = typeof t.dec === 'number' ? t.dec : parseCoordinate(t.dec, false);
-    if (dec < -35.0 || dec > 72.0) return false;
+    const [dMin, dMax] = observatory.decLimits || [-90, 90];
+    if (dec < dMin || dec > dMax) return false;
     
     const ra = typeof t.ra === 'number' ? t.ra : parseCoordinate(t.ra, true);
-    const lon = observatory.lon;
-    const lst = getLst(dt, lon);
-    const ha = getHourAngle(lst, ra);
-    if (ha < -5.6667 || ha > 3.75) return false;
-    return true;
+    const altAz = getAltAz(dt, observatory.lat, observatory.lon, ra, dec);
+    const alt = altAz.alt;
+    const az = altAz.az;
+    const ha = altAz.ha;
+    
+    if (observatory.id === 'keck1') {
+        if (alt > 85.0) return false;
+        if (az >= 5.3 && az <= 146.2) {
+            if (alt < 33.3 || alt > 88.9) return false;
+        } else {
+            if (alt < 18.0 || alt > 88.9) return false;
+        }
+        return true;
+    } else if (observatory.id === 'keck2') {
+        if (alt > 85.0) return false;
+        if (az >= 185.3 && az <= 332.8) {
+            if (alt < 36.8 || alt > 89.5) return false;
+        } else {
+            if (alt < 18.0 || alt > 89.5) return false;
+        }
+        return true;
+    } else {
+        // Lick Shane
+        const [hMin, hMax] = observatory.haLimits || [-5.6667, 3.75];
+        if (ha < hMin || ha > hMax) return false;
+        return true;
+    }
 }
 
 function handleFileUpload(e) {
@@ -2481,15 +2627,16 @@ function recalculateLayoutOnly() {
         if (t) {
             const dec = typeof t.dec === 'number' ? t.dec : parseCoordinate(t.dec, false);
             const ra = typeof t.ra === 'number' ? t.ra : parseCoordinate(t.ra, true);
-            const obs = { lat: 37.3414, lon: -121.6429, elevation: 1283 };
+            const obs = getSelectedObservatory();
+            const isKeck = obs.id === 'keck1' || obs.id === 'keck2';
             
             const startLst = getLst(new Date(block.start_time), obs.lon);
             const startHa = getHourAngle(startLst, ra);
             const endLst = getLst(new Date(block.end_time), obs.lon);
             const endHa = getHourAngle(endLst, ra);
             
-            let decWarn = (dec < -35.0 || dec > 72.0);
-            let haWarn = (startHa < -5.6667 || startHa > 3.75 || endHa < -5.6667 || endHa > 3.75);
+            let decWarn = isKeck ? (dec < -40.0 || dec > 85.0) : (dec < -35.0 || dec > 72.0);
+            let haWarn = isKeck ? (startHa < -5.0 || startHa > 5.0 || endHa < -5.0 || endHa > 5.0) : (startHa < -5.6667 || startHa > 3.75 || endHa < -5.6667 || endHa > 3.75);
             let airmassWarn = (block.airmass_start <= 0 || block.airmass_start > 2.5 || block.airmass_end <= 0 || block.airmass_end > 2.5);
             
             if (decWarn) {
@@ -2571,15 +2718,16 @@ function adjustAbuttingBlocks(changedTargetName, deltaMinutes) {
             if (t) {
                 const dec = typeof t.dec === 'number' ? t.dec : parseCoordinate(t.dec, false);
                 const ra = typeof t.ra === 'number' ? t.ra : parseCoordinate(t.ra, true);
-                const obs = { lat: 37.3414, lon: -121.6429, elevation: 1283 };
+                const obs = getSelectedObservatory();
+                const isKeck = obs.id === 'keck1' || obs.id === 'keck2';
                 
                 const startLst = getLst(new Date(block.start_time), obs.lon);
                 const startHa = getHourAngle(startLst, ra);
                 const endLst = getLst(new Date(block.end_time), obs.lon);
                 const endHa = getHourAngle(endLst, ra);
                 
-                let decWarn = (dec < -35.0 || dec > 72.0);
-                let haWarn = (startHa < -5.6667 || startHa > 3.75 || endHa < -5.6667 || endHa > 3.75);
+                let decWarn = isKeck ? (dec < -40.0 || dec > 85.0) : (dec < -35.0 || dec > 72.0);
+                let haWarn = isKeck ? (startHa < -5.0 || startHa > 5.0 || endHa < -5.0 || endHa > 5.0) : (startHa < -5.6667 || startHa > 3.75 || endHa < -5.6667 || endHa > 3.75);
                 let airmassWarn = (block.airmass_start <= 0 || block.airmass_start > 2.5 || block.airmass_end <= 0 || block.airmass_end > 2.5);
                 
                 if (decWarn) {
@@ -2646,56 +2794,85 @@ async function _doSchedule() {
     const date = document.getElementById("obs-date").value;
     const disabledArray = Array.from(disabledStandards);
     
-    const extinction = parseFloat(document.getElementById("rt-extinction")?.value) || 0.0;
-    const magLimitInput = document.getElementById("rt-mag-limit")?.value;
-    const mag_limit = (magLimitInput !== undefined && magLimitInput !== "") ? parseFloat(magLimitInput) : null;
-    
-    const altLimitInput = document.getElementById("rt-alt-limit")?.value;
-    const alt_limit = (altLimitInput !== undefined && altLimitInput !== "") ? parseFloat(altLimitInput) : null;
-    
-    const altMaxInput = document.getElementById("rt-alt-max")?.value;
-    const alt_max = (altMaxInput !== undefined && altMaxInput !== "") ? parseFloat(altMaxInput) : null;
-    
-    const decMinInput = document.getElementById("rt-dec-min")?.value;
-    const dec_min = (decMinInput !== undefined && decMinInput !== "") ? parseFloat(decMinInput) : null;
-    
-    const decMaxInput = document.getElementById("rt-dec-max")?.value;
-    const dec_max = (decMaxInput !== undefined && decMaxInput !== "") ? parseFloat(decMaxInput) : null;
-    
-    const azMinInput = document.getElementById("rt-az-min")?.value;
-    const az_min = (azMinInput !== undefined && azMinInput !== "") ? parseFloat(azMinInput) : null;
-    
-    const azMaxInput = document.getElementById("rt-az-max")?.value;
-    const az_max = (azMaxInput !== undefined && azMaxInput !== "") ? parseFloat(azMaxInput) : null;
-    
-    const haLimitEastInput = document.getElementById("rt-ha-limit-east")?.value;
-    const ha_limit_east = (haLimitEastInput !== undefined && haLimitEastInput !== "") ? parseFloat(haLimitEastInput) : null;
-    
-    const haLimitWestInput = document.getElementById("rt-ha-limit-west")?.value;
-    const ha_limit_west = (haLimitWestInput !== undefined && haLimitWestInput !== "") ? parseFloat(haLimitWestInput) : null;
-    
+    const isRealTime = document.getElementById("mode-realtime-btn")?.classList.contains("active");
+    const realtime_constraints = {};
+
+    if (isRealTime) {
+        const extinction = parseFloat(document.getElementById("rt-extinction")?.value) || 0.0;
+        const magLimitInput = document.getElementById("rt-mag-limit")?.value;
+        const mag_limit = (magLimitInput !== undefined && magLimitInput !== "") ? parseFloat(magLimitInput) : null;
+        
+        const altLimitInput = document.getElementById("rt-alt-limit")?.value;
+        const alt_limit = (altLimitInput !== undefined && altLimitInput !== "") ? parseFloat(altLimitInput) : null;
+        
+        const altMaxInput = document.getElementById("rt-alt-max")?.value;
+        const alt_max = (altMaxInput !== undefined && altMaxInput !== "") ? parseFloat(altMaxInput) : null;
+        
+        const decMinInput = document.getElementById("rt-dec-min")?.value;
+        const dec_min = (decMinInput !== undefined && decMinInput !== "") ? parseFloat(decMinInput) : null;
+        
+        const decMaxInput = document.getElementById("rt-dec-max")?.value;
+        const dec_max = (decMaxInput !== undefined && decMaxInput !== "") ? parseFloat(decMaxInput) : null;
+        
+        const azMinInput = document.getElementById("rt-az-min")?.value;
+        const az_min = (azMinInput !== undefined && azMinInput !== "") ? parseFloat(azMinInput) : null;
+        
+        const azMaxInput = document.getElementById("rt-az-max")?.value;
+        const az_max = (azMaxInput !== undefined && azMaxInput !== "") ? parseFloat(azMaxInput) : null;
+        
+        const haLimitEastInput = document.getElementById("rt-ha-limit-east")?.value;
+        const ha_limit_east = (haLimitEastInput !== undefined && haLimitEastInput !== "") ? parseFloat(haLimitEastInput) : null;
+        
+        const haLimitWestInput = document.getElementById("rt-ha-limit-west")?.value;
+        const ha_limit_west = (haLimitWestInput !== undefined && haLimitWestInput !== "") ? parseFloat(haLimitWestInput) : null;
+
+        Object.assign(realtime_constraints, {
+            extinction,
+            mag_limit,
+            alt_limit,
+            alt_max,
+            dec_min,
+            dec_max,
+            az_min,
+            az_max,
+            ha_limit_east,
+            ha_limit_west
+        });
+    }
+
     const startOverride = document.getElementById("manual-night-start")?.value.trim() || "";
     const endOverride = document.getElementById("manual-night-end")?.value.trim() || "";
     const tzOverride = document.getElementById("manual-night-tz")?.value || "UTC";
 
-    const realtime_constraints = {
-        extinction,
-        mag_limit,
-        alt_limit,
-        alt_max,
-        dec_min,
-        dec_max,
-        az_min,
-        az_max,
-        ha_limit_east,
-        ha_limit_west
-    };
-
     if (startOverride || endOverride) {
         realtime_constraints.manual_limits_enabled = true;
-        realtime_constraints.manual_limit_start = startOverride;
-        realtime_constraints.manual_limit_end = endOverride;
-        realtime_constraints.manual_limit_tz = tzOverride === 'obs' ? 'Local' : 'UTC';
+        let utStart = null;
+        let utEnd = null;
+        if (startOverride) {
+            const isoStart = parseTimeInputToISO(startOverride, date, tzOverride, true);
+            if (isoStart) {
+                const dt = new Date(isoStart);
+                const hh = String(dt.getUTCHours()).padStart(2, '0');
+                const mm = String(dt.getUTCMinutes()).padStart(2, '0');
+                utStart = `${hh}:${mm}`;
+            } else {
+                utStart = startOverride;
+            }
+        }
+        if (endOverride) {
+            const isoEnd = parseTimeInputToISO(endOverride, date, tzOverride, false);
+            if (isoEnd) {
+                const dt = new Date(isoEnd);
+                const hh = String(dt.getUTCHours()).padStart(2, '0');
+                const mm = String(dt.getUTCMinutes()).padStart(2, '0');
+                utEnd = `${hh}:${mm}`;
+            } else {
+                utEnd = endOverride;
+            }
+        }
+        realtime_constraints.manual_limit_start = utStart;
+        realtime_constraints.manual_limit_end = utEnd;
+        realtime_constraints.manual_limit_tz = 'UTC';
     }
     
     const standards_overrides = {};
@@ -2716,10 +2893,18 @@ async function _doSchedule() {
     const instSelect = document.getElementById("inst-select");
     const instId = instSelect ? instSelect.value : "kast";
 
+    const obs = getSelectedObservatory();
+    const isSameObs = (lastScheduleResult && lastScheduleResult.observatory && (lastScheduleResult.observatory.id === obs.id || lastScheduleResult.observatory.name === obs.name));
+
     const requestPayload = {
         date,
         observatory: {
-            id: obsId
+            id: obs.id,
+            name: obs.name,
+            lat: obs.lat,
+            lon: obs.lon,
+            elevation: obs.elevation,
+            timezone: obs.timezone
         },
         instrument: instId,
         targets: targetPool,
@@ -2728,7 +2913,7 @@ async function _doSchedule() {
         selected_standards: Array.from(selectedStandards),
         standards_overrides,
         realtime_constraints,
-        previous_schedule: currentBlocksList.map(b => ({ target_name: b.target_name, start_time: b.start_time }))
+        previous_schedule: (isSameObs && currentBlocksList && currentBlocksList.length > 0) ? currentBlocksList.map(b => ({ target_name: b.target_name, start_time: b.start_time })) : []
     };
     
     try {
@@ -2860,16 +3045,16 @@ function updateScheduleUI(result) {
             let blueNCell = "-";
             
             if (isScience && target) {
-                const expDetails = getTargetExposureDetailsJS(target);
+                const expDetails = getTargetExposureDetailsJS(target) || { red_exptime: 0, red_num: 1, blue_exptime: 0, blue_num: 1 };
                 const red_exptime_val = target.red_exptime !== null && target.red_exptime !== undefined ? target.red_exptime : '';
                 const red_num_val = target.red_num !== null && target.red_num !== undefined ? target.red_num : '';
                 const blue_exptime_val = target.blue_exptime !== null && target.blue_exptime !== undefined ? target.blue_exptime : '';
                 const blue_num_val = target.blue_num !== null && target.blue_num !== undefined ? target.blue_num : '';
                 
-                const red_exptime_placeholder = target.red_exptime !== null && target.red_exptime !== undefined ? '' : expDetails.red_exptime.toFixed(0);
-                const red_num_placeholder = target.red_num !== null && target.red_num !== undefined ? '' : expDetails.red_num;
-                const blue_exptime_placeholder = target.blue_exptime !== null && target.blue_exptime !== undefined ? '' : expDetails.blue_exptime.toFixed(0);
-                const blue_num_placeholder = target.blue_num !== null && target.blue_num !== undefined ? '' : expDetails.blue_num;
+                const red_exptime_placeholder = target.red_exptime !== null && target.red_exptime !== undefined ? '' : ((expDetails.red_exptime !== undefined) ? expDetails.red_exptime.toFixed(0) : '0');
+                const red_num_placeholder = target.red_num !== null && target.red_num !== undefined ? '' : (expDetails.red_num !== undefined ? expDetails.red_num : '1');
+                const blue_exptime_placeholder = target.blue_exptime !== null && target.blue_exptime !== undefined ? '' : ((expDetails.blue_exptime !== undefined) ? expDetails.blue_exptime.toFixed(0) : '0');
+                const blue_num_placeholder = target.blue_num !== null && target.blue_num !== undefined ? '' : (expDetails.blue_num !== undefined ? expDetails.blue_num : '1');
 
                 redExpCell = `
                     <input type="number" placeholder="${red_exptime_placeholder}" min="0" step="0.1" value="${red_exptime_val}" 
@@ -2893,10 +3078,12 @@ function updateScheduleUI(result) {
                 `;
             } else if (isStandard) {
                 const expDetails = getTargetExposureDetailsJS({ name: b.target_name });
-                redExpCell = `${expDetails.red_exptime.toFixed(0)}`;
-                redNCell = `${expDetails.red_num}`;
-                blueExpCell = `${expDetails.blue_exptime.toFixed(0)}`;
-                blueNCell = `${expDetails.blue_num}`;
+                if (expDetails && expDetails.red_exptime !== undefined) {
+                    redExpCell = `${expDetails.red_exptime.toFixed(0)}`;
+                    redNCell = `${expDetails.red_num}`;
+                    blueExpCell = `${expDetails.blue_exptime.toFixed(0)}`;
+                    blueNCell = `${expDetails.blue_num}`;
+                }
             }
             
             return `
@@ -2937,7 +3124,7 @@ function updateScheduleUI(result) {
 
     // Issue #13: After renderTimeline sets currentBlocksList, sync autoDisabledStandards
     // so checkboxes reflect which stars actually got scheduled.
-    const _obs13 = { lat: 37.3414, lon: -121.6429, elevation: 1283 };
+    const _obs13 = getSelectedObservatory();
     const _scheduledStarNames = new Set(blocks.map(b => b.target_name));
     autoDisabledStandards.clear();
     standardStars.forEach(s => {
@@ -3102,7 +3289,7 @@ function renderTimeline(blocks, solar_times, moon_plot) {
     lstAxisEl.style.width = "100%";
     lstAxisEl.style.marginBottom = "20px";
     
-    const obsLon = -121.6429;
+    const obsLon = getSelectedObservatory().lon;
     for (let t = chartMin; t <= chartMax; t += 3600000) {
         const pct = ((t - chartMin) / nightDurationMs) * 100;
         const tickTime = new Date(t);
@@ -3254,7 +3441,7 @@ function renderTimeline(blocks, solar_times, moon_plot) {
         blockEl.setAttribute("data-target", b.target_name);
         blockEl.innerHTML = `<span>${b.target_name}</span>`;
         
-        const obsLon = -121.6429;
+        const obsLon = getSelectedObservatory().lon;
         const bStartLST = formatLST(getLst(bStart, obsLon));
         const bEndLST = formatLST(getLst(bEnd, obsLon));
         blockEl.title = `${b.target_name}\nUT: ${formatTimeForTimezone(b.start_time, 'UTC')} - ${formatTimeForTimezone(b.end_time, 'UTC')}\nLoc: ${formatTimeForTimezone(b.start_time, 'obs')} - ${formatTimeForTimezone(b.end_time, 'obs')}\nLST: ${bStartLST} - ${bEndLST}\nMedian Airmass: ${b.airmass_median.toFixed(2)}`;
@@ -3553,7 +3740,7 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
             borderColor: '#64748b',
             borderWidth: 2.5,
             fill: false,
-            tension: 0.1,
+            tension: 0,
             pointRadius: 0,
             pointHoverRadius: 4,
             yAxisID: 'y'
@@ -3570,7 +3757,7 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
         const fullNightPoints = plotData.filter((_, idx) => idx % 5 === 0).map(p => {
             return {
                 x: new Date(p.time).getTime(),
-                y: (p.airmass <= 0) ? null : p.airmass,
+                y: (p.airmass > 0 && p.airmass < 900) ? p.airmass : null,
                 observable: !!p.observable
             };
         });
@@ -3582,7 +3769,7 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
             borderColor: getRgba(color, 0.25),
             borderWidth: 1.5,
             fill: false,
-            tension: 0.1,
+            tension: 0,
             pointRadius: 0,
             segment: {
                 borderDash: ctx => {
@@ -3610,7 +3797,7 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
                 const inRange = (timeMs >= startMs && timeMs <= endMs);
                 return {
                     x: timeMs,
-                    y: (inRange && p.airmass > 0) ? p.airmass : null
+                    y: (inRange && p.airmass > 0 && p.airmass < 900) ? p.airmass : null
                 };
             });
             
@@ -3621,7 +3808,7 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
                 borderColor: color,
                 borderWidth: 8,
                 fill: false,
-                tension: 0.1,
+                tension: 0,
                 pointRadius: 0,
                 pointStyle: 'line',
                 pointHoverRadius: 4
@@ -3635,7 +3822,7 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
             const highlightPoints = plotData.filter((_, idx) => idx % 5 === 0).map(p => {
                 return {
                     x: new Date(p.time).getTime(),
-                    y: (p.airmass <= 0) ? null : p.airmass
+                    y: (p.airmass > 0 && p.airmass < 900) ? p.airmass : null
                 };
             });
             datasets.push({
@@ -3644,7 +3831,7 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
                 borderColor: '#ffffff',
                 borderWidth: 4,
                 fill: false,
-                tension: 0.1,
+                tension: 0,
                 pointRadius: 0,
                 pointHoverRadius: 4,
                 yAxisID: 'y'
@@ -3772,17 +3959,8 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
     })();
 
     if (airmassChart) {
-        airmassChart.solarTimes = solar_times;
-        airmassChart.data.datasets = datasets;
-        airmassChart.options.scales.x.min = chartMin;
-        airmassChart.options.scales.x.max = chartMax;
-        if (airmassChart.options.scales.x2) {
-            airmassChart.options.scales.x2.min = chartMin;
-            airmassChart.options.scales.x2.max = chartMax;
-        }
-        airmassChart.options.scales.y.max = maxAirmassVal;
-        airmassChart.update('none');
-        return;
+        airmassChart.destroy();
+        airmassChart = null;
     }
 
     airmassChart = new Chart(ctx, {
@@ -3843,7 +4021,8 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
                                 const date = new Date(val);
                                 const utStr = formatTimeForTimezone(date, 'UTC');
                                 const locStr = formatTimeForTimezone(date, 'obs');
-                                const lstStr = formatLST(getLst(date, -121.6429));
+                                const obsLon = getSelectedObservatory().lon;
+                                const lstStr = formatLST(getLst(date, obsLon));
                                 return `UT: ${utStr} | Loc: ${locStr} | LST: ${lstStr}`;
                             }
                             return '';
@@ -3887,7 +4066,7 @@ function renderAirmassChart(airmass_plots, blocks, solar_times, moon_plot) {
                     ticks: {
                         callback: function(value, index, ticks) {
                             const date = new Date(value);
-                            const obsLon = -121.6429;
+                            const obsLon = getSelectedObservatory().lon;
                             const lstVal = getLst(date, obsLon);
                             return formatLST(lstVal);
                         },
@@ -4094,8 +4273,12 @@ function getHourAngle(lst, ra) {
 }
 
 function getAltAz(date, lat, lon, ra, dec) {
-    const lst = getLst(date, lon);
-    const ha = getHourAngle(lst, ra);
+    const d = datetimeToD(date);
+    const gmst = ((18.697374558 + 24.06570982441908 * d) % 24.0 + 24.0) % 24.0;
+    const lst = ((gmst + lon / 15.0) % 24.0 + 24.0) % 24.0;
+    let ha = (lst - ra) % 24.0;
+    if (ha < 0) ha += 24.0;
+    if (ha > 12.0) ha -= 24.0;
     
     const haRad = (ha * 15.0) * Math.PI / 180.0;
     const decRad = dec * Math.PI / 180.0;
@@ -4116,7 +4299,7 @@ function getAltAz(date, lat, lon, ra, dec) {
             az = 360.0 - az;
         }
     }
-    return { alt, az };
+    return { alt, az, ha };
 }
 
 function getAirmass(alt) {
@@ -4173,13 +4356,12 @@ function getSeparation(ra1, dec1, ra2, dec2) {
 }
 
 function getSolarTimesFallback(dateUtc, lat, lon, elevation) {
-    const noon = new Date(Date.UTC(dateUtc.getUTCFullYear(), dateUtc.getUTCMonth(), dateUtc.getUTCDate(), 12, 0, 0));
-    const d = datetimeToD(noon);
+    const d = datetimeToD(dateUtc);
     const sun = getSunPosition(d);
     
-    const lstNoon = getLst(noon, lon);
+    const lstNoon = getLst(dateUtc, lon);
     const haNoon = getHourAngle(lstNoon, sun.ra);
-    const transit = new Date(noon.getTime() - haNoon * 60 * 60 * 1000);
+    const transit = new Date(dateUtc.getTime() - haNoon * 60 * 60 * 1000);
     
     const latRad = lat * Math.PI / 180.0;
     const decRad = sun.dec * Math.PI / 180.0;
@@ -4245,10 +4427,11 @@ function runLocalJSSolver(payload) {
     const dateParts = date.split('-');
     
     const localNoon = new Date(dateParts[0], dateParts[1] - 1, dateParts[2], 12, 0, 0);
-    let lat = 37.3414, lon = -121.6429, elevation = 1283, offsetHours = 8.109;
-    if (observatory.id === 'keck1' || observatory.id === 'keck2') {
-        lat = 19.8267; lon = -155.4733; elevation = 4123; offsetHours = 10.3648;
-    }
+    const obs = getSelectedObservatory();
+    const lat = (observatory && observatory.lat !== undefined) ? observatory.lat : obs.lat;
+    const lon = (observatory && observatory.lon !== undefined) ? observatory.lon : obs.lon;
+    const elevation = (observatory && observatory.elevation !== undefined) ? observatory.elevation : obs.elevation;
+    const offsetHours = -lon / 15.0;
     observatory.lat = lat;
     observatory.lon = lon;
     observatory.elevation = elevation;
@@ -4260,18 +4443,21 @@ function runLocalJSSolver(payload) {
     let sunrise = solarTimes.sunrise;
     
     const rt = payload.realtime_constraints || {};
+    const tzName = observatory.timezone || (observatory.id && (observatory.id === 'keck1' || observatory.id === 'keck2') ? 'Pacific/Honolulu' : 'America/Los_Angeles');
+    const fallbackOffset = tzName === 'Pacific/Honolulu' ? -10 : -7;
+    
     if (rt.manual_limits_enabled) {
         const tzMode = rt.manual_limit_tz || 'UTC';
         
         let shh, smm;
         if (tzMode !== 'UTC') {
             try {
-                const options = { timeZone: "America/Los_Angeles", hour: "numeric", minute: "numeric", hour12: false };
+                const options = { timeZone: tzName, hour: "numeric", minute: "numeric", hour12: false };
                 const partsSunset = new Intl.DateTimeFormat("en-US", options).formatToParts(sunset);
                 shh = parseInt(partsSunset.find(p => p.type === 'hour').value, 10);
                 smm = parseInt(partsSunset.find(p => p.type === 'minute').value, 10);
             } catch (e) {
-                const localDate = new Date(sunset.getTime() - 7 * 60 * 60 * 1000);
+                const localDate = new Date(sunset.getTime() + fallbackOffset * 60 * 60 * 1000);
                 shh = localDate.getUTCHours();
                 smm = localDate.getUTCMinutes();
             }
@@ -4290,12 +4476,12 @@ function runLocalJSSolver(payload) {
         let ehh, emm;
         if (tzMode !== 'UTC') {
             try {
-                const options = { timeZone: "America/Los_Angeles", hour: "numeric", minute: "numeric", hour12: false };
+                const options = { timeZone: tzName, hour: "numeric", minute: "numeric", hour12: false };
                 const partsSunrise = new Intl.DateTimeFormat("en-US", options).formatToParts(sunrise);
                 ehh = parseInt(partsSunrise.find(p => p.type === 'hour').value, 10);
                 emm = parseInt(partsSunrise.find(p => p.type === 'minute').value, 10);
             } catch (e) {
-                const localDate = new Date(sunrise.getTime() - 7 * 60 * 60 * 1000);
+                const localDate = new Date(sunrise.getTime() + fallbackOffset * 60 * 60 * 1000);
                 ehh = localDate.getUTCHours();
                 emm = localDate.getUTCMinutes();
             }
@@ -4342,12 +4528,12 @@ function runLocalJSSolver(payload) {
         } else {
             function getOffset(date) {
                 try {
-                    const formatter = new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", timeZoneName: "longOffset" });
+                    const formatter = new Intl.DateTimeFormat("en-US", { timeZone: tzName, timeZoneName: "longOffset" });
                     const formatted = formatter.format(date);
                     const match = formatted.match(/GMT([-+]\d+)/);
-                    return match ? parseInt(match[1], 10) : -7;
+                    return match ? parseInt(match[1], 10) : fallbackOffset;
                 } catch (e) {
-                    return -7;
+                    return fallbackOffset;
                 }
             }
             const tempStart = new Date(Date.UTC(dateParts[0], dateParts[1] - 1, dateParts[2], shh, smm, 0, 0));
@@ -4394,25 +4580,53 @@ function runLocalJSSolver(payload) {
     const dMid = datetimeToD(midTime);
     const moon = getMoonPosition(dMid);
     
+    const solverAirmassCache = {};
     function getAirmassForTarget(t, dt) {
-        if (!t._airmassCache) t._airmassCache = {};
+        const tKey = t.name || `${t.ra}_${t.dec}`;
+        if (!solverAirmassCache[tKey]) solverAirmassCache[tKey] = {};
         const key = dt.getTime();
-        if (t._airmassCache[key] !== undefined) {
-            return t._airmassCache[key];
+        if (solverAirmassCache[tKey][key] !== undefined) {
+            return solverAirmassCache[tKey][key];
         }
         const altAz = getAltAz(dt, observatory.lat, observatory.lon, t.ra, t.dec);
         const val = getAirmass(altAz.alt);
-        t._airmassCache[key] = val;
+        solverAirmassCache[tKey][key] = val;
         return val;
     }
     
     function isShaneVisible(t, dt) {
-        if (t.dec < -35.0 || t.dec > 72.0) return false;
-        const lst = getLst(dt, observatory.lon);
-        const ha = getHourAngle(lst, t.ra);
-        // East -05:40 (-5.67h), West +03:45 (+3.75h)
-        if (ha < -5.6667 || ha > 3.75) return false;
-        return true;
+        const dec = typeof t.dec === 'number' ? t.dec : parseCoordinate(t.dec, false);
+        const [dMin, dMax] = observatory.decLimits || [-90, 90];
+        if (dec < dMin || dec > dMax) return false;
+        
+        const ra = typeof t.ra === 'number' ? t.ra : parseCoordinate(t.ra, true);
+        const altAz = getAltAz(dt, observatory.lat, observatory.lon, ra, dec);
+        const alt = altAz.alt;
+        const az = altAz.az;
+        const ha = altAz.ha;
+        
+        if (observatory.id === 'keck1') {
+            if (alt > 85.0) return false;
+            if (az >= 5.3 && az <= 146.2) {
+                if (alt < 33.3 || alt > 88.9) return false;
+            } else {
+                if (alt < 18.0 || alt > 88.9) return false;
+            }
+            return true;
+        } else if (observatory.id === 'keck2') {
+            if (alt > 85.0) return false;
+            if (az >= 185.3 && az <= 332.8) {
+                if (alt < 36.8 || alt > 89.5) return false;
+            } else {
+                if (alt < 18.0 || alt > 89.5) return false;
+            }
+            return true;
+        } else {
+            // Lick Shane
+            const [hMin, hMax] = observatory.haLimits || [-5.6667, 3.75];
+            if (ha < hMin || ha > hMax) return false;
+            return true;
+        }
     }
     
     function isChunkValid(t, cIdx, isManual = false, ignoreSchedulingLimits = false) {
@@ -4855,8 +5069,9 @@ function runLocalJSSolver(payload) {
         const selectedSet = new Set(payload.selected_standards || []);
         const manualStandards = activeStandardsData.filter(s => selectedSet.has(s.name));
         
-        // Sort by RA
-        manualStandards.sort((a, b) => a.ra - b.ra);
+        // Sort chronologically relative to sunset LST
+        const lstStart = getLst(sunset, observatory.lon);
+        manualStandards.sort((a, b) => ((a.ra - lstStart + 24.0) % 24.0) - ((b.ra - lstStart + 24.0) % 24.0));
         
         // Find twilight chunks
         const twilChunks = [];
@@ -5258,6 +5473,7 @@ function runLocalJSSolver(payload) {
                     hasConstraint[tg.name] = hc;
                 });
 
+                const lstStart = getLst(sunset, observatory.lon);
                 const solverTargets = [...targetsToSchedule].sort((a,b) => {
                     const actA = S_active_names.has(a.name) ? 0 : 1;
                     const actB = S_active_names.has(b.name) ? 0 : 1;
@@ -5266,6 +5482,9 @@ function runLocalJSSolver(payload) {
                     const hcB = hasConstraint[b.name] ? 0 : 1;
                     if (hcA !== hcB) return hcA - hcB;
                     if (a.priority !== b.priority) return a.priority - b.priority;
+                    const raTransitA = (a.ra - lstStart + 24.0) % 24.0;
+                    const raTransitB = (b.ra - lstStart + 24.0) % 24.0;
+                    if (raTransitA !== raTransitB) return raTransitA - raTransitB;
                     return durations[b.name] - durations[a.name];
                 });
                 
@@ -5551,27 +5770,17 @@ function drawPolarSkyMap(blocks, targetPool, solar_times) {
     
     // Draw restricted pointing regions as grey shading
     const isRealTime = document.getElementById("mode-realtime-btn")?.classList.contains("active");
-    const obsSelect = document.getElementById("obs-select");
-    const obsId = obsSelect ? obsSelect.value : "lick";
-    const obs = { lat: 37.3414, lon: -121.6429 };
+    const obs = getSelectedObservatory();
+    const obsId = obs.id;
     
     let minAlt = 20;
     let maxAlt = 90;
     let minAz = 0;
     let maxAz = 360;
-    let decMin = -35;
-    let decMax = 72;
-    let haLimitEast = -5.6667;
-    let haLimitWest = 3.75;
-    
-    if (obsId === 'keck1' || obsId === 'keck2') {
-        obs.lat = 19.8267;
-        obs.lon = -155.4733;
-        decMin = -90;
-        decMax = 90;
-        haLimitEast = -12.0;
-        haLimitWest = 12.0;
-    }
+    let decMin = obs.decLimits ? obs.decLimits[0] : -90;
+    let decMax = obs.decLimits ? obs.decLimits[1] : 90;
+    let haLimitEast = obs.haLimits ? obs.haLimits[0] : -12.0;
+    let haLimitWest = obs.haLimits ? obs.haLimits[1] : 12.0;
     
     if (isRealTime) {
         const altLimitVal = parseFloat(document.getElementById("rt-alt-limit")?.value);
