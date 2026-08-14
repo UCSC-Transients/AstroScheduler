@@ -151,7 +151,7 @@ def parse_coordinate(val: Any, is_ra: bool = False) -> float:
     """
     Parses a coordinate string or numeric input.
     If it is a float/int:
-      - If is_ra: treated as degrees, divide by 15.0 to get hours.
+      - If is_ra: treated as degrees if abs > 24, divide by 15.0 to get hours, normalized to [0, 24).
       - If Dec: kept as degrees.
     If it is a string:
       - Check for sexagesimal indicators (colons, spaces, letters).
@@ -160,7 +160,8 @@ def parse_coordinate(val: Any, is_ra: bool = False) -> float:
     if isinstance(val, (int, float)):
         val_float = float(val)
         if is_ra:
-            return val_float / 15.0 if val_float > 24.0 else val_float
+            r = val_float / 15.0 if abs(val_float) > 24.0 else val_float
+            return (r % 24.0 + 24.0) % 24.0
         return val_float
 
     # Convert to string and clean
@@ -191,6 +192,8 @@ def parse_coordinate(val: Any, is_ra: bool = False) -> float:
             sec = float(parts[2]) if len(parts) > 2 else 0.0
             
             decimal_val = sign * (d + m / 60.0 + sec / 3600.0)
+            if is_ra:
+                return (decimal_val % 24.0 + 24.0) % 24.0
             # If sexagesimal, RA is already in hours, Dec is in degrees.
             return decimal_val
         except ValueError:
@@ -200,7 +203,8 @@ def parse_coordinate(val: Any, is_ra: bool = False) -> float:
     try:
         val_float = float(s)
         if is_ra:
-            return val_float / 15.0 if val_float > 24.0 else val_float
+            r = val_float / 15.0 if abs(val_float) > 24.0 else val_float
+            return (r % 24.0 + 24.0) % 24.0
         return val_float
     except ValueError:
         raise ValueError(f"Could not parse coordinate: {val}")
@@ -389,11 +393,12 @@ def get_solar_times_fallback(date_utc: datetime.datetime, lat_deg: float, lon_de
 class Observatory:
     """Represents an astronomical observatory location."""
     
-    def __init__(self, name: str, latitude: float, longitude: float, elevation: float):
+    def __init__(self, name: str, latitude: float, longitude: float, elevation: float, timezone: str = 'America/Los_Angeles'):
         self.name = name
         self.latitude = latitude      # degrees N
         self.longitude = longitude    # degrees E (negative for W)
         self.elevation = elevation    # meters
+        self.timezone = timezone
         
     def get_night_parameters(self, date_local: datetime.date) -> Dict[str, Any]:
         """
@@ -422,12 +427,12 @@ class Observatory:
                 
                 # Get next sunset and sunrise relative to noon reference
                 sunset = observer.sun_set_time(t_ref, which='next')
-                sunrise = observer.sun_rise_time(t_ref, which='next')
+                sunrise = observer.sun_rise_time(sunset, which='next')
                 
-                twilight_eve_18 = observer.twilight_evening_astronomical(t_ref, which='next')
-                twilight_morn_18 = observer.twilight_morning_astronomical(t_ref, which='next')
-                twilight_eve_12 = observer.twilight_evening_nautical(t_ref, which='next')
-                twilight_morn_12 = observer.twilight_morning_nautical(t_ref, which='next')
+                twilight_eve_12 = observer.twilight_evening_nautical(sunset, which='next')
+                twilight_eve_18 = observer.twilight_evening_astronomical(sunset, which='next')
+                twilight_morn_18 = observer.twilight_morning_astronomical(sunrise, which='previous')
+                twilight_morn_12 = observer.twilight_morning_nautical(sunrise, which='previous')
                 
                 solar_times = {
                     'sunset': sunset.datetime.replace(tzinfo=datetime.timezone.utc),
@@ -831,6 +836,7 @@ class Scheduler:
         self._loc = None
         self._obs = None
         self._time_cache = {}
+        self._airmass_cache = {}
         if HAS_ASTRO_LIBS:
             try:
                 self._loc = EarthLocation(lat=self.observatory.latitude*u.deg, lon=self.observatory.longitude*u.deg, height=self.observatory.elevation*u.m)
@@ -840,10 +846,11 @@ class Scheduler:
         
     def get_airmass_for_target(self, target: Target, dt_utc: datetime.datetime) -> float:
         """Compute target airmass at dt_utc."""
-        if not hasattr(target, '_airmass_cache'):
-            target._airmass_cache = {}
-        if dt_utc in target._airmass_cache:
-            return target._airmass_cache[dt_utc]
+        if target.name not in self._airmass_cache:
+            self._airmass_cache[target.name] = {}
+        cache = self._airmass_cache[target.name]
+        if dt_utc in cache:
+            return cache[dt_utc]
 
         val = 999.0
         astropy_ok = False
@@ -868,16 +875,17 @@ class Scheduler:
             alt, _ = get_alt_az(dt_utc, self.observatory.latitude, self.observatory.longitude, target.ra, target.dec)
             val = get_airmass(alt)
 
-        target._airmass_cache[dt_utc] = val
+        cache[dt_utc] = val
         return val
 
     def precompute_target_airmass(self, target: Target):
         """Precompute airmass for all chunk_times in one vectorized astropy call."""
-        if not hasattr(target, '_airmass_cache'):
-            target._airmass_cache = {}
+        if target.name not in self._airmass_cache:
+            self._airmass_cache[target.name] = {}
+        cache = self._airmass_cache[target.name]
         
         # Only compute the times that are not already cached
-        uncached_indices = [i for i, t in enumerate(self.chunk_times) if t not in target._airmass_cache]
+        uncached_indices = [i for i, t in enumerate(self.chunk_times) if t not in cache]
         if not uncached_indices:
             return
             
@@ -894,7 +902,7 @@ class Scheduler:
                 for idx, c_idx in enumerate(uncached_indices):
                     alt = altazs[idx].alt.degree
                     val = altazs[idx].secz.value if alt > 0 else 999.0
-                    target._airmass_cache[self.chunk_times[c_idx]] = val
+                    cache[self.chunk_times[c_idx]] = val
                 astropy_ok = True
             except Exception:
                 pass
@@ -903,7 +911,7 @@ class Scheduler:
             for c_idx in uncached_indices:
                 dt_utc = self.chunk_times[c_idx]
                 alt, _ = get_alt_az(dt_utc, self.observatory.latitude, self.observatory.longitude, target.ra, target.dec)
-                target._airmass_cache[dt_utc] = get_airmass(alt)
+                cache[dt_utc] = get_airmass(alt)
 
     def is_chunk_valid(self, target: Target, chunk_idx: int, is_manual: bool = False, ignore_scheduling_limits: bool = False) -> bool:
         """Check if a target can be observed in a given chunk."""
@@ -963,64 +971,68 @@ class Scheduler:
                 if airmass <= 0 or airmass > airmass_limit:
                     return False
 
-        # 4. Real-time Pointing Limits (HA, Altitude, Dec, Az)
+        # 4. Real-time Pointing Limits (HA, Altitude, Dec, Az) overrides from RT panel
         if not is_manual:
             rt = getattr(self, 'realtime_constraints', {})
             
-            # Dec limit
+            # Dec limit override
             dec_min = rt.get('dec_min')
             dec_max = rt.get('dec_max')
-            try:
-                dec_min_val = float(dec_min) if dec_min is not None and dec_min != "" else -35.0
-                dec_max_val = float(dec_max) if dec_max is not None and dec_max != "" else 72.0
-                if not (dec_min_val <= target.dec <= dec_max_val):
-                    return False
-            except (ValueError, TypeError):
-                pass
+            if (dec_min is not None and dec_min != "") or (dec_max is not None and dec_max != ""):
+                try:
+                    dec_min_val = float(dec_min) if dec_min is not None and dec_min != "" else getattr(self.telescope, 'dec_min', -90.0)
+                    dec_max_val = float(dec_max) if dec_max is not None and dec_max != "" else getattr(self.telescope, 'dec_max', 90.0)
+                    if not (dec_min_val <= target.dec <= dec_max_val):
+                        return False
+                except (ValueError, TypeError):
+                    pass
 
-            # Alt limit
+            # Alt limit override
             if not ignore_scheduling_limits:
                 alt_limit = rt.get('alt_limit')
                 alt_max = rt.get('alt_max')
-                try:
-                    alt_limit_val = float(alt_limit) if alt_limit is not None and alt_limit != "" else 20.0
-                    alt_max_val = float(alt_max) if alt_max is not None and alt_max != "" else 90.0
-                    alt = math.degrees(math.asin(1.0 / airmass)) if airmass > 0 else 0.0
-                    if alt < alt_limit_val or alt > alt_max_val:
-                        return False
-                except (ValueError, TypeError):
-                    pass
+                if (alt_limit is not None and alt_limit != "") or (alt_max is not None and alt_max != ""):
+                    try:
+                        alt_limit_val = float(alt_limit) if alt_limit is not None and alt_limit != "" else getattr(self.telescope, 'alt_min', 20.0)
+                        alt_max_val = float(alt_max) if alt_max is not None and alt_max != "" else getattr(self.telescope, 'alt_max', 90.0)
+                        alt = math.degrees(math.asin(min(1.0, 1.0 / airmass))) if airmass > 0 else 0.0
+                        if alt < alt_limit_val or alt > alt_max_val:
+                            return False
+                    except (ValueError, TypeError):
+                        pass
 
-            # Az limit
+            # Az limit override
             if not ignore_scheduling_limits:
                 az_min = rt.get('az_min')
                 az_max = rt.get('az_max')
-                try:
-                    az_min_val = float(az_min) if az_min is not None and az_min != "" else 0.0
-                    az_max_val = float(az_max) if az_max is not None and az_max != "" else 360.0
-                    _, az = get_alt_az(t, self.observatory.latitude, self.observatory.longitude, target.ra, target.dec)
-                    if az_min_val <= az_max_val:
-                        if not (az_min_val <= az <= az_max_val):
-                            return False
-                    else:
-                        if az < az_min_val and az > az_max_val:
-                            return False
-                except (ValueError, TypeError):
-                    pass
+                if (az_min is not None and az_min != "") or (az_max is not None and az_max != ""):
+                    try:
+                        az_min_val = float(az_min) if az_min is not None and az_min != "" else getattr(self.telescope, 'az_min', 0.0)
+                        az_max_val = float(az_max) if az_max is not None and az_max != "" else getattr(self.telescope, 'az_max', 360.0)
+                        _, az = get_alt_az(t, self.observatory.latitude, self.observatory.longitude, target.ra, target.dec)
+                        if az_min_val <= az_max_val:
+                            if not (az_min_val <= az <= az_max_val):
+                                return False
+                        else:
+                            if az < az_min_val and az > az_max_val:
+                                return False
+                    except (ValueError, TypeError):
+                        pass
 
-            # HA limit
+            # HA limit override
             if not ignore_scheduling_limits:
                 ha_limit_east = rt.get('ha_limit_east')
                 ha_limit_west = rt.get('ha_limit_west')
-                try:
-                    limit_east = float(ha_limit_east) if ha_limit_east is not None and ha_limit_east != "" else getattr(self.telescope, 'ha_limit_east', -12.0)
-                    limit_west = float(ha_limit_west) if ha_limit_west is not None and ha_limit_west != "" else getattr(self.telescope, 'ha_limit_west', 12.0)
-                    lst = get_lst(t, self.observatory.longitude)
-                    ha = get_hour_angle(lst, target.ra)
-                    if not (limit_east <= ha <= limit_west):
-                        return False
-                except (ValueError, TypeError):
-                    pass
+                if (ha_limit_east is not None and ha_limit_east != "") or (ha_limit_west is not None and ha_limit_west != ""):
+                    try:
+                        limit_east = float(ha_limit_east) if ha_limit_east is not None and ha_limit_east != "" else getattr(self.telescope, 'ha_limit_east', -12.0)
+                        limit_west = float(ha_limit_west) if ha_limit_west is not None and ha_limit_west != "" else getattr(self.telescope, 'ha_limit_west', 12.0)
+                        lst = get_lst(t, self.observatory.longitude)
+                        ha = get_hour_angle(lst, target.ra)
+                        if not (limit_east <= ha <= limit_west):
+                            return False
+                    except (ValueError, TypeError):
+                        pass
 
             # 5. Real-time start time limit (recalculate starting now)
             start_from = rt.get('start_from')
@@ -1105,9 +1117,10 @@ class Scheduler:
                     sunrise_mm = sunrise_utc.minute
                 else:
                     import pytz
-                    pacific = pytz.timezone('America/Los_Angeles')
-                    sunset_local = sunset_utc.replace(tzinfo=pytz.UTC).astimezone(pacific) if sunset_utc.tzinfo is None else sunset_utc.astimezone(pacific)
-                    sunrise_local = sunrise_utc.replace(tzinfo=pytz.UTC).astimezone(pacific) if sunrise_utc.tzinfo is None else sunrise_utc.astimezone(pacific)
+                    obs_tz = getattr(self.observatory, 'timezone', 'America/Los_Angeles')
+                    loc_tz = pytz.timezone(obs_tz)
+                    sunset_local = sunset_utc.replace(tzinfo=pytz.UTC).astimezone(loc_tz) if sunset_utc.tzinfo is None else sunset_utc.astimezone(loc_tz)
+                    sunrise_local = sunrise_utc.replace(tzinfo=pytz.UTC).astimezone(loc_tz) if sunrise_utc.tzinfo is None else sunrise_utc.astimezone(loc_tz)
                     sunset_hh = sunset_local.hour
                     sunset_mm = sunset_local.minute
                     sunrise_hh = sunrise_local.hour
@@ -1139,12 +1152,13 @@ class Scheduler:
                     self.end_night = cand_end
                 else:
                     import pytz
-                    pacific = pytz.timezone('America/Los_Angeles')
-                    local_start = pacific.localize(datetime.datetime(self.date_local.year, self.date_local.month, self.date_local.day, shh, smm))
+                    obs_tz = getattr(self.observatory, 'timezone', 'America/Los_Angeles')
+                    loc_tz = pytz.timezone(obs_tz)
+                    local_start = loc_tz.localize(datetime.datetime(self.date_local.year, self.date_local.month, self.date_local.day, shh, smm))
                     end_day = self.date_local
                     if ehh < shh:
                         end_day = self.date_local + datetime.timedelta(days=1)
-                    local_end = pacific.localize(datetime.datetime(end_day.year, end_day.month, end_day.day, ehh, emm))
+                    local_end = loc_tz.localize(datetime.datetime(end_day.year, end_day.month, end_day.day, ehh, emm))
                     self.start_night = local_start.astimezone(datetime.timezone.utc)
                     self.end_night = local_end.astimezone(datetime.timezone.utc)
                     
@@ -1436,8 +1450,9 @@ class Scheduler:
             standard_blocks.append(block)
 
         if not auto_standards:
-            # Sort standards by RA to schedule in logical sky order
-            standards.sort(key=lambda s: s['target'].ra)
+            # Sort standards chronologically relative to sunset LST
+            lst_start = get_lst(self.chunk_times[0], self.observatory.longitude)
+            standards.sort(key=lambda s: (s['target'].ra - lst_start) % 24.0)
 
             # Find twilight chunks based on twilight boundaries
             twil_chunks = []
@@ -1937,6 +1952,7 @@ class Scheduler:
                 # We just append them to the end with rank = infinity.
                 topo_rank = {name: i for i, name in enumerate(topo_order)}
                 
+                lst_start = get_lst(self.chunk_times[0], self.observatory.longitude)
                 targets_sorted_for_solve = sorted(
                     targets_to_schedule,
                     key=lambda x: (
@@ -1944,6 +1960,7 @@ class Scheduler:
                         not has_constraint[x.name],
                         topo_rank.get(x.name, 999999),
                         x.priority,
+                        (x.ra - lst_start) % 24.0,
                         -durations[x.name]
                     )
                 )

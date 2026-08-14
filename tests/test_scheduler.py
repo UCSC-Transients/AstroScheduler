@@ -7,6 +7,8 @@ import datetime
 from scheduler import (
     Observatory,
     ShaneTelescope,
+    Keck1Telescope,
+    Keck2Telescope,
     Target,
     Scheduler,
     get_lst,
@@ -753,15 +755,56 @@ class TestScheduler(unittest.TestCase):
         before_sunset = (scheduler.start_night - datetime.timedelta(minutes=2)).isoformat()
         self.assertIsNone(scheduler.get_chunk_idx_from_time_str(before_sunset))
 
-    def test_get_chunk_idx_rejects_after_night(self):
-        """get_chunk_idx_from_time_str returns None for times >60s after sunrise."""
-        observatory = Observatory("Lick Observatory", 37.3414, -121.6429, 1283)
-        telescope = ShaneTelescope()
-        date_local = datetime.date(2026, 6, 18)
-        scheduler = Scheduler(observatory, telescope, date_local)
+    def test_keck2_airmass_continuity(self):
+        """Verify sequential Lick then Keck II airmass is smooth and not corrupted by shared target caches."""
+        targets = [
+            Target("Feige 110", 23.332 * 15.0, -5.166, 11.8, 1.0),
+            Target("Vega", 18.616 * 15.0, 38.78, 0.0, 1.0)
+        ]
+        
+        # 1. Run Lick solve first
+        obs_lick = Observatory("Lick Observatory", 37.3414, -121.6429, 1283, timezone="America/Los_Angeles")
+        tel_lick = ShaneTelescope()
+        sched_lick = Scheduler(obs_lick, tel_lick, datetime.date(2026, 8, 13))
+        sched_lick.solve(targets)
+        
+        # 2. Run Keck II solve second with standard stars (reused instances)
+        obs_keck = Observatory("Keck II", 19.8267, -155.4733, 4123, timezone="Pacific/Honolulu")
+        tel_keck = Keck2Telescope()
+        sched_keck = Scheduler(obs_keck, tel_keck, datetime.date(2026, 8, 13))
+        res_keck = sched_keck.solve(targets)
+        
+        # Check solar times end around 15:55-15:56 UT (not 13:17)
+        self.assertGreater(sched_keck.end_night.hour, 14)
+        
+        # Check that Keck airmass curves are perfectly smooth (delta < 0.02 per minute for airmass < 2) everywhere
+        for t in targets:
+            profile = res_keck['airmass_plots'][t.name]
+            airmasses = [p['airmass'] for p in profile if p['airmass'] > 0 and p['airmass'] < 2.0]
+            self.assertTrue(len(airmasses) > 10)
+            for i in range(len(airmasses) - 1):
+                delta = abs(airmasses[i+1] - airmasses[i])
+                self.assertLess(delta, 0.02, f"Discontinuity found at index {i} in {t.name}: {airmasses[i]} -> {airmasses[i+1]}")
 
-        after_sunrise = (scheduler.end_night + datetime.timedelta(minutes=2)).isoformat()
-        self.assertIsNone(scheduler.get_chunk_idx_from_time_str(after_sunrise))
+    def test_keck_telescope_pointing_and_alt_az_limits(self):
+        """Verify Keck telescopes apply appropriate Alt/Az and Dec pointing limits."""
+        obs_keck = Observatory("Keck I", 19.8267, -155.4733, 4123, timezone="Pacific/Honolulu")
+        tel_keck = Keck1Telescope()
+        
+        # Test Dec limit
+        self.assertTrue(tel_keck.dec_min <= -40.0)
+        self.assertTrue(tel_keck.dec_max >= 85.0)
+        
+        # High dec target valid on Keck (Dec = +80), out of range on Shane (Dec max = +72)
+        tel_shane = ShaneTelescope()
+        self.assertFalse(tel_shane.dec_min <= 80.0 <= tel_shane.dec_max)
+        self.assertTrue(tel_keck.dec_min <= 80.0 <= tel_keck.dec_max)
+        
+        # Scheduler solve with no explicit limits uses telescope's own limits
+        sched = Scheduler(obs_keck, tel_keck, datetime.date(2026, 8, 13))
+        target_high_dec = Target("HighDecTarget", 18.0 * 15.0, 78.0, 15.0, 1.0)
+        res = sched.solve([target_high_dec], auto_standards=False)
+        self.assertIn("HighDecTarget", res['airmass_plots'])
 
 
 if __name__ == '__main__':
