@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "astroscheduler"
+dynamic = ["version"]
+description = "Night planning for classical spectroscopy runs: target scheduling, standards and airmass."
+readme = "README.md"
+requires-python = ">=3.8"
+# Lower bounds are what YSE_PZ runs today (Python 3.8); CI tests them in the py38-pins job.
+dependencies = [
+    "astropy>=5.0",
+    "astroplan>=0.8",
+    "numpy>=1.22",
+    "pytz>=2018.3",
+]
+
+[project.optional-dependencies]
+server = ["fastapi>=0.95.0", "uvicorn>=0.22.0"]
+test = ["pytest>=7.3.0", "playwright>=1.40.0", "httpx>=0.24"]
+
+[project.urls]
+Homepage = "https://github.com/UCSC-Transients/AstroScheduler"
+
+[tool.setuptools]
+packages = ["astroscheduler"]
+
+[tool.setuptools.dynamic]
+version = {attr = "astroscheduler.__version__"}
+
+[tool.setuptools.package-data]
+astroscheduler = ["static/*", "templates/*", "telescopes.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

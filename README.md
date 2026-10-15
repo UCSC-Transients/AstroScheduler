@@ -9,22 +9,27 @@ UCSC AstroScheduler is a modern, real-time observation scheduling and planning d
 - **Target Ingestion & Management**: Easily drag-and-drop or select target coordinate text files, with support for sexagesimal formats (`HH:MM:SS`, `DD:MM:SS`) and magnitude/priority float fields.
 - **Standard Stars Calibration**: Automatically selects and schedules optimal blue and red standard stars (constrained to at least 30 minutes after sunset / before sunrise) to match the science target requirements.
 - **Real-Time Observing Mode**: Reschedule blocks on the fly "starting from now" with active pointing checks, HA limits (East: -05:40, West: +03:45), and live electronic log comments.
-- **Client-Side Solver Fallback**: Full client-side JavaScript implementation of the solver ensures the dashboard remains 100% functional even when the Python server is offline.
+- **One Solver**: the Python solver behind `POST /api/schedule` is the only solver. If a solve fails, the page shows the error and keeps the current schedule.
+- **Real-Time Observing Log**: Start, Completed, Failed and Punted actions record what happened (Failed and Punted take a reason), and finished targets are skipped on the next re-solve.
 
 ## Repository Layout
 
 ```
-├── app.py                # Web server application (FastAPI & HTTP server fallback)
-├── scheduler.py          # Core Python observation scheduling constraint solver
-├── static/
-│   ├── app.js            # Frontend application logic and JS solver fallback
-│   ├── style.css         # Glassmorphism dark-mode responsive layout styling
-│   └── standards.json    # Standard calibration stars database
-├── templates/
-│   └── index.html        # Main dashboard user interface
+├── astroscheduler/       # The installable package
+│   ├── core.py           # Observation scheduling constraint solver (no web dependencies)
+│   ├── server.py         # Web server application (FastAPI & HTTP server fallback)
+│   ├── static/
+│   │   ├── app.js        # Frontend application logic (embeddable; see below)
+│   │   ├── style.css     # Glassmorphism dark-mode responsive layout styling
+│   │   └── standards.json # Standard calibration stars database
+│   └── templates/
+│       └── index.html    # Main dashboard user interface
+├── app.py                # `python app.py` entry point (runs astroscheduler.server)
+├── scheduler.py          # Compatibility alias for astroscheduler.core
 ├── tests/
 │   └── test_scheduler.py # Backend solver unit tests
-├── requirements.txt      # Python dependencies list
+├── pyproject.toml        # Package metadata and dependencies
+├── requirements.txt      # Development install (package + server + test tools)
 └── .github/
     └── workflows/        # GitHub Actions continuous integration workflow
 ```
@@ -33,7 +38,7 @@ UCSC AstroScheduler is a modern, real-time observation scheduling and planning d
 
 ### 1. Prerequisites
 
-- Python 3.10+
+- Python 3.8+ for the solver library; the web app and browser tests are tested on 3.10 and 3.11
 - Modern Web Browser (Chrome, Firefox, Safari)
 
 ### 2. Installation
@@ -46,6 +51,78 @@ cd AstroScheduler
 pip install -r requirements.txt
 ```
 
+`requirements.txt` installs the package in editable mode with the `server` and `test` extras.
+
+To use only the solver as a library (for example from another web app), install the package
+without extras. It needs only astropy, astroplan, numpy and pytz:
+
+```bash
+pip install "astroscheduler @ git+https://github.com/UCSC-Transients/AstroScheduler@<tag>"
+```
+
+Add the `server` extra (`astroscheduler[server]`) for the standalone web app.
+
+### Using the solver as a library
+
+```python
+import datetime
+from astroscheduler.api import SolveRequest, SiteSpec, TargetSpec, solve
+
+result = solve(SolveRequest(
+    date=datetime.date(2026, 10, 15),          # local evening date of the night
+    site=SiteSpec(id="lick"),                   # or "keck1" / "keck2"; fields override
+    targets=[TargetSpec(name="SN 2026abc", ra="01:02:03", dec="+20:00:00",
+                        magnitude=17.5, priority=1, external_id="followup-123")],
+))
+for block in result.blocks:                     # kind is "science" or "standard"
+    print(block.kind, block.target_name, block.start_time, block.external_id)
+```
+
+`external_id` is an opaque id of the caller's (for example a YSE_PZ follow-up id). It comes
+back on every block, `result.external_ids` maps conflict and unobservable names to it, and
+`previous_schedule` entries may match on it. `SolveRequest.from_dict` accepts the
+`POST /api/schedule` JSON payload, and `SolveResult.to_dict()` is that endpoint's response.
+
+Site and telescope limits (dec range, hour-angle limits, alt/az keep-out zones, guiding
+ceiling, airmass limits, slew times) live in `astroscheduler/telescopes.json`. A caller can
+override any of them for one solve, e.g. `SiteSpec(id="lick", telescope={"ha_limit_west": 5.6667})`,
+or describe a new site with an unknown `id`, coordinates and a full `telescope` dict. The
+airmass limits can also be set per solve with `realtime_constraints={"airmass_limit": 2.0}`.
+
+Each block carries its exposure plan as data: `exposures` (`red`/`blue` exposure time and
+count), `overhead` (slew + acquisition minutes, readout and erase seconds) and
+`exposure_source` (`lookup`, `override`, `manual_duration` or `standard`). A target's
+`overhead_minutes` replaces the default 7-minute slew + acquisition.
+
+### Embedding the planner in another web app
+
+The front end can run inside a host page (YSE_PZ does this). Serve
+`astroscheduler/templates/index.html`'s markup and `astroscheduler/static/` from the host,
+provide a same-origin endpoint that accepts the `/api/schedule` payload (for example by
+calling `astroscheduler.api.solve_dict`), and set a config before loading `app.js`:
+
+```html
+<script>
+window.ASTROSCHEDULER_CONFIG = {
+  mode: "embedded",                       // fixes site and night, hides auto-update
+  apiBase: "/myapp/planner",              // POSTs go to apiBase + "/api/schedule"
+  staticBase: "/static/astroscheduler",
+  headers: {"X-CSRFToken": "..."},        // added to every POST
+  site: {id: "lick", telescope: {ha_limit_west: 5.6667}},
+  initial: {date: "2026-10-15", instrument: "kast",
+            targets: [/* TargetSpec dicts with external_id */],
+            result: null}                 // a saved SolveResult is shown without solving
+};
+</script>
+```
+
+In embedded mode nothing is written to browser storage, and a full re-solve happens only
+when the user presses Recalculate. The host can listen through `window.AstroScheduler.hooks`:
+`onObservationEvent(event)` for Start/Completed/Failed/Punted (return a rejected Promise to
+cancel the action) and `onScheduleResult(result, request)` after each solve.
+`window.AstroScheduler.getResult()` and `getTargets()` read the current state, for example to
+save a plan. With no config, the app behaves as the standalone app.
+
 ### 3. Running the Server
 
 Start the web application server:
@@ -54,15 +131,18 @@ Start the web application server:
 python app.py
 ```
 
-The application will start on `http://127.0.0.1:8000`. If FastAPI/Uvicorn is not present, it automatically falls back to serving via Python's built-in `http.server`.
+The application will start on `http://127.0.0.1:8055` (set `PORT` to change it). If FastAPI/Uvicorn is not present, it automatically falls back to serving via Python's built-in `http.server`.
 
 ### 4. Running Tests
 
 Run the automated Python backend unit tests:
 
 ```bash
-python -m unittest tests/test_scheduler.py
+PYTHONPATH=. pytest tests/test_scheduler.py tests/test_kast_exposures.py
 ```
+
+`PYTHONPATH=. pytest` runs everything, including the Playwright browser tests
+(`python -m playwright install chromium` first).
 
 ---
 
