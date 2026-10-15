@@ -30,7 +30,7 @@ packages = ["astroscheduler"]
 version = {attr = "astroscheduler.__version__"}
 
 [tool.setuptools.package-data]
-astroscheduler = ["static/*", "templates/*"]
+astroscheduler = ["static/*", "templates/*", "telescopes.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

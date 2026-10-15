@@ -82,6 +82,17 @@ back on every block, `result.external_ids` maps conflict and unobservable names 
 `previous_schedule` entries may match on it. `SolveRequest.from_dict` accepts the
 `POST /api/schedule` JSON payload, and `SolveResult.to_dict()` is that endpoint's response.
 
+Site and telescope limits (dec range, hour-angle limits, alt/az keep-out zones, guiding
+ceiling, airmass limits, slew times) live in `astroscheduler/telescopes.json`. A caller can
+override any of them for one solve, e.g. `SiteSpec(id="lick", telescope={"ha_limit_west": 5.6667})`,
+or describe a new site with an unknown `id`, coordinates and a full `telescope` dict. The
+airmass limits can also be set per solve with `realtime_constraints={"airmass_limit": 2.0}`.
+
+Each block carries its exposure plan as data: `exposures` (`red`/`blue` exposure time and
+count), `overhead` (slew + acquisition minutes, readout and erase seconds) and
+`exposure_source` (`lookup`, `override`, `manual_duration` or `standard`). A target's
+`overhead_minutes` replaces the default 7-minute slew + acquisition.
+
 ### 3. Running the Server
 
 Start the web application server:

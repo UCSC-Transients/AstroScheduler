@@ -22,7 +22,7 @@ from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import __version__
-from .core import Keck1Telescope, Keck2Telescope, Observatory, Scheduler, ShaneTelescope, Target, Telescope
+from .core import Keck1Telescope, Keck2Telescope, Observatory, Scheduler, ShaneTelescope, Target, Telescope, load_sites
 
 # Bumped when a field is removed or changes meaning; adding fields does not bump it.
 SCHEMA_VERSION = 1
@@ -30,31 +30,11 @@ SCHEMA_VERSION = 1
 # Statuses that mean a target is finished for the night and must not be scheduled again.
 DONE_STATUSES = ("Skipped", "Failed", "Punted", "Observed")
 
+# Default sites (telescopes.json). 'telescope_class' is kept for callers of the old dict.
+_TELESCOPE_CLASSES = {'lick': ShaneTelescope, 'keck1': Keck1Telescope, 'keck2': Keck2Telescope}
 OBSERVATORIES: Dict[str, Dict[str, Any]] = {
-    'lick': {
-        'name': 'Lick Observatory',
-        'lat': 37.3414,
-        'lon': -121.6429,
-        'elevation': 1283,
-        'timezone': 'America/Los_Angeles',
-        'telescope_class': ShaneTelescope
-    },
-    'keck1': {
-        'name': 'Keck I',
-        'lat': 19.8267,
-        'lon': -155.4733,
-        'elevation': 4123,
-        'timezone': 'Pacific/Honolulu',
-        'telescope_class': Keck1Telescope
-    },
-    'keck2': {
-        'name': 'Keck II',
-        'lat': 19.8267,
-        'lon': -155.4733,
-        'elevation': 4123,
-        'timezone': 'Pacific/Honolulu',
-        'telescope_class': Keck2Telescope
-    }
+    site_id: {**info, 'telescope_class': _TELESCOPE_CLASSES.get(site_id, Telescope)}
+    for site_id, info in load_sites().items()
 }
 
 
@@ -92,7 +72,12 @@ def _parse_iso(value: str) -> datetime.datetime:
 
 @dataclass
 class SiteSpec:
-    """Where the night is observed. ``id`` picks a known telescope; other fields override it."""
+    """Where the night is observed. ``id`` picks a known site; other fields override it.
+
+    ``telescope`` overrides the site's telescope limits field by field, for example
+    ``{"ha_limit_west": 5.6667, "airmass_limit": 2.0}``. An unknown ``id`` with a full
+    ``telescope`` dict (at least ``name``) and coordinates defines a new site.
+    """
 
     id: str = 'lick'
     name: Optional[str] = None
@@ -100,6 +85,7 @@ class SiteSpec:
     longitude: Optional[float] = None
     elevation: Optional[float] = None
     timezone: Optional[str] = None
+    telescope: Optional[Dict[str, Any]] = None
 
     @classmethod
     def from_dict(cls, data: Optional[Dict[str, Any]]) -> "SiteSpec":
@@ -111,13 +97,22 @@ class SiteSpec:
             longitude=_opt_float(data.get('longitude', data.get('lon'))),
             elevation=_opt_float(data.get('elevation')),
             timezone=data.get('timezone'),
+            telescope=data.get('telescope'),
         )
 
     def to_dict(self) -> Dict[str, Any]:
         return {k: v for k, v in asdict(self).items() if v is not None}
 
     def resolve(self) -> Tuple[Observatory, Telescope]:
-        info = OBSERVATORIES.get(self.id, OBSERVATORIES['lick'])
+        sites = load_sites()
+        custom = self.id not in sites and bool(self.telescope and self.telescope.get('name'))
+        if custom:
+            if None in (self.latitude, self.longitude, self.elevation):
+                raise ValueError("A custom site needs latitude, longitude and elevation")
+            info = {'name': self.name or self.id, 'lat': self.latitude, 'lon': self.longitude,
+                    'elevation': self.elevation, 'timezone': self.timezone or 'UTC', 'telescope': {}}
+        else:
+            info = sites.get(self.id, sites['lick'])
         observatory = Observatory(
             self.name or info['name'],
             self.latitude if self.latitude is not None else float(info['lat']),
@@ -125,7 +120,8 @@ class SiteSpec:
             self.elevation if self.elevation is not None else float(info['elevation']),
             timezone=self.timezone or info['timezone'],
         )
-        return observatory, info['telescope_class']()
+        telescope = Telescope.from_spec({**info['telescope'], **(self.telescope or {})})
+        return observatory, telescope
 
 
 @dataclass
@@ -150,6 +146,8 @@ class TargetSpec:
     blue_exptime: Optional[float] = None
     blue_num: Optional[int] = None
     external_id: Optional[str] = None
+    # Slew + acquisition minutes; None uses the default (7).
+    overhead_minutes: Optional[float] = None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "TargetSpec":
@@ -173,6 +171,7 @@ class TargetSpec:
             blue_exptime=_opt_float(data.get('blue_exptime')),
             blue_num=_opt_int(data.get('blue_num')),
             external_id=None if external_id in (None, "") else str(external_id),
+            overhead_minutes=_opt_float(data.get('overhead_minutes')),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -239,6 +238,12 @@ class Block:
     comment: str = ""
     external_id: Optional[str] = None
     kind: str = "science"
+    # Structured plan: {"red": {"exptime": s, "num": n}, "blue": {...}}
+    exposures: Optional[Dict[str, Dict[str, Any]]] = None
+    # {"slew_acq_min", "red_readout_s", "blue_readout_s", "red_erase_s", "blue_erase_s"}
+    overhead: Optional[Dict[str, float]] = None
+    exposure_source: Optional[str] = None  # standard | override | manual_duration | lookup
+    instrument: Optional[str] = None
     # Fields added by newer solver versions that this class does not name yet.
     extra: Dict[str, Any] = field(default_factory=dict)
 
