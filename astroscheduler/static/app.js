@@ -845,7 +845,13 @@ document.addEventListener("DOMContentLoaded", async () => {
     // Load standard stars and init drag zoom
     await loadStandardStars();
     initAirmassChartDragZoom();
-    triggerScheduling();
+    const savedResult = AS_CONFIG.initial && AS_CONFIG.initial.result;
+    if (savedResult && Array.isArray(savedResult.blocks)) {
+        // Re-opening a saved plan: show it as saved; Recalculate re-solves from it.
+        updateScheduleUI(savedResult);
+    } else {
+        triggerScheduling();
+    }
 });
 
 
@@ -953,8 +959,8 @@ function clearAllTargets() {
     }
 }
 
-// Load the host's targets (and, when re-opening a saved plan, its schedule) without
-// touching browser storage. A saved result is shown as is; otherwise one solve runs.
+// Load the host's targets without touching browser storage. The end of page set-up shows a
+// saved result (initial.result) as is, or runs the first solve.
 function asApplyInitialData(initial) {
     targetPool = initial.targets.map(t => ({
         manual_start_time: null, manual_end_time: null, manual_duration: null, lock_type: null,
@@ -964,11 +970,6 @@ function asApplyInitialData(initial) {
     }));
     syncLockedTargets();
     renderTargetsTable();
-    if (initial.result && Array.isArray(initial.result.blocks)) {
-        updateScheduleUI(initial.result);
-    } else {
-        _doSchedule();
-    }
 }
 
 function loadSampleTargets() {
