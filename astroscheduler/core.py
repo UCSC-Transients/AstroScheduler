@@ -507,111 +507,111 @@ class Observatory:
         }
 
 
+def load_sites() -> Dict[str, Dict[str, Any]]:
+    """Default sites and telescope limits from ``telescopes.json`` (a fresh copy each call)."""
+    import json
+    import os
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "telescopes.json")
+    with open(path, "r") as f:
+        data = json.load(f)
+    return {k: v for k, v in data.items() if not k.startswith("_")}
+
+
 class Telescope:
-    """Represents pointing constraints and wrap rules of a telescope."""
-    
-    def __init__(self, name: str, dec_min: float, dec_max: float):
+    """Pointing limits and slew rules of a telescope, driven by data.
+
+    Every limit is optional: dec range, hour-angle limits (hours, east negative), an altitude
+    range, alt/az keep-out zones (inside a zone's azimuth range the zone's altitude range
+    applies instead), a guiding ceiling, airmass limits and slew times. Defaults per site live
+    in ``telescopes.json``; callers may pass their own values.
+    """
+
+    def __init__(self, name: str, dec_min: float = -90.0, dec_max: float = 90.0,
+                 ha_limit_east: Optional[float] = None, ha_limit_west: Optional[float] = None,
+                 alt_min: Optional[float] = None, alt_max: Optional[float] = None,
+                 guiding_alt_max: Optional[float] = None,
+                 keepout_zones: Optional[List[Dict[str, float]]] = None,
+                 airmass_limit: float = 1.7, high_airmass_limit: float = 2.2,
+                 slew_minutes: float = 7, equator_crossing_slew_minutes: Optional[float] = None,
+                 **_ignored: Any):
         self.name = name
-        self.dec_min = dec_min
-        self.dec_max = dec_max
-        
+        self.dec_min = float(dec_min)
+        self.dec_max = float(dec_max)
+        if ha_limit_east is not None:
+            self.ha_limit_east = float(ha_limit_east)
+        if ha_limit_west is not None:
+            self.ha_limit_west = float(ha_limit_west)
+        if alt_min is not None:
+            self.alt_min = float(alt_min)
+        if alt_max is not None:
+            self.alt_max = float(alt_max)
+        self.guiding_alt_max = None if guiding_alt_max is None else float(guiding_alt_max)
+        self.keepout_zones = [dict(z) for z in (keepout_zones or [])]
+        self.airmass_limit = float(airmass_limit)
+        self.high_airmass_limit = float(high_airmass_limit)
+        self.slew_minutes = slew_minutes
+        self.equator_crossing_slew_minutes = equator_crossing_slew_minutes
+
+    @classmethod
+    def from_spec(cls, spec: Dict[str, Any]) -> "Telescope":
+        return cls(**spec)
+
+    def _needs_alt_az(self) -> bool:
+        return bool(self.keepout_zones) or self.guiding_alt_max is not None or hasattr(self, 'alt_min') or hasattr(self, 'alt_max')
+
     def is_visible(self, ra: float, dec: float, dt_utc: datetime.datetime, observatory: Observatory) -> bool:
-        """Check basic visibility limits."""
+        """Check the telescope's pointing limits at one time."""
         if not (self.dec_min <= dec <= self.dec_max):
             return False
+
+        if hasattr(self, 'ha_limit_east') or hasattr(self, 'ha_limit_west'):
+            lst = get_lst(dt_utc, observatory.longitude)
+            ha = get_hour_angle(lst, ra)
+            if not (getattr(self, 'ha_limit_east', -12.0) <= ha <= getattr(self, 'ha_limit_west', 12.0)):
+                return False
+
+        if self._needs_alt_az():
+            alt, az = get_alt_az(dt_utc, observatory.latitude, observatory.longitude, ra, dec)
+            # Stable guiding limit
+            if self.guiding_alt_max is not None and alt > self.guiding_alt_max:
+                return False
+            lo, hi = getattr(self, 'alt_min', -90.0), getattr(self, 'alt_max', 90.0)
+            for zone in self.keepout_zones:
+                if zone['az_min'] <= az <= zone['az_max']:
+                    lo, hi = zone.get('alt_min', lo), zone.get('alt_max', hi)
+                    break
+            if not (lo <= alt <= hi):
+                return False
+
         return True
 
     def get_slew_time(self, prev_target, target) -> int:
-        """Returns the expected slew time to this target from the previous target in minutes."""
-        return 7
+        """Expected slew time to this target from the previous one, in minutes."""
+        if (self.equator_crossing_slew_minutes is not None and prev_target is not None
+                and ((prev_target.dec > 0 and target.dec < 0) or (prev_target.dec < 0 and target.dec > 0))):
+            return self.equator_crossing_slew_minutes
+        return self.slew_minutes
 
 
 class ShaneTelescope(Telescope):
-    """Lick Shane 3m telescope equatorial pointing limits."""
-    
-    def __init__(self):
-        super().__init__(name="Lick Shane 3m", dec_min=-35.0, dec_max=72.0)
-        # Hour angle limits: East 05:40 (-5.667 hours), West 03:45 (+3.75 hours)
-        self.ha_limit_east = -5.6667
-        self.ha_limit_west = 3.75
-        
-    def is_visible(self, ra: float, dec: float, dt_utc: datetime.datetime, observatory: Observatory) -> bool:
-        if not super().is_visible(ra, dec, dt_utc, observatory):
-            return False
-            
-        # Check hour angle limit
-        lst = get_lst(dt_utc, observatory.longitude)
-        ha = get_hour_angle(lst, ra)
-        if not (self.ha_limit_east <= ha <= self.ha_limit_west):
-            return False
-        return True
+    """Lick Shane 3m telescope equatorial pointing limits (defaults from telescopes.json)."""
+
+    def __init__(self, **overrides: Any):
+        super().__init__(**{**load_sites()['lick']['telescope'], **overrides})
 
 
 class Keck1Telescope(Telescope):
-    """Keck I 10m telescope pointing limits."""
-    
-    def __init__(self):
-        super().__init__(name="Keck I", dec_min=-90.0, dec_max=90.0)
-        
-    def is_visible(self, ra: float, dec: float, dt_utc: datetime.datetime, observatory: Observatory) -> bool:
-        if not super().is_visible(ra, dec, dt_utc, observatory):
-            return False
-            
-        alt, az = get_alt_az(dt_utc, observatory.latitude, observatory.longitude, ra, dec)
-        
-        # Stable guiding limit
-        if alt > 85.0:
-            return False
-            
-        if 5.3 <= az <= 146.2:
-            if not (33.3 <= alt <= 88.9):
-                return False
-        else:
-            if not (18.0 <= alt <= 88.9):
-                return False
-                
-        return True
+    """Keck I 10m telescope pointing limits (defaults from telescopes.json)."""
 
-    def get_slew_time(self, prev_target, target) -> int:
-        """Keck cable wrap penalty stub: 15 minutes if crossing the equator, else 7 minutes."""
-        if prev_target is None:
-            return 7
-        if (prev_target.dec > 0 and target.dec < 0) or (prev_target.dec < 0 and target.dec > 0):
-            return 15
-        return 7
+    def __init__(self, **overrides: Any):
+        super().__init__(**{**load_sites()['keck1']['telescope'], **overrides})
+
 
 class Keck2Telescope(Telescope):
-    """Keck II 10m telescope pointing limits."""
-    
-    def __init__(self):
-        super().__init__(name="Keck II", dec_min=-90.0, dec_max=90.0)
-        
-    def is_visible(self, ra: float, dec: float, dt_utc: datetime.datetime, observatory: Observatory) -> bool:
-        if not super().is_visible(ra, dec, dt_utc, observatory):
-            return False
-            
-        alt, az = get_alt_az(dt_utc, observatory.latitude, observatory.longitude, ra, dec)
-        
-        # Stable guiding limit
-        if alt > 85.0:
-            return False
-            
-        if 185.3 <= az <= 332.8:
-            if not (36.8 <= alt <= 89.5):
-                return False
-        else:
-            if not (18.0 <= alt <= 89.5):
-                return False
-                
-        return True
+    """Keck II 10m telescope pointing limits (defaults from telescopes.json)."""
 
-    def get_slew_time(self, prev_target, target) -> int:
-        """Keck cable wrap penalty stub: 15 minutes if crossing the equator, else 7 minutes."""
-        if prev_target is None:
-            return 7
-        if (prev_target.dec > 0 and target.dec < 0) or (prev_target.dec < 0 and target.dec > 0):
-            return 15
-        return 7
+    def __init__(self, **overrides: Any):
+        super().__init__(**{**load_sites()['keck2']['telescope'], **overrides})
 
 
 class Target:
@@ -627,7 +627,10 @@ class Target:
                  red_exptime: Optional[float] = None,
                  red_num: Optional[int] = None,
                  blue_exptime: Optional[float] = None,
-                 blue_num: Optional[int] = None):
+                 blue_num: Optional[int] = None,
+                 external_id: Optional[str] = None,
+                 kind: str = "science",
+                 overhead_minutes: Optional[float] = None):
         self.name = name
         self.ra = parse_coordinate(ra, is_ra=True)  # Right Ascension in decimal hours (0 to 24)
         self.dec = parse_coordinate(dec, is_ra=False)  # Declination in decimal degrees (-90 to 90)
@@ -645,6 +648,11 @@ class Target:
         self.red_num = red_num
         self.blue_exptime = blue_exptime
         self.blue_num = blue_num
+        # Opaque id from the caller (e.g. a YSE_PZ follow-up id), echoed on result blocks.
+        self.external_id = None if external_id in (None, "") else str(external_id)
+        self.kind = kind  # "science" or "standard"
+        # Slew + acquisition minutes for this target; None = the default (SLEW_ACQ_OVERHEAD_MIN).
+        self.overhead_minutes = None if overhead_minutes in (None, "") else float(overhead_minutes)
         
     def calculate_exposure_time(self, moon_phase: float, moon_separation: float, extinction: float = 0.0, latitude: float = 37.3414) -> float:
         """
@@ -717,7 +725,9 @@ class ObservationBlock:
             'airmass_end': round(self.airmass_end, 3),
             'airmass_median': round(self.airmass_median, 3),
             'priority': prio,
-            'comment': comm
+            'comment': comm,
+            'external_id': getattr(self.target, 'external_id', None),
+            'kind': getattr(self.target, 'kind', 'science'),
         }
 
 
@@ -757,37 +767,74 @@ def parse_hour_minute(time_str: str, is_start: bool = False, is_local_tz: bool =
     return hh, mm
 
 
+def target_overhead_minutes(target: Target) -> float:
+    """Slew + acquisition overhead for a target, in minutes."""
+    value = getattr(target, 'overhead_minutes', None)
+    return SLEW_ACQ_OVERHEAD_MIN if value is None else float(value)
+
+
+def _instrument_readouts(instrument: str) -> Dict[str, float]:
+    if instrument == 'lris':
+        return {'red_erase_s': 0.0, 'blue_erase_s': 0.0, 'red_readout_s': 65.0, 'blue_readout_s': 54.0}
+    if instrument == 'kcwi':
+        return {'red_erase_s': 0.0, 'blue_erase_s': 0.0, 'red_readout_s': 102.0, 'blue_readout_s': 170.0}
+    return {'red_erase_s': RED_ERASE, 'blue_erase_s': BLUE_ERASE, 'red_readout_s': RED_READOUT, 'blue_readout_s': BLUE_READOUT}
+
+
+def exposure_source(target: Target, instrument: str = 'kast') -> str:
+    """Which rule set a target's exposures: standard, override, manual_duration or lookup."""
+    if target.name in KAST_STANDARD_LOOKUP and instrument == 'kast':
+        return 'standard'
+    if None not in (target.red_exptime, target.red_num, target.blue_exptime, target.blue_num):
+        return 'override'
+    if target.manual_duration is not None:
+        return 'manual_duration'
+    return 'lookup'
+
+
+def exposure_plan(target: Target, moon: Dict[str, Any], extinction: float, latitude: float, instrument: str = 'kast') -> Dict[str, Any]:
+    """Structured exposure and overhead plan for one target (the data behind a block's comment)."""
+    red_exp, red_num, blue_exp, blue_num, dur_mins = get_target_exposure_details(
+        target, moon, extinction, latitude, instrument=instrument)
+    return {
+        'exposures': {
+            'red': {'exptime': round(float(red_exp), 1), 'num': int(red_num)},
+            'blue': {'exptime': round(float(blue_exp), 1), 'num': int(blue_num)},
+        },
+        'overhead': {'slew_acq_min': target_overhead_minutes(target), **_instrument_readouts(instrument)},
+        'exposure_source': exposure_source(target, instrument),
+        'instrument': instrument,
+    }
+
+
 def get_target_exposure_details(target: Target, moon: Dict[str, Any], extinction: float, latitude: float, instrument: str = 'kast') -> Tuple[float, int, float, int, int]:
     """
     Returns (red_exp, red_num, blue_exp, blue_num, duration_minutes) for a target.
     Accounts for manual overrides, standard star rules, lookup tables, and overheads.
     """
+    overhead = target_overhead_minutes(target)
     # 1. Check standard star lookup (only Kast standards for now, Keck typically doesn't use this list, but harmless to leave):
     if target.name in KAST_STANDARD_LOOKUP and instrument == 'kast':
         std = KAST_STANDARD_LOOKUP[target.name]
         t_seq = max(std["blue_exp"], std["red_exp"])
-        dur_mins = 7 + int(math.ceil(t_seq / 60.0))
+        dur_mins = int(math.ceil(overhead + t_seq / 60.0))
         return std["red_exp"], std["red_num"], std["blue_exp"], std["blue_num"], dur_mins
 
     # Overheads based on instrument
-    if instrument == 'lris':
-        r_erase, b_erase, r_read, b_read = 0.0, 0.0, 65.0, 54.0
-    elif instrument == 'kcwi':
-        r_erase, b_erase, r_read, b_read = 0.0, 0.0, 102.0, 170.0
-    else:
-        r_erase, b_erase, r_read, b_read = RED_ERASE, BLUE_ERASE, RED_READOUT, BLUE_READOUT
+    ro = _instrument_readouts(instrument)
+    r_erase, b_erase, r_read, b_read = ro['red_erase_s'], ro['blue_erase_s'], ro['red_readout_s'], ro['blue_readout_s']
 
     # 2. Check if exposure overrides are set:
     if target.red_exptime is not None and target.red_num is not None and target.blue_exptime is not None and target.blue_num is not None:
         t_red = target.red_num * (target.red_exptime + r_erase) + (target.red_num - 1) * r_read
         t_blue = target.blue_num * (target.blue_exptime + b_erase) + (target.blue_num - 1) * b_read
         t_seq = max(t_red, t_blue)
-        dur_mins = 7 + int(math.ceil(t_seq / 60.0))
+        dur_mins = int(math.ceil(overhead + t_seq / 60.0))
         return target.red_exptime, target.red_num, target.blue_exptime, target.blue_num, dur_mins
 
     # 3. If manual duration is set:
     if target.manual_duration is not None:
-        t_seq = max(0.0, target.manual_duration * 60.0 - 420.0)
+        t_seq = max(0.0, (target.manual_duration - overhead) * 60.0)
         if instrument == 'lris':
             red_exp, red_num, blue_exp, blue_num = split_exposure_lris(t_seq)
         elif instrument == 'kcwi':
@@ -813,7 +860,7 @@ def get_target_exposure_details(target: Target, moon: Dict[str, Any], extinction
         else:
             red_exp, red_num, blue_exp, blue_num = split_exposure_kcwi(t_seq)
             
-        dur_mins = 7 + int(math.ceil(t_seq / 60.0))
+        dur_mins = int(math.ceil(overhead + t_seq / 60.0))
         return red_exp, red_num, blue_exp, blue_num, dur_mins
 
     else:
@@ -826,7 +873,7 @@ def get_target_exposure_details(target: Target, moon: Dict[str, Any], extinction
             t_red = red_num * (red_exp + r_erase) + (red_num - 1) * r_read
             t_blue = blue_num * (blue_exp + b_erase) + (blue_num - 1) * b_read
             t_seq = max(t_red, t_blue)
-            dur_mins = 7 + int(math.ceil(t_seq / 60.0))
+            dur_mins = int(math.ceil(overhead + t_seq / 60.0))
             return red_exp, red_num, blue_exp, blue_num, dur_mins
 
         # Fallback:
@@ -834,7 +881,7 @@ def get_target_exposure_details(target: Target, moon: Dict[str, Any], extinction
         t_red = red_num * (red_exp + r_erase) + (red_num - 1) * r_read
         t_blue = blue_num * (blue_exp + b_erase) + (blue_num - 1) * b_read
         t_seq = max(t_red, t_blue)
-        dur_mins = 7 + int(math.ceil(t_seq / 60.0))
+        dur_mins = int(math.ceil(overhead + t_seq / 60.0))
         return red_exp, red_num, blue_exp, blue_num, dur_mins
 
 
@@ -947,6 +994,19 @@ class Scheduler:
                 alt, _ = get_alt_az(dt_utc, self.observatory.latitude, self.observatory.longitude, target.ra, target.dec)
                 cache[dt_utc] = get_airmass(alt)
 
+    def _airmass_limit(self, target: Target) -> float:
+        """Airmass ceiling for a target: the telescope's default, or the per-solve override."""
+        rt = getattr(self, 'realtime_constraints', None) or {}
+        key = 'high_airmass_limit' if target.high_airmass else 'airmass_limit'
+        default = getattr(self.telescope, key, 2.2 if target.high_airmass else 1.7)
+        value = rt.get(key)
+        if value is None or value == "":
+            return default
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
     def is_chunk_valid(self, target: Target, chunk_idx: int, is_manual: bool = False, ignore_scheduling_limits: bool = False) -> bool:
         """Check if a target can be observed in a given chunk."""
         t = self.chunk_times[chunk_idx]
@@ -1001,7 +1061,7 @@ class Scheduler:
                 if airmass <= 0 or airmass > 2.92:
                     return False
             else:
-                airmass_limit = 2.2 if target.high_airmass else 1.7
+                airmass_limit = self._airmass_limit(target)
                 if airmass <= 0 or airmass > airmass_limit:
                     return False
 
@@ -1228,8 +1288,10 @@ class Scheduler:
                 
         previous_start_chunks = {}
         if previous_schedule:
+            # Match on external_id first, so a renamed target keeps its slot.
+            name_by_external_id = {t.external_id: t.name for t in targets if getattr(t, 'external_id', None)}
             for item in previous_schedule:
-                t_name = item.get('target_name')
+                t_name = name_by_external_id.get(item.get('external_id')) or item.get('target_name')
                 start_time_str = item.get('start_time')
                 if t_name and start_time_str:
                     c_idx = self.get_chunk_idx_from_time_str(start_time_str)
@@ -1293,7 +1355,8 @@ class Scheduler:
                     dec=s_data['dec'],
                     magnitude=s_data['magnitude'],
                     priority=0.0,
-                    allow_twilight=True
+                    allow_twilight=True,
+                    kind="standard"
                 ),
                 'color': s_data['color'],
                 'quality': s_data['quality'],
@@ -1396,7 +1459,7 @@ class Scheduler:
                         reserved_chunks.update(range(manual_chunk, manual_chunk + dur_chunks))
                         airmass = self.get_airmass_for_target(t, self.chunk_times[manual_chunk])
                         exp_info = target_exposures_dict[t.name]
-                        comment_prefix = f"Slew: 7m. Blue: {exp_info['blue_num']}x{exp_info['blue_exp']:.0f}s, Red: {exp_info['red_num']}x{exp_info['red_exp']:.0f}s."
+                        comment_prefix = f"Slew: {target_overhead_minutes(t):g}m. Blue: {exp_info['blue_num']}x{exp_info['blue_exp']:.0f}s, Red: {exp_info['red_num']}x{exp_info['red_exp']:.0f}s."
                         block_comment = f"{comment_prefix} {t.comment}" if t.comment else comment_prefix
                         block = ObservationBlock(
                             target=t,
@@ -1771,14 +1834,19 @@ class Scheduler:
         conflicts = [c for c in (final_solve['conflicts'] + prelim_solve['conflicts']) if c not in scheduled_names]
 
         return {
-            'blocks': [b.to_dict() for b in scheduled_blocks],
+            'blocks': [
+                {**b.to_dict(), **exposure_plan(b.target, self.moon, extinction, self.observatory.latitude, instrument=instrument)}
+                for b in scheduled_blocks
+            ],
             'conflicts': conflicts,
             'unobservable': final_solve['unobservable'],
             'empty_blocks': empty_blocks,
             'moon_info': self.moon,
             'moon_plot': moon_plot,
             'airmass_plots': airmass_plots,
-            'solar_times': {k: v.isoformat() for k, v in self.solar_times.items()}
+            'solar_times': {k: v.isoformat() for k, v in self.solar_times.items()},
+            # Conflicts and unobservable entries are names; this maps them back to caller ids.
+            'external_ids': {t.name: t.external_id for t in targets if getattr(t, 'external_id', None)},
         }
 
     def _solve_internal(self, targets: List[Target], reserved_chunks: Set[int], previous_start_chunks: Optional[Dict[str, int]] = None, instrument: str = 'kast') -> Dict[str, Any]:
@@ -2179,7 +2247,8 @@ class Scheduler:
             airmass_median = airmasses[mid] if len(airmasses) % 2 != 0 else (airmasses[mid-1] + airmasses[mid]) / 2.0
             
             exp_info = target_exposures_dict[t_name]
-            comment_prefix = f"Slew: {slew_time}m. Blue: {exp_info['blue_num']}x{exp_info['blue_exp']:.0f}s, Red: {exp_info['red_num']}x{exp_info['red_exp']:.0f}s."
+            slew_label = slew_time if target.overhead_minutes is None else f"{target.overhead_minutes:g}"
+            comment_prefix = f"Slew: {slew_label}m. Blue: {exp_info['blue_num']}x{exp_info['blue_exp']:.0f}s, Red: {exp_info['red_num']}x{exp_info['red_exp']:.0f}s."
             block_comment = f"{comment_prefix} {target.comment}" if target.comment else comment_prefix
             block = ObservationBlock(
                 target=target,

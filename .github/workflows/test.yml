@@ -64,4 +64,4 @@ jobs:
 
     - name: Run solver unit tests
       run: |
-        PYTHONPATH=. pytest tests/test_scheduler.py tests/test_kast_exposures.py
+        PYTHONPATH=. pytest tests/test_scheduler.py tests/test_kast_exposures.py tests/test_api.py tests/test_sites_exposures.py
