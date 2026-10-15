@@ -23,17 +23,11 @@ def test_ui_visibility():
             page.on("console", lambda msg: console_logs.append(f"[{msg.type}] {msg.text}"))
             page.on("pageerror", lambda err: page_errors.append(err))
             
-            # Intercept and fail /api/schedule requests to force local solver fallback
-            page.route("**/api/schedule", lambda route: route.fulfill(
-                status=500,
-                content_type="application/json",
-                body='{"detail": "Internal Server Error"}'
-            ))
-            
-            print("Navigating to page with API offline...")
             page.goto("http://127.0.0.1:8062")
-            page.wait_for_timeout(4000)
-            page.check("#auto-update-toggle")
+            page.wait_for_timeout(2000)
+            with page.expect_response("**/api/schedule", timeout=60000):
+                page.check("#auto-update-toggle")
+            page.wait_for_timeout(500)
             
             print("\n--- BROWSER LOGS ---")
             for log in console_logs:
@@ -95,6 +89,42 @@ def test_ui_visibility():
             assert "Total Time (s)" in targets_headers
             
             print("\nAll UI visibility checks passed successfully!")
+            browser.close()
+    finally:
+        server_process.terminate()
+        server_process.wait()
+
+
+def test_solve_failure_keeps_schedule():
+    """There is no client-side solver: a failed solve shows an error and changes nothing."""
+    server_process = subprocess.Popen(
+        [sys.executable, "-u", "app.py"],
+        env=dict(os.environ, PORT="8064", PYTHONUNBUFFERED="1")
+    )
+    time.sleep(5)  # Allow server to boot
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.goto("http://127.0.0.1:8064")
+            page.wait_for_timeout(2000)
+            with page.expect_response("**/api/schedule", timeout=60000):
+                page.locator("#run-schedule-btn").click()
+            page.wait_for_selector(".timeline-block", timeout=20000)
+            blocks_before = page.locator(".timeline-block").count()
+            assert blocks_before > 0
+
+            page.route("**/api/schedule", lambda route: route.fulfill(
+                status=500,
+                content_type="application/json",
+                body='{"detail": "Internal Server Error"}'
+            ))
+            page.locator("#run-schedule-btn").click()
+            page.wait_for_selector("#solve-error", state="visible", timeout=10000)
+            assert "Internal Server Error" in page.locator("#solve-error").inner_text()
+            assert page.locator(".timeline-block").count() == blocks_before
+            assert page.evaluate("typeof runLocalJSSolver") == "undefined"
             browser.close()
     finally:
         server_process.terminate()

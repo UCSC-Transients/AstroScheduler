@@ -222,6 +222,7 @@
             <div class="right-col">
                 <!-- ALERTS CONSOLE -->
                 <div class="alerts-console" id="alerts-console" style="display: none;"></div>
+                <div class="alerts-console" id="solve-error" role="alert" style="display: none; border-color: #ef4444; color: #fecaca; margin-bottom: 15px; padding: 10px 14px;"></div>
 
                 <!-- REAL-TIME OBSERVING LOG CARD -->
                 <div class="card glass-card animate-fade-in real-time-only" id="observing-log-card" style="display: none; margin-bottom: 20px;">
@@ -238,13 +239,29 @@
                             </div>
                             <div style="display: flex; gap: 10px; margin-bottom: 0; align-items: flex-end; flex-wrap: wrap;">
                                 <button class="btn btn-success" style="background-color: #10b981; border-color: #059669; color: #fff; padding: 8px 16px; font-weight: 600;" onclick="startObservation()">Start Observation</button>
+                                <button class="btn btn-accent" id="rt-complete-btn" style="padding: 8px 16px; font-weight: 600;" onclick="completeObservation()">Completed</button>
                                 <button class="btn btn-danger" style="background-color: #ef4444; border-color: #dc2626; color: #fff; padding: 8px 16px; font-weight: 600;" onclick="failObservation()">Failed</button>
                                 <button class="btn btn-danger" style="background-color: #f97316; border-color: #ea580c; color: #fff; padding: 8px 16px; font-weight: 600;" onclick="puntObservation()">Punted</button>
                             </div>
                         </div>
 
-                        <!-- Comment Row -->
+                        <!-- Comment Row: the reason is required for Failed and Punted; the comment is the note -->
                         <div style="display: flex; flex-wrap: wrap; gap: 15px; margin-bottom: 15px; align-items: flex-end;">
+                            <div class="form-group" style="flex: 1; min-width: 160px; margin-bottom: 0;">
+                                <label for="rt-reason">Reason (Failed / Punted)</label>
+                                <select id="rt-reason" style="width: 100%; padding: 6px 12px; font-size: 0.9rem; border-radius: 4px; background: rgba(255, 255, 255, 0.05); color: #fff; border: 1px solid var(--border-color);">
+                                    <option value="">Choose…</option>
+                                    <option value="weather">Weather</option>
+                                    <option value="instrument">Instrument problem</option>
+                                    <option value="telescope">Telescope problem</option>
+                                    <option value="ran_out_of_time">Ran out of time</option>
+                                    <option value="deprioritized">Deprioritized</option>
+                                    <option value="low_sn">Low S/N</option>
+                                    <option value="not_visible">Not visible / not found</option>
+                                    <option value="too_faint">Too faint</option>
+                                    <option value="other">Other</option>
+                                </select>
+                            </div>
                             <div class="form-group" style="flex: 3; min-width: 250px; margin-bottom: 0;">
                                 <label for="rt-comment">Observation Log Comment</label>
                                 <input type="text" id="rt-comment" placeholder="Type a comment to log..." onkeydown="if(event.key === 'Enter') { logCommentFromInput(); event.preventDefault(); }" style="width: 100%;">

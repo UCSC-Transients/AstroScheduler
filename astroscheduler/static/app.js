@@ -1,4 +1,114 @@
-// AstroScheduler Frontend Logic with Client-Side Solver Fallback
+// AstroScheduler Frontend Logic. The Python solver (POST /api/schedule) is the only solver.
+
+// ==============================================================================
+// EMBEDDING CONFIGURATION
+// ==============================================================================
+// A host page (for example YSE_PZ) may set window.ASTROSCHEDULER_CONFIG before this script:
+//   {
+//     mode: "standalone" | "embedded",
+//     apiBase: "/prefix",          // POSTs go to apiBase + "/api/schedule"
+//     staticBase: "/static/astroscheduler",
+//     headers: {"X-CSRFToken": "..."},  // added to every POST
+//     persistLocal: false,         // default: true standalone, false embedded
+//     site: {id, name, lat, lon, elevation, timezone, telescope: {...limit overrides}},
+//     initial: {date, instrument, targets: [...], result: <saved SolveResult or null>}
+//   }
+// With no config the app behaves exactly as the standalone app always has.
+const AS_CONFIG = (function () {
+    const user = (typeof window !== 'undefined' && window.ASTROSCHEDULER_CONFIG) || {};
+    const embedded = user.mode === 'embedded';
+    return {
+        mode: embedded ? 'embedded' : 'standalone',
+        apiBase: (user.apiBase || '').replace(/\/+$/, ''),
+        staticBase: (user.staticBase || '/static').replace(/\/+$/, ''),
+        headers: user.headers || {},
+        persistLocal: user.persistLocal !== undefined ? !!user.persistLocal : !embedded,
+        site: user.site || null,
+        initial: user.initial || null
+    };
+})();
+const AS_EMBEDDED = AS_CONFIG.mode === 'embedded';
+
+// localStorage when persisting, otherwise an in-memory store for this page view only.
+const asStorage = (function () {
+    if (AS_CONFIG.persistLocal) {
+        try {
+            const probe = '__astroscheduler_probe__';
+            window.localStorage.setItem(probe, '1');
+            window.localStorage.removeItem(probe);
+            return window.localStorage;
+        } catch (e) { /* storage blocked: fall through to memory */ }
+    }
+    const mem = new Map();
+    return {
+        getItem: k => (mem.has(k) ? mem.get(k) : null),
+        setItem: (k, v) => { mem.set(k, String(v)); },
+        removeItem: k => { mem.delete(k); }
+    };
+})();
+
+function asStaticUrl(name) {
+    return `${AS_CONFIG.staticBase}/${name}`;
+}
+
+async function asPostSchedule(payload) {
+    const response = await fetch(`${AS_CONFIG.apiBase}/api/schedule`, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json", ...AS_CONFIG.headers },
+        body: JSON.stringify(payload)
+    });
+    if (!response.ok) {
+        let detail = `HTTP ${response.status}`;
+        try {
+            const body = await response.json();
+            if (body && body.detail) detail = body.detail;
+        } catch (e) { /* not JSON */ }
+        throw new Error(detail);
+    }
+    return response.json();
+}
+
+// A failed solve leaves the current schedule untouched and says so.
+function asShowSolveError(error) {
+    const msg = `Scheduling failed: ${error && error.message ? error.message : error}. The schedule was not changed.`;
+    console.error(msg);
+    if (typeof logToTerminal === 'function') logToTerminal(msg);
+    const el = document.getElementById("solve-error");
+    if (el) {
+        el.textContent = msg;
+        el.style.display = "";
+    }
+}
+
+function asClearSolveError() {
+    const el = document.getElementById("solve-error");
+    if (el) el.style.display = "none";
+}
+
+function asObservatoryPayload(obs) {
+    const payload = {
+        id: obs.id,
+        name: obs.name,
+        lat: obs.lat,
+        lon: obs.lon,
+        elevation: obs.elevation,
+        timezone: obs.timezone
+    };
+    if (obs.telescope) payload.telescope = obs.telescope;
+    return payload;
+}
+
+// Public handle for host pages: hooks plus read access to the current state.
+window.AstroScheduler = {
+    config: AS_CONFIG,
+    // onObservationEvent(event): called for Start/Completed/Failed/Punted. May return a
+    //   Promise; a rejection cancels the action. onScheduleResult(result): after each solve.
+    hooks: {},
+    getTargets: () => targetPool,
+    getResult: () => lastScheduleResult,
+    getObservationLog: () => rtLogEntries.slice()
+};
 
 // Kast Spectrograph Constants
 const BLUE_ERASE = 5.0;
@@ -349,7 +459,7 @@ function syncLockedTargets() {
 // Initial Setup on Page Load
 document.addEventListener("DOMContentLoaded", async () => {
     // Restore date from localStorage if present
-    const storedDate = localStorage.getItem("obsDate");
+    const storedDate = asStorage.getItem("obsDate");
     if (storedDate) {
         document.getElementById("obs-date").value = storedDate;
     } else {
@@ -359,9 +469,17 @@ document.addEventListener("DOMContentLoaded", async () => {
         const dd = String(today.getDate()).padStart(2, '0');
         document.getElementById("obs-date").value = `${yyyy}-${mm}-${dd}`;
     }
+    if (AS_EMBEDDED) {
+        // The host page fixes the night and the site.
+        if (AS_CONFIG.initial && AS_CONFIG.initial.date) {
+            document.getElementById("obs-date").value = AS_CONFIG.initial.date;
+        }
+        document.getElementById("obs-date").disabled = true;
+        document.body.classList.add("as-embedded");
+    }
     
     // Restore timezone from localStorage if present
-    const storedTZ = localStorage.getItem("currentTimezone");
+    const storedTZ = asStorage.getItem("currentTimezone");
     if (storedTZ) {
         currentTimezone = storedTZ;
         const tzSelect = document.getElementById("tz-select");
@@ -369,8 +487,13 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
     
     // Restore autoUpdate toggle state
-    const storedAutoUpdate = localStorage.getItem("autoUpdateEnabled");
-    if (storedAutoUpdate !== null) {
+    const storedAutoUpdate = asStorage.getItem("autoUpdateEnabled");
+    if (AS_EMBEDDED) {
+        // Embedded: re-solve only when the user presses Recalculate.
+        autoUpdateEnabled = false;
+        const toggleLabel = document.getElementById("auto-update-toggle")?.closest("label");
+        if (toggleLabel) toggleLabel.style.display = "none";
+    } else if (storedAutoUpdate !== null) {
         autoUpdateEnabled = (storedAutoUpdate === "true");
     } else {
         autoUpdateEnabled = false;
@@ -380,7 +503,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         autoUpdateToggle.checked = autoUpdateEnabled;
         autoUpdateToggle.addEventListener("change", (e) => {
             autoUpdateEnabled = e.target.checked;
-            localStorage.setItem("autoUpdateEnabled", autoUpdateEnabled);
+            asStorage.setItem("autoUpdateEnabled", autoUpdateEnabled);
             if (autoUpdateEnabled) {
                 triggerScheduling();
             }
@@ -421,7 +544,7 @@ document.addEventListener("DOMContentLoaded", async () => {
                     if (s.manual_end_time) s.manual_end_time = shiftTime(s.manual_end_time);
                 });
                 
-                localStorage.setItem("targetPool", JSON.stringify(targetPool));
+                asStorage.setItem("targetPool", JSON.stringify(targetPool));
                 
                 const overrides = {};
                 standardStars.forEach(s => {
@@ -435,11 +558,11 @@ document.addEventListener("DOMContentLoaded", async () => {
                         };
                     }
                 });
-                localStorage.setItem("standardsOverrides", JSON.stringify(overrides));
+                asStorage.setItem("standardsOverrides", JSON.stringify(overrides));
             }
         }
         lastObsDate = newDateStr;
-        localStorage.setItem("obsDate", newDateStr);
+        asStorage.setItem("obsDate", newDateStr);
         triggerScheduling(true);
     });
     
@@ -452,9 +575,14 @@ document.addEventListener("DOMContentLoaded", async () => {
     const obsSelectElem = document.getElementById("obs-select");
     const instSelectElem = document.getElementById("inst-select");
     if (obsSelectElem) {
-        const storedObs = localStorage.getItem("obsId");
-        if (storedObs) {
+        const storedObs = asStorage.getItem("obsId");
+        if (AS_CONFIG.site && AS_CONFIG.site.id && OBSERVATORIES[AS_CONFIG.site.id]) {
+            obsSelectElem.value = AS_CONFIG.site.id;
+        } else if (storedObs) {
             obsSelectElem.value = storedObs;
+        }
+        if (AS_EMBEDDED) {
+            obsSelectElem.disabled = true;
         }
         
         const updateObsInfoCard = () => {
@@ -509,7 +637,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         };
 
         obsSelectElem.addEventListener("change", () => {
-            localStorage.setItem("obsId", obsSelectElem.value);
+            asStorage.setItem("obsId", obsSelectElem.value);
             if (instSelectElem) {
                 instSelectElem.innerHTML = '';
                 const obsId = obsSelectElem.value;
@@ -532,6 +660,11 @@ document.addEventListener("DOMContentLoaded", async () => {
         // Populate inst-select on load
         if (instSelectElem) {
             obsSelectElem.dispatchEvent(new Event('change'));
+            const wantInst = AS_CONFIG.initial && AS_CONFIG.initial.instrument;
+            if (wantInst && Array.from(instSelectElem.options).some(o => o.value === wantInst)) {
+                instSelectElem.value = wantInst;
+            }
+            if (AS_EMBEDDED) instSelectElem.disabled = true;
         }
     }
     
@@ -587,11 +720,11 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
     
     // Issue #16: Load manual standards mode state
-    const storedAuto = localStorage.getItem("autoStandardsMode");
+    const storedAuto = asStorage.getItem("autoStandardsMode");
     if (storedAuto !== null) {
         autoStandardsMode = storedAuto === "true";
     }
-    const storedSelected = localStorage.getItem("selectedStandards");
+    const storedSelected = asStorage.getItem("selectedStandards");
     if (storedSelected) {
         try {
             const parsed = JSON.parse(storedSelected);
@@ -606,7 +739,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     // Load local storage if available, otherwise load samples
-    const stored = localStorage.getItem("targetPool");
+    const stored = asStorage.getItem("targetPool");
     if (stored) {
         try {
             const parsed = JSON.parse(stored);
@@ -630,7 +763,10 @@ document.addEventListener("DOMContentLoaded", async () => {
                         red_exptime: t.red_exptime !== undefined ? t.red_exptime : null,
                         red_num: t.red_num !== undefined ? t.red_num : null,
                         blue_exptime: t.blue_exptime !== undefined ? t.blue_exptime : null,
-                        blue_num: t.blue_num !== undefined ? t.blue_num : null
+                        blue_num: t.blue_num !== undefined ? t.blue_num : null,
+                        external_id: t.external_id || null,
+                        status: t.status || null,
+                        overhead_minutes: t.overhead_minutes !== undefined ? t.overhead_minutes : null
                     };
                     
                     if (typeof t.ra === 'number') clean.ra = t.ra;
@@ -674,9 +810,17 @@ document.addEventListener("DOMContentLoaded", async () => {
             console.error("Error parsing targetPool from localStorage, loading samples:", e);
             loadSampleTargets();
         }
+    } else if (AS_CONFIG.initial && Array.isArray(AS_CONFIG.initial.targets)) {
+        asApplyInitialData(AS_CONFIG.initial);
     } else {
         loadSampleTargets();
     }
+
+    try {
+        const storedLog = JSON.parse(asStorage.getItem("observationLog") || "[]");
+        if (Array.isArray(storedLog)) rtLogEntries = storedLog;
+    } catch (e) { rtLogEntries = []; }
+    renderObservationLog();
     
     // Register drag & drop zone for file upload
     const dropZone = document.getElementById("target-drag-drop");
@@ -809,6 +953,24 @@ function clearAllTargets() {
     }
 }
 
+// Load the host's targets (and, when re-opening a saved plan, its schedule) without
+// touching browser storage. A saved result is shown as is; otherwise one solve runs.
+function asApplyInitialData(initial) {
+    targetPool = initial.targets.map(t => ({
+        manual_start_time: null, manual_end_time: null, manual_duration: null, lock_type: null,
+        schedule_before: [], red_exptime: null, red_num: null, blue_exptime: null, blue_num: null,
+        sn_mode: "normal", allow_twilight: false, high_airmass: false, comment: "",
+        ...t
+    }));
+    syncLockedTargets();
+    renderTargetsTable();
+    if (initial.result && Array.isArray(initial.result.blocks)) {
+        updateScheduleUI(initial.result);
+    } else {
+        _doSchedule();
+    }
+}
+
 function loadSampleTargets() {
     targetPool = [
         { name: "Vega", ra: 18.616, dec: 38.78, magnitude: 0.0, priority: 1.0, sn_mode: "classification", allow_twilight: true, high_airmass: false, comment: "Standard calibrator, bright", manual_start_time: null, manual_duration: null, schedule_before: [], red_exptime: null, red_num: null, blue_exptime: null, blue_num: null },
@@ -823,10 +985,10 @@ function loadSampleTargets() {
 }
 
 function saveAndRefresh(skipReschedule = false) {
-    localStorage.setItem("targetPool", JSON.stringify(targetPool));
-    localStorage.setItem("autoStandardsMode", autoStandardsMode);
-    localStorage.setItem("selectedStandards", JSON.stringify(Array.from(selectedStandards)));
-    localStorage.setItem("currentTimezone", currentTimezone);
+    asStorage.setItem("targetPool", JSON.stringify(targetPool));
+    asStorage.setItem("autoStandardsMode", autoStandardsMode);
+    asStorage.setItem("selectedStandards", JSON.stringify(Array.from(selectedStandards)));
+    asStorage.setItem("currentTimezone", currentTimezone);
     
     const standards_overrides = {};
     standardStars.forEach(s => {
@@ -840,7 +1002,7 @@ function saveAndRefresh(skipReschedule = false) {
             };
         }
     });
-    localStorage.setItem("standardsOverrides", JSON.stringify(standards_overrides));
+    asStorage.setItem("standardsOverrides", JSON.stringify(standards_overrides));
     
     syncLockedTargets();
     renderTargetsTable();
@@ -1182,8 +1344,8 @@ function updateTargetManualStart(name, val) {
         target.lock_type = null;
         lockedTargets.delete(name);
         
-        localStorage.setItem("targetPool", JSON.stringify(targetPool));
-        localStorage.setItem("standardStars", JSON.stringify(standardStars));
+        asStorage.setItem("targetPool", JSON.stringify(targetPool));
+        asStorage.setItem("standardStars", JSON.stringify(standardStars));
         renderTargetsTable();
         recalculateLayoutOnly();
     } else {
@@ -1207,8 +1369,8 @@ function updateTargetManualStart(name, val) {
         
         const newStartTime = new Date(target.manual_start_time).getTime();
         
-        localStorage.setItem("targetPool", JSON.stringify(targetPool));
-        localStorage.setItem("standardStars", JSON.stringify(standardStars));
+        asStorage.setItem("targetPool", JSON.stringify(targetPool));
+        asStorage.setItem("standardStars", JSON.stringify(standardStars));
         renderTargetsTable();
         
         if (!isNaN(newStartTime) && oldBlock && oldStartTime !== null) {
@@ -1244,8 +1406,8 @@ function updateTargetManualEnd(name, val) {
             oldBlock.end_time = new Date(startMs + defaultDuration * 60 * 1000).toISOString();
         }
         
-        localStorage.setItem("targetPool", JSON.stringify(targetPool));
-        localStorage.setItem("standardStars", JSON.stringify(standardStars));
+        asStorage.setItem("targetPool", JSON.stringify(targetPool));
+        asStorage.setItem("standardStars", JSON.stringify(standardStars));
         renderTargetsTable();
         adjustAbuttingBlocks(name, deltaMinutes);
     } else {
@@ -1267,8 +1429,8 @@ function updateTargetManualEnd(name, val) {
             target.manual_start_time = startDate.toISOString();
         }
         
-        localStorage.setItem("targetPool", JSON.stringify(targetPool));
-        localStorage.setItem("standardStars", JSON.stringify(standardStars));
+        asStorage.setItem("targetPool", JSON.stringify(targetPool));
+        asStorage.setItem("standardStars", JSON.stringify(standardStars));
         renderTargetsTable();
         
         const newEndTime = new Date(target.manual_end_time).getTime();
@@ -1333,8 +1495,8 @@ function updateTargetManualDuration(name, val) {
         oldBlock.end_time = new Date(startMs + newDuration * 60 * 1000).toISOString();
     }
     
-    localStorage.setItem("targetPool", JSON.stringify(targetPool));
-    localStorage.setItem("standardStars", JSON.stringify(standardStars));
+    asStorage.setItem("targetPool", JSON.stringify(targetPool));
+    asStorage.setItem("standardStars", JSON.stringify(standardStars));
     renderTargetsTable();
     adjustAbuttingBlocks(name, deltaMinutes);
 }
@@ -1566,6 +1728,14 @@ function updateTargetCheckbox(name, field, checked) {
     saveAndRefresh();
 }
 
+// "Reset Reordering": drop the before/after ordering constraints made by dragging blocks.
+function resetCustomConstraints() {
+    targetPool.forEach(t => { t.schedule_before = []; });
+    standardStars.forEach(s => { s.schedule_before = []; });
+    logToTerminal("Ordering constraints cleared.");
+    saveAndRefresh();
+}
+
 function clearAllOverrides() {
     targetPool.forEach(t => {
         t.manual_start_time = null;
@@ -1722,7 +1892,8 @@ const OBSERVATORIES = {
 function getSelectedObservatory() {
     const obsSelect = document.getElementById("obs-select");
     const obsId = obsSelect ? obsSelect.value : "lick";
-    const obs = OBSERVATORIES[obsId] || OBSERVATORIES['lick'];
+    // An embedding host may fix the site (coordinates and telescope limit overrides).
+    const obs = { ...(OBSERVATORIES[obsId] || OBSERVATORIES['lick']), ...(AS_CONFIG.site || {}) };
     return {
         ...obs,
         offsetHours: -obs.lon / 15.0
@@ -1882,7 +2053,7 @@ function formatLST(lstVal) {
 
 function changeTimezone(val) {
     currentTimezone = val;
-    localStorage.setItem("currentTimezone", currentTimezone);
+    asStorage.setItem("currentTimezone", currentTimezone);
     
     // Sync manual-night-tz dropdown without triggering change event
     const manualTz = document.getElementById("manual-night-tz");
@@ -1953,7 +2124,7 @@ function updateNightOverridePlaceholders() {
 
 // Drag & Drop and Standard Stars
 async function loadStandardStars() {
-    const storedOverrides = localStorage.getItem("standardsOverrides");
+    const storedOverrides = asStorage.getItem("standardsOverrides");
     let overrides = {};
     if (storedOverrides) {
         try {
@@ -1962,7 +2133,7 @@ async function loadStandardStars() {
     }
 
     try {
-        const res = await fetch("/static/standards.json");
+        const res = await fetch(asStaticUrl("standards.json"));
         if (res.ok) {
             const raw = await res.json();
             standardStars = raw.map(s => {
@@ -2231,7 +2402,7 @@ function processTargetFile(file) {
         const parsed = parseTargetsText(text);
         if (parsed.length > 0) {
             targetPool = targetPool.concat(parsed);
-            localStorage.setItem("targetPool", JSON.stringify(targetPool));
+            asStorage.setItem("targetPool", JSON.stringify(targetPool));
             renderTargetsTable();
             triggerScheduling(true);
             logToTerminal(`Successfully uploaded ${parsed.length} targets.`);
@@ -2403,6 +2574,150 @@ function clearRealTimeLog() {
     if (term) term.value = "";
 }
 
+// ==============================================================================
+// REAL-TIME OBSERVATION ACTIONS (Start / Completed / Failed / Punted)
+// ==============================================================================
+// Each action records an entry in the observing log and sets the target's status. Finished
+// statuses (Observed, Failed, Punted) are skipped by the solver, but nothing re-solves here:
+// press "Recalculate from now" to re-plan. A host page can record the event through
+// window.AstroScheduler.hooks.onObservationEvent; if that hook rejects, nothing changes.
+
+let rtLogEntries = [];
+
+const RT_ACTIONS = {
+    start: { status: 'InProgress', label: 'Started', needsReason: false },
+    complete: { status: 'Observed', label: 'Completed', needsReason: false },
+    fail: { status: 'Failed', label: 'Failed', needsReason: true },
+    punt: { status: 'Punted', label: 'Punted', needsReason: true }
+};
+
+function refreshActiveTargetOptions() {
+    const select = document.getElementById("rt-active-target");
+    if (!select) return;
+    const previous = select.value;
+    select.innerHTML = '';
+    const science = (currentBlocksList || []).filter(b => (b.kind || 'science') === 'science' && targetPool.some(t => t.name === b.target_name));
+    science.forEach(b => {
+        const t = targetPool.find(x => x.name === b.target_name);
+        const status = t && t.status ? ` [${t.status}]` : '';
+        select.add(new Option(`${b.target_name} (${formatTimeForTimezone(b.start_time, currentTimezone)})${status}`, b.target_name));
+    });
+    if (previous && science.some(b => b.target_name === previous)) {
+        select.value = previous;
+    } else {
+        // Default to the first block that has not finished yet.
+        const next = science.find(b => {
+            const t = targetPool.find(x => x.name === b.target_name);
+            return !t || !t.status || t.status === 'InProgress';
+        });
+        if (next) select.value = next.target_name;
+    }
+}
+
+async function recordObservationEvent(action) {
+    const spec = RT_ACTIONS[action];
+    const select = document.getElementById("rt-active-target");
+    const name = select ? select.value : '';
+    const target = targetPool.find(t => t.name === name);
+    if (!spec || !target) {
+        logToTerminal("Select a scheduled target first.");
+        return null;
+    }
+    const reasonEl = document.getElementById("rt-reason");
+    const noteEl = document.getElementById("rt-comment");
+    const reason = spec.needsReason && reasonEl ? reasonEl.value : null;
+    const note = noteEl ? noteEl.value.trim() : '';
+    if (spec.needsReason && !reason) {
+        logToTerminal(`Choose a reason before marking ${name} as ${spec.label.toLowerCase()}.`);
+        if (reasonEl) reasonEl.focus();
+        return null;
+    }
+    const block = currentBlocksList.find(b => b.target_name === name) || null;
+    const event = {
+        action,
+        status: spec.status,
+        target_name: name,
+        external_id: target.external_id || null,
+        reason,
+        note,
+        time_utc: new Date().toISOString(),
+        planned_start: block ? block.start_time : null,
+        planned_end: block ? block.end_time : null
+    };
+
+    const hook = window.AstroScheduler && window.AstroScheduler.hooks && window.AstroScheduler.hooks.onObservationEvent;
+    if (typeof hook === 'function') {
+        try {
+            await hook(event);
+        } catch (e) {
+            logToTerminal(`Not recorded: ${e && e.message ? e.message : e}`);
+            return null;
+        }
+    }
+
+    target.status = spec.status;
+    if (action === 'start') {
+        // Pin the block to when it really started, so a later re-solve keeps it there.
+        target.manual_start_time = event.time_utc;
+        target.lock_type = 'start';
+        lockedTargets.set(name, 'start');
+    }
+    rtLogEntries.push({ ...event, duration_minutes: block ? block.duration_minutes : null,
+                        airmass_start: block ? block.airmass_start : null,
+                        airmass_end: block ? block.airmass_end : null,
+                        airmass_median: block ? block.airmass_median : null });
+    asStorage.setItem("targetPool", JSON.stringify(targetPool));
+    asStorage.setItem("observationLog", JSON.stringify(rtLogEntries));
+    if (noteEl) noteEl.value = '';
+    if (reasonEl) reasonEl.value = '';
+
+    const why = reason ? ` (${reason}${note ? `: ${note}` : ''})` : (note ? ` (${note})` : '');
+    logToTerminal(`${spec.label.toUpperCase()}: ${name}${why}`);
+    if (spec.status !== 'InProgress') {
+        logToTerminal("Press 'Recalculate from now' to re-plan the rest of the night.");
+    }
+    renderObservationLog();
+    renderTargetsTable();
+    refreshActiveTargetOptions();
+    return event;
+}
+
+function startObservation() { return recordObservationEvent('start'); }
+function completeObservation() { return recordObservationEvent('complete'); }
+function failObservation() { return recordObservationEvent('fail'); }
+function puntObservation() { return recordObservationEvent('punt'); }
+
+function renderObservationLog() {
+    const tbody = document.querySelector("#rt-log-table tbody");
+    if (!tbody) return;
+    if (!rtLogEntries.length) {
+        tbody.innerHTML = '<tr><td colspan="7" class="text-center" style="color: var(--text-muted); padding: 15px;">No log entries.</td></tr>';
+        return;
+    }
+    const esc = v => String(v === null || v === undefined ? '' : v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const fmt = v => (typeof v === 'number' && v < 100 ? v.toFixed(2) : '-');
+    tbody.innerHTML = rtLogEntries.map((e, i) => {
+        const label = RT_ACTIONS[e.action] ? RT_ACTIONS[e.action].label : e.action;
+        const comment = [label, e.reason, e.note].filter(Boolean).join(' · ');
+        return `<tr class="rt-log-row" data-action="${esc(e.action)}" data-target="${esc(e.target_name)}">
+            <td style="text-align: center;">${i + 1}</td>
+            <td>${esc(formatTimeForTimezone(e.time_utc, currentTimezone))}</td>
+            <td>${esc(e.target_name)}</td>
+            <td style="text-align: center;">${e.duration_minutes !== null ? esc(e.duration_minutes) : '-'}</td>
+            <td style="text-align: center;">${fmt(e.airmass_start)} – ${fmt(e.airmass_end)}</td>
+            <td style="text-align: center;">${fmt(e.airmass_median)}</td>
+            <td>${esc(comment)}</td>
+        </tr>`;
+    }).join('');
+}
+
+function asNotifyScheduleResult(result, requestPayload) {
+    const hook = window.AstroScheduler && window.AstroScheduler.hooks && window.AstroScheduler.hooks.onScheduleResult;
+    if (typeof hook === 'function') {
+        try { hook(result, requestPayload); } catch (e) { console.error("onScheduleResult hook failed:", e); }
+    }
+}
+
 async function recalculateStartingNow() {
     if (!lastScheduleResult || !lastScheduleResult.solar_times) {
         logToTerminal("No active schedule to recalculate starting 'now'.");
@@ -2488,9 +2803,7 @@ async function recalculateStartingNow() {
 
     const requestPayload = {
         date,
-        observatory: {
-            id: obsId
-        },
+        observatory: asObservatoryPayload(getSelectedObservatory()),
         instrument: instId,
         targets: targetPool,
         disabled_standards: disabledArray,
@@ -2498,23 +2811,17 @@ async function recalculateStartingNow() {
         selected_standards: Array.from(selectedStandards),
         standards_overrides,
         realtime_constraints,
-        previous_schedule: currentBlocksList.map(b => ({ target_name: b.target_name, start_time: b.start_time }))
+        previous_schedule: currentBlocksList.map(b => ({ target_name: b.target_name, external_id: b.external_id || null, start_time: b.start_time }))
     };
     
     try {
-        const response = await fetch("/api/schedule", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(requestPayload)
-        });
-        if (!response.ok) throw new Error("HTTP server offline");
-        const result = await response.json();
+        const result = await asPostSchedule(requestPayload);
+        asClearSolveError();
         updateScheduleUI(result);
+        asNotifyScheduleResult(result, requestPayload);
         logToTerminal("Recalculate successfully completed.");
     } catch (e) {
-        logToTerminal("Backend unavailable, running local JS recalculation fallback.");
-        const result = runLocalJSSolver(requestPayload);
-        updateScheduleUI(result);
+        asShowSolveError(e);
     }
 }
 
@@ -2764,7 +3071,7 @@ function saveExposureAndReTime(name, oldDuration) {
         oldBlock.end_time = new Date(startMs + newDuration * 60 * 1000).toISOString();
     }
     
-    localStorage.setItem("targetPool", JSON.stringify(targetPool));
+    asStorage.setItem("targetPool", JSON.stringify(targetPool));
     renderTargetsTable();
     if (deltaMinutes === 0) {
         if (typeof lastScheduleResult !== 'undefined' && lastScheduleResult) {
@@ -2898,14 +3205,7 @@ async function _doSchedule() {
 
     const requestPayload = {
         date,
-        observatory: {
-            id: obs.id,
-            name: obs.name,
-            lat: obs.lat,
-            lon: obs.lon,
-            elevation: obs.elevation,
-            timezone: obs.timezone
-        },
+        observatory: asObservatoryPayload(obs),
         instrument: instId,
         targets: targetPool,
         disabled_standards: disabledArray,
@@ -2913,27 +3213,16 @@ async function _doSchedule() {
         selected_standards: Array.from(selectedStandards),
         standards_overrides,
         realtime_constraints,
-        previous_schedule: (isSameObs && currentBlocksList && currentBlocksList.length > 0) ? currentBlocksList.map(b => ({ target_name: b.target_name, start_time: b.start_time })) : []
+        previous_schedule: (isSameObs && currentBlocksList && currentBlocksList.length > 0) ? currentBlocksList.map(b => ({ target_name: b.target_name, external_id: b.external_id || null, start_time: b.start_time })) : []
     };
     
     try {
-        const response = await fetch("/api/schedule", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(requestPayload)
-        });
-        
-        if (!response.ok) {
-            throw new Error("HTTP server offline");
-        }
-        
-        const result = await response.json();
+        const result = await asPostSchedule(requestPayload);
+        asClearSolveError();
         updateScheduleUI(result);
-        
+        asNotifyScheduleResult(result, requestPayload);
     } catch (error) {
-        console.warn("Backend API unavailable. Running local JS scheduling solver fallback...");
-        const result = runLocalJSSolver(requestPayload);
-        updateScheduleUI(result);
+        asShowSolveError(error);
     }
 }
 
@@ -3152,6 +3441,7 @@ function updateScheduleUI(result) {
         if (schedRow) schedRow.classList.add("row-highlighted");
     }
 
+    refreshActiveTargetOptions();
     window.scrollTo(scrollX, scrollY);
 }
 
@@ -3250,9 +3540,9 @@ function handleTimelineReorder(draggedName, targetName) {
         }
     }
     
-    localStorage.setItem("targetPool", JSON.stringify(targetPool));
-    localStorage.setItem("standardStars", JSON.stringify(standardStars));
-    localStorage.setItem("lockedTargets", JSON.stringify(Array.from(lockedTargets.entries())));
+    asStorage.setItem("targetPool", JSON.stringify(targetPool));
+    asStorage.setItem("standardStars", JSON.stringify(standardStars));
+    asStorage.setItem("lockedTargets", JSON.stringify(Array.from(lockedTargets.entries())));
     
     if (autoUpdateEnabled) {
         saveAndRefresh();
@@ -4411,1322 +4701,6 @@ function getSolarTimesFallback(dateUtc, lat, lon, elevation) {
         twilight_evening_12: twiEve12,
         twilight_morning_12: twiMorn12
     };
-}
-
-function calculateExposure(target, moonPhase, moonSep) {
-    let baseExp = 100.0 * Math.pow(2.512, target.magnitude - 15.0);
-    const snMults = { classification: 0.5, normal: 1.0, high_sn: 2.0 };
-    const snMult = snMults[target.sn_mode] || 1.0;
-    const moonFactor = 1.0 + 5.0 * moonPhase * Math.exp(-moonSep / 30.0);
-    const totalExp = baseExp * snMult * moonFactor;
-    return Math.max(60.0, Math.min(7200.0, totalExp));
-}
-
-function runLocalJSSolver(payload) {
-    const { date, observatory, targets } = payload;
-    const dateParts = date.split('-');
-    
-    const localNoon = new Date(dateParts[0], dateParts[1] - 1, dateParts[2], 12, 0, 0);
-    const obs = getSelectedObservatory();
-    const lat = (observatory && observatory.lat !== undefined) ? observatory.lat : obs.lat;
-    const lon = (observatory && observatory.lon !== undefined) ? observatory.lon : obs.lon;
-    const elevation = (observatory && observatory.elevation !== undefined) ? observatory.elevation : obs.elevation;
-    const offsetHours = -lon / 15.0;
-    observatory.lat = lat;
-    observatory.lon = lon;
-    observatory.elevation = elevation;
-    const utcNoon = new Date(localNoon.getTime() + offsetHours * 60 * 60 * 1000);
-    
-    const solarTimes = getSolarTimesFallback(utcNoon, lat, lon, elevation);
-    
-    let sunset = solarTimes.sunset;
-    let sunrise = solarTimes.sunrise;
-    
-    const rt = payload.realtime_constraints || {};
-    const tzName = observatory.timezone || (observatory.id && (observatory.id === 'keck1' || observatory.id === 'keck2') ? 'Pacific/Honolulu' : 'America/Los_Angeles');
-    const fallbackOffset = tzName === 'Pacific/Honolulu' ? -10 : -7;
-    
-    if (rt.manual_limits_enabled) {
-        const tzMode = rt.manual_limit_tz || 'UTC';
-        
-        let shh, smm;
-        if (tzMode !== 'UTC') {
-            try {
-                const options = { timeZone: tzName, hour: "numeric", minute: "numeric", hour12: false };
-                const partsSunset = new Intl.DateTimeFormat("en-US", options).formatToParts(sunset);
-                shh = parseInt(partsSunset.find(p => p.type === 'hour').value, 10);
-                smm = parseInt(partsSunset.find(p => p.type === 'minute').value, 10);
-            } catch (e) {
-                const localDate = new Date(sunset.getTime() + fallbackOffset * 60 * 60 * 1000);
-                shh = localDate.getUTCHours();
-                smm = localDate.getUTCMinutes();
-            }
-        } else {
-            shh = sunset.getUTCHours();
-            smm = sunset.getUTCMinutes();
-        }
-        if (rt.manual_limit_start) {
-            const parsed = parseHourMinute(rt.manual_limit_start, true);
-            if (parsed) {
-                shh = parsed.hh;
-                smm = parsed.mm;
-            }
-        }
-
-        let ehh, emm;
-        if (tzMode !== 'UTC') {
-            try {
-                const options = { timeZone: tzName, hour: "numeric", minute: "numeric", hour12: false };
-                const partsSunrise = new Intl.DateTimeFormat("en-US", options).formatToParts(sunrise);
-                ehh = parseInt(partsSunrise.find(p => p.type === 'hour').value, 10);
-                emm = parseInt(partsSunrise.find(p => p.type === 'minute').value, 10);
-            } catch (e) {
-                const localDate = new Date(sunrise.getTime() + fallbackOffset * 60 * 60 * 1000);
-                ehh = localDate.getUTCHours();
-                emm = localDate.getUTCMinutes();
-            }
-        } else {
-            ehh = sunrise.getUTCHours();
-            emm = sunrise.getUTCMinutes();
-        }
-        if (rt.manual_limit_end) {
-            const parsed = parseHourMinute(rt.manual_limit_end, false);
-            if (parsed) {
-                ehh = parsed.hh;
-                emm = parsed.mm;
-            }
-        }
-
-        if (tzMode === 'UTC') {
-            let minDiffStart = Infinity;
-            let bestSunset = null;
-            for (let dOffset = -1; dOffset <= 1; dOffset++) {
-                const candidate = new Date(Date.UTC(solarTimes.sunset.getUTCFullYear(), solarTimes.sunset.getUTCMonth(), solarTimes.sunset.getUTCDate() + dOffset, shh, smm, 0, 0));
-                const diff = Math.abs(candidate.getTime() - solarTimes.sunset.getTime());
-                if (diff < minDiffStart) {
-                    minDiffStart = diff;
-                    bestSunset = candidate;
-                }
-            }
-            sunset = bestSunset;
-
-            let minDiffEnd = Infinity;
-            let bestSunrise = null;
-            for (let dOffset = -1; dOffset <= 1; dOffset++) {
-                const candidate = new Date(Date.UTC(solarTimes.sunrise.getUTCFullYear(), solarTimes.sunrise.getUTCMonth(), solarTimes.sunrise.getUTCDate() + dOffset, ehh, emm, 0, 0));
-                const diff = Math.abs(candidate.getTime() - solarTimes.sunrise.getTime());
-                if (diff < minDiffEnd) {
-                    minDiffEnd = diff;
-                    bestSunrise = candidate;
-                }
-            }
-            sunrise = bestSunrise;
-
-            if (sunrise < sunset) {
-                sunrise = new Date(sunrise.getTime() + 24 * 60 * 60 * 1000);
-            }
-        } else {
-            function getOffset(date) {
-                try {
-                    const formatter = new Intl.DateTimeFormat("en-US", { timeZone: tzName, timeZoneName: "longOffset" });
-                    const formatted = formatter.format(date);
-                    const match = formatted.match(/GMT([-+]\d+)/);
-                    return match ? parseInt(match[1], 10) : fallbackOffset;
-                } catch (e) {
-                    return fallbackOffset;
-                }
-            }
-            const tempStart = new Date(Date.UTC(dateParts[0], dateParts[1] - 1, dateParts[2], shh, smm, 0, 0));
-            const startOffset = getOffset(tempStart);
-            sunset = new Date(Date.UTC(dateParts[0], dateParts[1] - 1, dateParts[2], shh - startOffset, smm, 0, 0));
-            
-            let endDay = new Date(Date.UTC(dateParts[0], dateParts[1] - 1, dateParts[2]));
-            if (ehh < shh) {
-                endDay = new Date(endDay.getTime() + 24 * 60 * 60 * 1000);
-            }
-            const tempEnd = new Date(Date.UTC(endDay.getUTCFullYear(), endDay.getUTCMonth(), endDay.getUTCDate(), ehh, emm, 0, 0));
-            const endOffset = getOffset(tempEnd);
-            sunrise = new Date(Date.UTC(endDay.getUTCFullYear(), endDay.getUTCMonth(), endDay.getUTCDate(), ehh - endOffset, emm, 0, 0));
-        }
-        
-        if (solarTimes.twilight_evening_18 < sunset) {
-            solarTimes.twilight_evening_18 = sunset;
-        }
-        if (solarTimes.twilight_morning_18 > sunrise) {
-            solarTimes.twilight_morning_18 = sunrise;
-        }
-        if (solarTimes.twilight_evening_12 < sunset) {
-            solarTimes.twilight_evening_12 = sunset;
-        }
-        if (solarTimes.twilight_morning_12 > sunrise) {
-            solarTimes.twilight_morning_12 = sunrise;
-        }
-    }
-    
-    // Floor sunset to whole minute — matches Python backend; block.start_time values
-    // are clean HH:MM:00 UTC and resolve exactly to chunks.
-    sunset = new Date(Math.floor(sunset.getTime() / 60000) * 60000);
-    sunrise = new Date(Math.floor(sunrise.getTime() / 60000) * 60000);
-    const totalDurationMs = sunrise.getTime() - sunset.getTime();
-    // Issue #29: 1-minute chunks (was 5-minute)
-    const numChunks = Math.floor(totalDurationMs / (60 * 1000));
-    
-    const chunkTimes = [];
-    for (let i = 0; i < numChunks; i++) {
-        chunkTimes.push(new Date(sunset.getTime() + i * 60 * 1000));
-    }
-    
-    const midTime = new Date(sunset.getTime() + totalDurationMs / 2);
-    const dMid = datetimeToD(midTime);
-    const moon = getMoonPosition(dMid);
-    
-    const solverAirmassCache = {};
-    function getAirmassForTarget(t, dt) {
-        const tKey = t.name || `${t.ra}_${t.dec}`;
-        if (!solverAirmassCache[tKey]) solverAirmassCache[tKey] = {};
-        const key = dt.getTime();
-        if (solverAirmassCache[tKey][key] !== undefined) {
-            return solverAirmassCache[tKey][key];
-        }
-        const altAz = getAltAz(dt, observatory.lat, observatory.lon, t.ra, t.dec);
-        const val = getAirmass(altAz.alt);
-        solverAirmassCache[tKey][key] = val;
-        return val;
-    }
-    
-    function isShaneVisible(t, dt) {
-        const dec = typeof t.dec === 'number' ? t.dec : parseCoordinate(t.dec, false);
-        const [dMin, dMax] = observatory.decLimits || [-90, 90];
-        if (dec < dMin || dec > dMax) return false;
-        
-        const ra = typeof t.ra === 'number' ? t.ra : parseCoordinate(t.ra, true);
-        const altAz = getAltAz(dt, observatory.lat, observatory.lon, ra, dec);
-        const alt = altAz.alt;
-        const az = altAz.az;
-        const ha = altAz.ha;
-        
-        if (observatory.id === 'keck1') {
-            if (alt > 85.0) return false;
-            if (az >= 5.3 && az <= 146.2) {
-                if (alt < 33.3 || alt > 88.9) return false;
-            } else {
-                if (alt < 18.0 || alt > 88.9) return false;
-            }
-            return true;
-        } else if (observatory.id === 'keck2') {
-            if (alt > 85.0) return false;
-            if (az >= 185.3 && az <= 332.8) {
-                if (alt < 36.8 || alt > 89.5) return false;
-            } else {
-                if (alt < 18.0 || alt > 89.5) return false;
-            }
-            return true;
-        } else {
-            // Lick Shane
-            const [hMin, hMax] = observatory.haLimits || [-5.6667, 3.75];
-            if (ha < hMin || ha > hMax) return false;
-            return true;
-        }
-    }
-    
-    function isChunkValid(t, cIdx, isManual = false, ignoreSchedulingLimits = false) {
-        const dt = chunkTimes[cIdx];
-        
-        // Twilight check
-        if (!isManual) {
-            if (ignoreSchedulingLimits) {
-                // Just check if it's within the night (sunset to sunrise)
-                if (dt < sunset || dt > sunrise) {
-                    return false;
-                }
-            } else {
-                if (!t.allow_twilight) {
-                    if (dt < solarTimes.twilight_evening_18 || dt > solarTimes.twilight_morning_18) {
-                        return false;
-                    }
-                } else {
-                    const rt = payload.realtime_constraints || {};
-                    const isStandard = (t.priority === 0.0);
-                    if (isStandard) {
-                        const limitStart = rt.manual_limits_enabled ? sunset : new Date(sunset.getTime() + 30 * 60 * 1000);
-                        const limitEnd = rt.manual_limits_enabled ? sunrise : new Date(sunrise.getTime() - 30 * 60 * 1000);
-                        if (dt < limitStart || dt > limitEnd) {
-                            return false;
-                        }
-                    } else {
-                        const limitStart = new Date(solarTimes.twilight_evening_12);
-                        const limitEnd = new Date(solarTimes.twilight_morning_12);
-                        if (dt < limitStart || dt > limitEnd) {
-                            return false;
-                        }
-                    }
-                }
-            }
-            
-            // Pointing check
-            if (!isShaneVisible(t, dt)) return false;
-        }
-        
-        // Airmass check
-        const airmass = getAirmassForTarget(t, dt);
-        if (isManual) {
-            if (airmass <= 0) return false;
-        } else {
-            if (ignoreSchedulingLimits) {
-                if (airmass <= 0 || airmass > 2.92) return false;
-            } else {
-                const limitAirmass = t.high_airmass ? 2.2 : 1.7;
-                if (airmass <= 0 || airmass > limitAirmass) return false;
-            }
-        }
-        
-        if (!isManual && !ignoreSchedulingLimits) {
-            const rt = payload.realtime_constraints || {};
-            const lst = getLst(dt, observatory.lon);
-            const ha = getHourAngle(lst, t.ra);
-            const dec = typeof t.dec === 'number' ? t.dec : parseCoordinate(t.dec, false);
-            const altAz = getAltAz(dt, observatory.lat, observatory.lon, t.ra, t.dec);
-            
-            if (rt.ha_limit_east !== undefined && rt.ha_limit_east !== null && rt.ha_limit_east !== "") {
-                if (ha < parseFloat(rt.ha_limit_east)) return false;
-            }
-            if (rt.ha_limit_west !== undefined && rt.ha_limit_west !== null && rt.ha_limit_west !== "") {
-                if (ha > parseFloat(rt.ha_limit_west)) return false;
-            }
-            if (rt.dec_min !== undefined && rt.dec_min !== null && rt.dec_min !== "") {
-                if (dec < parseFloat(rt.dec_min)) return false;
-            }
-            if (rt.dec_max !== undefined && rt.dec_max !== null && rt.dec_max !== "") {
-                if (dec > parseFloat(rt.dec_max)) return false;
-            }
-            if (rt.alt_limit !== undefined && rt.alt_limit !== null && rt.alt_limit !== "") {
-                if (altAz.alt < parseFloat(rt.alt_limit)) return false;
-            }
-            if (rt.alt_max !== undefined && rt.alt_max !== null && rt.alt_max !== "") {
-                if (altAz.alt > parseFloat(rt.alt_max)) return false;
-            }
-            if (rt.az_min !== undefined && rt.az_min !== null && rt.az_min !== "") {
-                const minAz = parseFloat(rt.az_min);
-                const maxAz = (rt.az_max !== undefined && rt.az_max !== null && rt.az_max !== "") ? parseFloat(rt.az_max) : 360.0;
-                if (minAz <= maxAz) {
-                    if (altAz.az < minAz || altAz.az > maxAz) return false;
-                } else {
-                    if (altAz.az < minAz && altAz.az > maxAz) return false;
-                }
-            }
-        }
-        
-        return true;
-    }
-    
-    function getChunkIdxFromTimeStr(timeStr) {
-        if (!timeStr) return null;
-        timeStr = timeStr.trim();
-        if (!timeStr) return null;
-        
-        // Try to parse as ISO date string first (e.g. "2026-06-19T07:40:00.000Z")
-        const isoDate = new Date(timeStr);
-        if (!isNaN(isoDate.getTime())) {
-            // Find nearest chunk within 90 seconds
-            let bestIdx = null;
-            let minDiff = Infinity;
-            for (let i = 0; i < chunkTimes.length; i++) {
-                const diff = Math.abs(chunkTimes[i].getTime() - isoDate.getTime());
-                if (diff < minDiff) {
-                    minDiff = diff;
-                    bestIdx = i;
-                }
-            }
-            const maxBoundStart = new Date(sunset.getTime() - 60000);
-            const maxBoundEnd = new Date(sunrise.getTime() + 60000);
-            if (bestIdx !== null && isoDate >= maxBoundStart && isoDate <= maxBoundEnd) {
-                const diff = Math.abs(chunkTimes[bestIdx].getTime() - isoDate.getTime());
-                if (diff <= 90000) {
-                    return bestIdx;
-                }
-            }
-            return null;
-        }
-        
-        // Fall back to HH:MM matching
-        if (timeStr.includes(":")) {
-            const parts = timeStr.split(":");
-            const hh = parseInt(parts[0], 10);
-            const mm = parseInt(parts[1], 10);
-            if (isNaN(hh) || isNaN(mm)) return null;
-            
-            for (let i = 0; i < chunkTimes.length; i++) {
-                const ct = chunkTimes[i];
-                if (ct.getUTCHours() === hh && ct.getUTCMinutes() === mm) {
-                    return i;
-                }
-            }
-            for (let i = 0; i < chunkTimes.length; i++) {
-                const ct = chunkTimes[i];
-                if (ct.getHours() === hh && ct.getMinutes() === mm) {
-                    return i;
-                }
-            }
-        }
-        return null;
-    }
-    
-    // 3. Load standard stars database early
-    let standardsData = [
-        {"name": "BD+284211", "ra": 21.853, "dec": 28.86, "color": "blue", "quality": "good", "magnitude": 10.5},
-        {"name": "BD+174708", "ra": 22.192, "dec": 18.09, "color": "red", "quality": "good", "magnitude": 9.5},
-        {"name": "HD19445", "ra": 3.140, "dec": 26.33, "color": "red", "quality": "good", "magnitude": 8.0},
-        {"name": "G191B2B", "ra": 5.092, "dec": 52.83, "color": "blue", "quality": "okay", "magnitude": 11.8},
-        {"name": "HD84937", "ra": 9.816, "dec": 13.74, "color": "red", "quality": "okay", "magnitude": 8.3},
-        {"name": "Feige 34", "ra": 10.660, "dec": 43.10, "color": "blue", "quality": "good", "magnitude": 11.2},
-        {"name": "HZ 44", "ra": 13.393, "dec": 36.13, "color": "blue", "quality": "okay", "magnitude": 11.7},
-        {"name": "BD+262606", "ra": 14.817, "dec": 25.70, "color": "red", "quality": "good", "magnitude": 9.7},
-        {"name": "Feige 110", "ra": 23.333, "dec": -5.16, "color": "blue", "quality": "good", "magnitude": 11.8},
-        {"name": "LTT 377", "ra": 0.696, "dec": -33.65, "color": "blue", "quality": "okay", "magnitude": 11.2},
-        {"name": "LTT 1788", "ra": 3.806, "dec": -39.14, "color": "blue", "quality": "okay", "magnitude": 13.1},
-        {"name": "LTT 2415", "ra": 5.940, "dec": -27.86, "color": "blue", "quality": "okay", "magnitude": 12.2}
-    ];
-    standardsData.forEach(s => {
-        s.allow_twilight = true;
-    });
-    
-    if (payload.disabled_standards) {
-        const disabledSet = new Set(payload.disabled_standards);
-        standardsData = standardsData.filter(s => !disabledSet.has(s.name));
-    }
-
-    if (payload.standards_overrides) {
-        standardsData.forEach(s => {
-            if (payload.standards_overrides[s.name]) {
-                const ovr = payload.standards_overrides[s.name];
-                if (ovr.manual_start_time) {
-                    s.manual_start_time = ovr.manual_start_time;
-                }
-                if (ovr.manual_duration !== null && ovr.manual_duration !== undefined) {
-                    s.manual_duration = ovr.manual_duration;
-                }
-            }
-        });
-    }
-
-    const prelimReservedChunks = new Set();
-    const manualStandardBlocks = [];
-
-    standardsData.forEach(s => {
-        if (s.manual_start_time) {
-            const manualChunk = getChunkIdxFromTimeStr(s.manual_start_time);
-            if (manualChunk !== null) {
-                const details = getTargetExposureDetailsJS(s);
-                const durChunks = details.duration_minutes;
-                let blockValid = true;
-                for (let c = manualChunk; c < manualChunk + durChunks; c++) {
-                    if (c >= numChunks || prelimReservedChunks.has(c) || !isChunkValid(s, c, true)) {
-                        blockValid = false;
-                        break;
-                    }
-                }
-                if (blockValid) {
-                    for (let c = manualChunk; c < manualChunk + durChunks; c++) {
-                        prelimReservedChunks.add(c);
-                    }
-                    const air = getAirmassForTarget(s, chunkTimes[manualChunk]);
-                    let commentPrefix = `Slew: 7m. Blue: ${details.blue_num}x${details.blue_exp.toFixed(0)}s, Red: ${details.red_num}x${details.red_exp.toFixed(0)}s.`;
-                    let blockComment = `Calib: ${s.color.charAt(0).toUpperCase() + s.color.slice(1)} / ${s.quality.charAt(0).toUpperCase() + s.quality.slice(1)}, Airmass ${air.toFixed(2)}`;
-                    manualStandardBlocks.push({
-                        target_name: s.name,
-                        ra: s.ra,
-                        dec: s.dec,
-                        start_time: chunkTimes[manualChunk].toISOString(),
-                        end_time: (manualChunk + durChunks < numChunks) ? chunkTimes[manualChunk + durChunks].toISOString() : sunrise.toISOString(),
-                        duration_minutes: durChunks,
-                        airmass_start: air,
-                        airmass_end: air,
-                        airmass_median: air,
-                        priority: 0.0,
-                        comment: `${commentPrefix} ${blockComment}`
-                    });
-                }
-            }
-        }
-    });
-
-    // Filter out pre-scheduled standards so they aren't processed in standard selection loops
-    let activeStandardsData = standardsData.filter(s => !s.manual_start_time);
-
-    // Sort and calculate exposures
-    const targetExposures = {};
-    targets.forEach(t => {
-        const sep = getSeparation(t.ra, t.dec, moon.ra, moon.dec);
-        targetExposures[t.name] = calculateExposure(t, moon.phase, sep);
-    });
-    
-    // 1. Run preliminary solve to see what gets scheduled and if we need high-airmass calibrations
-    const prelimSolve = solveInternal(targets, new Set(prelimReservedChunks));
-    const scheduledScience = prelimSolve.blocks;
-    
-    let needHighAirmass = false;
-    for (let i = 0; i < scheduledScience.length; i++) {
-        if (scheduledScience[i].airmass_median > 1.5) {
-            needHighAirmass = true;
-            break;
-        }
-    }
-    
-    // Issue #29: Standard star slots at 30 & 35 min after sunset (1-min chunks)
-    const hasManual = !!(payload.realtime_constraints && payload.realtime_constraints.manual_limits_enabled);
-    let eveSlot1 = hasManual ? 0 : 30;
-    let eveSlot2 = hasManual ? 5 : 35;
-    const brightThreshold = 15.5; // Lick Shane threshold
-    
-    const scienceStartBlock = scheduledScience.find(b => new Date(b.start_time).getTime() === chunkTimes[0].getTime());
-    if (scienceStartBlock) {
-        const sciTarget = targets.find(t => t.name === scienceStartBlock.target_name);
-        if (sciTarget && sciTarget.magnitude < brightThreshold) {
-            eveSlot1 = Math.max(hasManual ? 0 : 30, Math.ceil(scienceStartBlock.duration_minutes));
-            eveSlot2 = eveSlot1 + 5;
-        }
-    }
-    
-    // Morning standards: 35 & 40 min before sunrise
-    let mornSlot2 = hasManual ? numChunks - 5 : numChunks - 35;
-    let mornSlot1 = mornSlot2 - 5;
-    const scienceEndBlock = scheduledScience.find(b => new Date(b.end_time).getTime() === chunkTimes[numChunks - 1].getTime());
-    if (scienceEndBlock) {
-        const sciTarget = targets.find(t => t.name === scienceEndBlock.target_name);
-        if (sciTarget && sciTarget.magnitude < brightThreshold) {
-            mornSlot2 = Math.min(hasManual ? numChunks - 5 : numChunks - 35, numChunks - 5 - Math.ceil(scienceEndBlock.duration_minutes));
-            mornSlot1 = mornSlot2 - 5;
-        }
-    }
-    
-    // 3. Setup standard stars
-    const blueStandards = activeStandardsData.filter(s => s.color === 'blue');
-    const redStandards = activeStandardsData.filter(s => s.color === 'red');
-    
-    const reservedChunks = new Set(prelimReservedChunks);
-    const standardBlocks = [...manualStandardBlocks];
-    
-    function addStandardBlock(starObj, chunkIdx) {
-        if (!starObj) return;
-        const details = getTargetExposureDetailsJS(starObj);
-        const durChunks = details.duration_minutes;
-        const air = getAirmassForTarget(starObj, chunkTimes[chunkIdx]);
-        
-        let commentPrefix = `Slew: 7m. Blue: ${details.blue_num}x${details.blue_exp.toFixed(0)}s, Red: ${details.red_num}x${details.red_exp.toFixed(0)}s.`;
-        let blockComment = `Calib: ${starObj.color.charAt(0).toUpperCase() + starObj.color.slice(1)} / ${starObj.quality.charAt(0).toUpperCase() + starObj.quality.slice(1)}, Airmass ${air.toFixed(2)}`;
-        
-        for (let c = chunkIdx; c < chunkIdx + durChunks; c++) {
-            reservedChunks.add(c);
-        }
-        standardBlocks.push({
-            target_name: starObj.name,
-            ra: starObj.ra,
-            dec: starObj.dec,
-            start_time: chunkTimes[chunkIdx].toISOString(),
-            end_time: (chunkIdx + durChunks < numChunks) ? chunkTimes[chunkIdx + durChunks].toISOString() : sunrise.toISOString(),
-            duration_minutes: durChunks,
-            airmass_start: air,
-            airmass_end: air,
-            airmass_median: air,
-            priority: 0.0,
-            comment: `${commentPrefix} ${blockComment}`
-        });
-    }
-
-    if (payload.auto_standards !== false) {
-        // Auto Selection Mode (schedule independently for each of the 4 slots if observable)
-        let s_eb = null;
-        let s_er = null;
-        let s_mb = null;
-        let s_mr = null;
-        
-        let dur_eb = 8;
-        let dur_er = 8;
-        let dur_mb = 8;
-        let dur_mr = 8;
-
-        // Evening Blue (Slot 1)
-        let best_eb_score = -1.0;
-        blueStandards.forEach(s => {
-            const details = getTargetExposureDetailsJS(s);
-            const currentDur = details.duration_minutes;
-            if (Array.from({length: currentDur}, (_, i) => eveSlot1 + i).some(c => reservedChunks.has(c) || c >= numChunks)) return;
-            if (!isShaneVisible(s, chunkTimes[eveSlot1])) return;
-            const air = getAirmassForTarget(s, chunkTimes[eveSlot1]);
-            if (air > 0 && air <= 2.2) {
-                let score = s.quality === 'good' ? 100.0 : 10.0;
-                if (needHighAirmass) {
-                    if (air >= 1.5 && air <= 2.2) score += 20.0;
-                } else {
-                    if (air < 1.3) score += 20.0;
-                }
-                if (score > best_eb_score) {
-                    best_eb_score = score;
-                    s_eb = s;
-                    dur_eb = currentDur;
-                }
-            }
-        });
-        if (s_eb) {
-            addStandardBlock(s_eb, eveSlot1);
-            eveSlot2 = eveSlot1 + dur_eb;
-        } else {
-            eveSlot2 = eveSlot1 + 8;
-        }
-
-        // Evening Red (Slot 2)
-        let best_er_score = -1.0;
-        redStandards.forEach(s => {
-            const details = getTargetExposureDetailsJS(s);
-            const currentDur = details.duration_minutes;
-            if (Array.from({length: currentDur}, (_, i) => eveSlot2 + i).some(c => reservedChunks.has(c) || c >= numChunks)) return;
-            if (!isShaneVisible(s, chunkTimes[eveSlot2])) return;
-            const air = getAirmassForTarget(s, chunkTimes[eveSlot2]);
-            if (air > 0 && air <= 2.2) {
-                let score = s.quality === 'good' ? 100.0 : 10.0;
-                if (needHighAirmass) {
-                    if (air >= 1.5 && air <= 2.2) score += 20.0;
-                } else {
-                    if (air < 1.3) score += 20.0;
-                }
-                if (score > best_er_score) {
-                    best_er_score = score;
-                    s_er = s;
-                }
-            }
-        });
-        if (s_er) {
-            addStandardBlock(s_er, eveSlot2);
-        }
-
-        // Morning slots scheduling: mornSlot2 is red, mornSlot1 is blue.
-        const mornSequenceEnd = hasManual ? numChunks - 5 : numChunks - 30;
-
-        // Morning Red (Slot 2)
-        let best_mr_score = -1.0;
-        s_mr = null;
-        dur_mr = 8;
-        redStandards.forEach(s => {
-            const details = getTargetExposureDetailsJS(s);
-            const currentDur = details.duration_minutes;
-            const currentStart = mornSequenceEnd - currentDur;
-            if (Array.from({length: currentDur}, (_, i) => currentStart + i).some(c => reservedChunks.has(c) || c < 0)) return;
-            if (!isShaneVisible(s, chunkTimes[currentStart])) return;
-            const air = getAirmassForTarget(s, chunkTimes[currentStart]);
-            if (air > 0 && air <= 2.2) {
-                let score = s.quality === 'good' ? 100.0 : 10.0;
-                if (needHighAirmass) {
-                    if (air >= 1.5 && air <= 2.2) score += 20.0;
-                } else {
-                    if (air < 1.3) score += 20.0;
-                }
-                if (score > best_mr_score) {
-                    best_mr_score = score;
-                    s_mr = s;
-                    dur_mr = currentDur;
-                }
-            }
-        });
-        let mornStartRed;
-        if (s_mr) {
-            mornStartRed = mornSequenceEnd - dur_mr;
-            addStandardBlock(s_mr, mornStartRed);
-        } else {
-            mornStartRed = mornSequenceEnd - 8;
-        }
-
-        // Morning Blue (Slot 1)
-        let best_mb_score = -1.0;
-        s_mb = null;
-        blueStandards.forEach(s => {
-            const details = getTargetExposureDetailsJS(s);
-            const currentDur = details.duration_minutes;
-            const currentStart = mornStartRed - currentDur;
-            if (Array.from({length: currentDur}, (_, i) => currentStart + i).some(c => reservedChunks.has(c) || c < 0)) return;
-            if (!isShaneVisible(s, chunkTimes[currentStart])) return;
-            const air = getAirmassForTarget(s, chunkTimes[currentStart]);
-            if (air > 0 && air <= 2.2) {
-                let score = s.quality === 'good' ? 100.0 : 10.0;
-                if (needHighAirmass) {
-                    if (air >= 1.5 && air <= 2.2) score += 20.0;
-                } else {
-                    if (air < 1.3) score += 20.0;
-                }
-                if (score > best_mb_score) {
-                    best_mb_score = score;
-                    s_mb = s;
-                }
-            }
-        });
-        if (s_mb) {
-            const details_mb = getTargetExposureDetailsJS(s_mb);
-            const dur_mb = details_mb.duration_minutes;
-            const mornStartBlue = mornStartRed - dur_mb;
-            addStandardBlock(s_mb, mornStartBlue);
-        }
-    } else {
-        // Manual Selection Mode
-        const selectedSet = new Set(payload.selected_standards || []);
-        const manualStandards = activeStandardsData.filter(s => selectedSet.has(s.name));
-        
-        // Sort chronologically relative to sunset LST
-        const lstStart = getLst(sunset, observatory.lon);
-        manualStandards.sort((a, b) => ((a.ra - lstStart + 24.0) % 24.0) - ((b.ra - lstStart + 24.0) % 24.0));
-        
-        // Find twilight chunks
-        const twilChunks = [];
-        const eveTwilStart = hasManual ? sunset : new Date(sunset.getTime() + 30 * 60 * 1000);
-        const eveTwilEnd = new Date(sunset.getTime() + 90 * 60 * 1000);
-        const mornTwilStart = new Date(sunrise.getTime() - 90 * 60 * 1000);
-        const mornTwilEnd = hasManual ? sunrise : new Date(sunrise.getTime() - 30 * 60 * 1000);
-        
-        for (let c = 0; c < numChunks; c++) {
-            const ct = chunkTimes[c];
-            if ((ct >= eveTwilStart && ct <= eveTwilEnd) || (ct >= mornTwilStart && ct <= mornTwilEnd)) {
-                twilChunks.push(c);
-            }
-        }
-        
-        manualStandards.forEach(s => {
-            const details = getTargetExposureDetailsJS(s);
-            let durChunks = details.duration_minutes;
-            
-            function findBestChunk(allowedChunks, maxAirmass) {
-                let bc = null;
-                let ba = Infinity;
-                
-                for (let i = 0; i < allowedChunks.length; i++) {
-                    const cIdx = allowedChunks[i];
-                    if (cIdx + durChunks > numChunks) continue;
-                    
-                    let overlap = false;
-                    for (let c = cIdx; c < cIdx + durChunks; c++) {
-                        if (reservedChunks.has(c)) {
-                            overlap = true;
-                            break;
-                        }
-                    }
-                    if (overlap) continue;
-                    
-                    let blockOk = true;
-                    for (let offset = 0; offset < durChunks; offset++) {
-                        if (!isShaneVisible(s, chunkTimes[cIdx + offset])) {
-                            blockOk = false;
-                            break;
-                        }
-                    }
-                    if (!blockOk) continue;
-                    
-                    const air = getAirmassForTarget(s, chunkTimes[cIdx]);
-                    if (air > 0 && air <= maxAirmass) {
-                        if (air < ba) {
-                            ba = air;
-                            bc = cIdx;
-                        }
-                    }
-                }
-                return { bc, ba };
-            }
-            
-            let res = findBestChunk(twilChunks, 2.2);
-            if (res.bc === null) res = findBestChunk(twilChunks, 2.5);
-            
-            const minChunk = hasManual ? 0 : 30;
-            const allChunks = Array.from({length: numChunks}, (_, i) => i).filter(c => c >= minChunk);
-            if (res.bc === null) res = findBestChunk(allChunks, 2.2);
-            if (res.bc === null) res = findBestChunk(allChunks, 2.5);
-            if (res.bc === null) res = findBestChunk(allChunks, 10.0);
-            
-            if (res.bc !== null) {
-                addStandardBlock(s, res.bc);
-            }
-        });
-    }
-    
-    // 4. Run final solve with reserved standard blocks
-    const finalSolve = solveInternal(targets, reservedChunks);
-    const scheduledBlocks = [...finalSolve.blocks, ...standardBlocks];
-    scheduledBlocks.sort((a,b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime());
-    
-    // Gaps (empty blocks)
-    const empty_blocks = [];
-    if (finalSolve.conflicts.length === 0 && scheduledBlocks.length > 0) {
-        const startActive = new Date(sunset.getTime() + 30 * 60 * 1000);
-        const endActive = new Date(sunrise.getTime() - 30 * 60 * 1000);
-        
-        let curr = startActive;
-        scheduledBlocks.forEach(b => {
-            const bStart = new Date(b.start_time);
-            const bEnd = new Date(b.end_time);
-            // Issue #29: gap threshold is 1 minute
-            if (bStart > new Date(curr.getTime() + 1 * 60 * 1000)) {
-                empty_blocks.push({
-                    start_time: curr.toISOString(),
-                    end_time: b.start_time,
-                    duration_minutes: Math.round((bStart.getTime() - curr.getTime()) / (60 * 1000))
-                });
-            }
-            curr = bEnd > curr ? bEnd : curr;
-        });
-        
-        if (new Date(curr.getTime() + 1 * 60 * 1000) < endActive) {
-            empty_blocks.push({
-                start_time: curr.toISOString(),
-                end_time: endActive.toISOString(),
-                duration_minutes: Math.round((endActive.getTime() - curr.getTime()) / (60 * 1000))
-            });
-        }
-    }
-    
-    // Airmass curves (including standard stars)
-    const airmass_plots = {};
-    targets.forEach(t => {
-        const curve = [];
-        for (let i = 0; i < numChunks; i++) {
-            curve.push({
-                time: chunkTimes[i].toISOString(),
-                airmass: getAirmassForTarget(t, chunkTimes[i])
-            });
-        }
-        airmass_plots[t.name] = curve;
-    });
-    
-    standardBlocks.forEach(block => {
-        const curve = [];
-        for (let i = 0; i < numChunks; i++) {
-            curve.push({
-                time: chunkTimes[i].toISOString(),
-                airmass: getAirmassForTarget({ra: block.ra, dec: block.dec, name: block.target_name}, chunkTimes[i])
-            });
-        }
-        airmass_plots[block.target_name] = curve;
-    });
-    
-    // Moon altitude/airmass curve
-    const moon_plot = [];
-    for (let i = 0; i < numChunks; i++) {
-        const dt = chunkTimes[i];
-        const altAz = getAltAz(dt, observatory.lat, observatory.lon, moon.ra, moon.dec);
-        const airmass = getAirmass(altAz.alt);
-        moon_plot.push({
-            time: dt.toISOString(),
-            airmass: (altAz.alt > 0 && airmass < 10.0) ? airmass : 999.0,
-            alt: altAz.alt
-        });
-    }
-    
-    return {
-        blocks: scheduledBlocks,
-        conflicts: finalSolve.conflicts,
-        unobservable: finalSolve.unobservable,
-        empty_blocks,
-        moon_info: moon,
-        moon_plot,
-        airmass_plots,
-        solar_times: {
-            sunset: sunset.toISOString(),
-            sunrise: sunrise.toISOString(),
-            twilight_evening_18: solarTimes.twilight_evening_18.toISOString(),
-            twilight_morning_18: solarTimes.twilight_morning_18.toISOString(),
-            twilight_evening_12: solarTimes.twilight_evening_12.toISOString(),
-            twilight_morning_12: solarTimes.twilight_morning_12.toISOString()
-        }
-    };
-    
-    // Internal solve helper function
-    function solveInternal(targetsList, reserved) {
-        const durations = {};
-        const targetExpsInfo = {};
-        targetsList.forEach(t => {
-            const details = getTargetExposureDetailsJS(t);
-            targetExpsInfo[t.name] = details;
-            durations[t.name] = details.duration_minutes;
-        });
-        
-        const manualStartChunks = {};
-        targetsList.forEach(t => {
-            manualStartChunks[t.name] = getChunkIdxFromTimeStr(t.manual_start_time);
-        });
-        
-        const unobservable = [];
-        const observable = [];
-        const initialConflicts = [];
-        
-        targetsList.forEach(t => {
-            // 1. Check physical observability (ignoring reserved)
-            let hasPhysicalChunk = false;
-            const manualChunk = manualStartChunks[t.name];
-            if (manualChunk !== null) {
-                const durChunks = durations[t.name];
-                let blockValid = true;
-                for (let c = manualChunk; c < manualChunk + durChunks; c++) {
-                    if (c >= numChunks || !isChunkValid(t, c, true, true)) {
-                        blockValid = false;
-                        break;
-                    }
-                }
-                if (blockValid) {
-                    hasPhysicalChunk = true;
-                }
-            } else {
-                for (let c = 0; c < numChunks; c++) {
-                    if (isChunkValid(t, c, false, true)) {
-                        hasPhysicalChunk = true;
-                        break;
-                    }
-                }
-            }
-            
-            if (!hasPhysicalChunk) {
-                unobservable.push(t.name);
-                return;
-            }
-            
-            // 2. Check scheduling availability (considering reserved)
-            let hasAvailChunk = false;
-            if (manualChunk !== null) {
-                const durChunks = durations[t.name];
-                let blockValid = true;
-                for (let c = manualChunk; c < manualChunk + durChunks; c++) {
-                    if (c >= numChunks || reserved.has(c) || !isChunkValid(t, c, true)) {
-                        blockValid = false;
-                        break;
-                    }
-                }
-                if (blockValid) {
-                    hasAvailChunk = true;
-                }
-            } else {
-                for (let c = 0; c < numChunks; c++) {
-                    if (!reserved.has(c) && isChunkValid(t, c, false)) {
-                        hasAvailChunk = true;
-                        break;
-                    }
-                }
-            }
-            
-            if (!hasAvailChunk) {
-                initialConflicts.push(t.name);
-            } else {
-                observable.push(t);
-            }
-        });
-        
-        const targetsByPrio = {};
-        targetsList.forEach(t => {
-            if (!targetsByPrio[t.priority]) targetsByPrio[t.priority] = [];
-            targetsByPrio[t.priority].push(t);
-        });
-        const sortedPrios = Object.keys(targetsByPrio).map(Number).sort((a,b)=>a-b);
-        
-        const obsTargetsByPrio = {};
-        observable.forEach(t => {
-            if (!obsTargetsByPrio[t.priority]) obsTargetsByPrio[t.priority] = [];
-            obsTargetsByPrio[t.priority].push(t);
-        });
-        
-        let currentSchedule = {}; // name -> startChunk
-        const conflicts = [...initialConflicts];
-        const manuallyScheduled = new Set();
-        
-        // Pre-schedule manual start science targets immediately and reserve their chunks
-        observable.forEach(t => {
-            const manualChunk = manualStartChunks[t.name];
-            if (manualChunk !== null) {
-                const durChunks = durations[t.name];
-                let blockValid = true;
-                for (let c = manualChunk; c < manualChunk + durChunks; c++) {
-                    if (c >= numChunks || reserved.has(c) || !isChunkValid(t, c, true)) {
-                        blockValid = false;
-                        break;
-                    }
-                }
-                if (blockValid) {
-                    currentSchedule[t.name] = manualChunk;
-                    for (let c = manualChunk; c < manualChunk + durChunks; c++) {
-                        reserved.add(c);
-                    }
-                    manuallyScheduled.add(t.name);
-                } else {
-                    conflicts.push(t.name);
-                }
-            }
-        });
-        
-        let previouslyScheduled = new Set(Object.keys(currentSchedule));
-        
-        sortedPrios.forEach(prio => {
-            const prioTargets = obsTargetsByPrio[prio] || [];
-            if (prioTargets.length === 0) return;
-            
-            // S_active: previously scheduled science targets that are not manual
-            const S_active = observable.filter(tg => previouslyScheduled.has(tg.name) && !manuallyScheduled.has(tg.name));
-            // new_active: targets of current priority that are not manual
-            const new_active = prioTargets.filter(tg => !manuallyScheduled.has(tg.name));
-            
-            const targetsToSchedule = [...S_active, ...new_active];
-            if (targetsToSchedule.length === 0) return;
-            
-            const S_active_names = new Set(S_active.map(t => t.name));
-            const new_active_names = new Set(new_active.map(t => t.name));
-            
-            const validSlots = {};
-            const airmassCosts = {};
-            
-            targetsToSchedule.forEach(t => {
-                const durChunks = durations[t.name];
-                const slots = [];
-                const costs = {};
-                
-                for (let s = 0; s <= numChunks - durChunks; s++) {
-                    let blockValid = true;
-                    const airmasses = [];
-                    for (let c = s; c < s + durChunks; c++) {
-                        if (reserved.has(c) || !isChunkValid(t, c, false)) {
-                            blockValid = false;
-                            break;
-                        }
-                        airmasses.push(getAirmassForTarget(t, chunkTimes[c]));
-                    }
-                    
-                    if (blockValid) {
-                        slots.push(s);
-                        airmasses.sort((a,b)=>a-b);
-                        const mid = Math.floor(airmasses.length / 2);
-                        const median = airmasses.length % 2 !== 0 ? airmasses[mid] : (airmasses[mid-1] + airmasses[mid]) / 2.0;
-                        
-                        // Calculate twilight proximity penalty for non-standard targets
-                        let twilightDist = 0.0;
-                        if (t.priority !== 0.0) {
-                            const tEve18 = solarTimes.twilight_evening_18;
-                            const tMorn18 = solarTimes.twilight_morning_18;
-                            const dists = [];
-                            for (let c = s; c < s + durChunks; c++) {
-                                const ct = chunkTimes[c];
-                                if (ct < tEve18) {
-                                    dists.push((tEve18.getTime() - ct.getTime()) / (60 * 1000));
-                                } else if (ct > tMorn18) {
-                                    dists.push((ct.getTime() - tMorn18.getTime()) / (60 * 1000));
-                                } else {
-                                    dists.push(0.0);
-                                }
-                            }
-                            dists.sort((a,b)=>a-b);
-                            const mIdx = Math.floor(dists.length / 2);
-                            twilightDist = dists.length % 2 !== 0 ? dists[mIdx] : (dists[mIdx-1] + dists[mIdx]) / 2.0;
-                        }
-                        
-                        costs[s] = median + 1000.0 * twilightDist;
-                    }
-                }
-                
-                validSlots[t.name] = slots;
-                airmassCosts[t.name] = costs;
-            });
-            
-            function overlap(s1, d1, s2, d2) {
-                return !(s1 + d1 <= s2 || s2 + d2 <= s1);
-            }
-            
-            const prunedOptional = [];
-            let mandatoryHasNoSlots = false;
-            
-            targetsToSchedule.forEach(t => {
-                const slots = validSlots[t.name] || [];
-                if (slots.length === 0) {
-                    if (S_active_names.has(t.name)) {
-                        mandatoryHasNoSlots = true;
-                    } else if (new_active_names.has(t.name)) {
-                        prunedOptional.push(t);
-                    }
-                }
-            });
-            
-            prunedOptional.forEach(t => {
-                const idx = targetsToSchedule.findIndex(tg => tg.name === t.name);
-                if (idx !== -1) {
-                    targetsToSchedule.splice(idx, 1);
-                }
-                if (!conflicts.includes(t.name)) {
-                    conflicts.push(t.name);
-                }
-            });
-            
-            let bestSchedule = null;
-            let bestCost = Infinity;
-            
-            if (!mandatoryHasNoSlots) {
-                const hasConstraint = {};
-                targetsToSchedule.forEach(tg => {
-                    let hc = false;
-                    if (tg.schedule_before && tg.schedule_before.length > 0) {
-                        hc = true;
-                    } else {
-                        for (let i = 0; i < targetsToSchedule.length; i++) {
-                            const other = targetsToSchedule[i];
-                            if (other.schedule_before && other.schedule_before.includes(tg.name)) {
-                                hc = true;
-                                break;
-                            }
-                        }
-                    }
-                    hasConstraint[tg.name] = hc;
-                });
-
-                const lstStart = getLst(sunset, observatory.lon);
-                const solverTargets = [...targetsToSchedule].sort((a,b) => {
-                    const actA = S_active_names.has(a.name) ? 0 : 1;
-                    const actB = S_active_names.has(b.name) ? 0 : 1;
-                    if (actA !== actB) return actA - actB;
-                    const hcA = hasConstraint[a.name] ? 0 : 1;
-                    const hcB = hasConstraint[b.name] ? 0 : 1;
-                    if (hcA !== hcB) return hcA - hcB;
-                    if (a.priority !== b.priority) return a.priority - b.priority;
-                    const raTransitA = (a.ra - lstStart + 24.0) % 24.0;
-                    const raTransitB = (b.ra - lstStart + 24.0) % 24.0;
-                    if (raTransitA !== raTransitB) return raTransitA - raTransitB;
-                    return durations[b.name] - durations[a.name];
-                });
-                
-                const initialSchedule = {};
-                manuallyScheduled.forEach(name => {
-                    if (currentSchedule[name] !== undefined) {
-                        initialSchedule[name] = currentSchedule[name];
-                    }
-                });
-
-                // 1. Greedy initialization to establish a high-quality upper bound and fallback
-                const greedySched = Object.assign({}, initialSchedule);
-                let greedyCost = 0.0;
-                
-                for (let i = 0; i < solverTargets.length; i++) {
-                    const t = solverTargets[i];
-                    const tName = t.name;
-                    const tDur = durations[tName];
-                    const slots = validSlots[tName] || [];
-                    
-                    const sPrev = currentSchedule[tName];
-                    
-                    let sortedSlots;
-                    if (sPrev !== undefined && slots.includes(sPrev)) {
-                        const otherSlots = slots.filter(s => s !== sPrev).sort((a,b) => airmassCosts[tName][a] - airmassCosts[tName][b]);
-                        sortedSlots = [sPrev, ...otherSlots];
-                    } else {
-                        sortedSlots = [...slots].sort((a,b) => airmassCosts[tName][a] - airmassCosts[tName][b]);
-                    }
-                    
-                    let placed = false;
-                    for (let j = 0; j < sortedSlots.length; j++) {
-                        const s = sortedSlots[j];
-                        
-                        // Check overlap
-                        let isOverlap = false;
-                        const keys = Object.keys(greedySched);
-                        for (let k = 0; k < keys.length; k++) {
-                            const pName = keys[k];
-                            if (overlap(s, tDur, greedySched[pName], durations[pName])) {
-                                isOverlap = true;
-                                break;
-                            }
-                        }
-                        if (isOverlap) continue;
-                        
-                        // Check precedence
-                        let precedenceOk = true;
-                        for (let k = 0; k < keys.length; k++) {
-                            const pName = keys[k];
-                            const pStart = greedySched[pName];
-                            const pDur = durations[pName];
-                            
-                            if (t.schedule_before && t.schedule_before.includes(pName)) {
-                                if (!(s + tDur <= pStart)) {
-                                    precedenceOk = false;
-                                    break;
-                                }
-                            }
-                            const pObj = targetsList.find(tg => tg.name === pName);
-                            if (pObj && pObj.schedule_before && pObj.schedule_before.includes(tName)) {
-                                if (!(pStart + pDur <= s)) {
-                                    precedenceOk = false;
-                                    break;
-                                }
-                            }
-                        }
-                        if (!precedenceOk) continue;
-                        
-                        greedySched[tName] = s;
-                        greedyCost += airmassCosts[tName][s];
-                        placed = true;
-                        break;
-                    }
-                    
-                    if (!placed) {
-                        if (new_active_names.has(tName)) {
-                            greedyCost += 100000.0;
-                        }
-                    }
-                }
-                
-                // Only use greedy schedule as fallback if it scheduled all S_active targets (which are mandatory)
-                let hasAllSActive = true;
-                S_active_names.forEach(name => {
-                    if (greedySched[name] === undefined) {
-                        hasAllSActive = false;
-                    }
-                });
-                
-                if (hasAllSActive) {
-                    bestSchedule = Object.assign({}, greedySched);
-                    bestCost = greedyCost;
-                }
-                let searchIterations = 0;
-                const maxSearchIterations = 10000;
-                
-                function search(idx, sched, cost) {
-                    searchIterations++;
-                    if (searchIterations > maxSearchIterations) {
-                        return;
-                    }
-                    if (idx === solverTargets.length) {
-                        if (cost < bestCost) {
-                            bestCost = cost;
-                            bestSchedule = Object.assign({}, sched);
-                        }
-                        return;
-                    }
-                    
-                    const target = solverTargets[idx];
-                    const name = target.name;
-                    const dur = durations[name];
-                    
-                    let lb = 0;
-                    for (let r = idx; r < solverTargets.length; r++) {
-                        const rName = solverTargets[r].name;
-                        const rCosts = Object.values(airmassCosts[rName] || {});
-                        if (rCosts.length > 0) {
-                            lb += Math.min(...rCosts);
-                        }
-                    }
-                    
-                    if (cost + lb >= bestCost) return;
-                    
-                    const slots = validSlots[name] || [];
-                    let sortedSlots;
-                    const sPrev = currentSchedule[name];
-                    if (sPrev !== undefined && slots.includes(sPrev)) {
-                        const otherSlots = slots.filter(s => s !== sPrev).sort((a,b) => airmassCosts[name][a] - airmassCosts[name][b]);
-                        sortedSlots = [sPrev, ...otherSlots];
-                    } else {
-                        sortedSlots = [...slots].sort((a,b) => airmassCosts[name][a] - airmassCosts[name][b]);
-                    }
-                    
-                    for (let i = 0; i < sortedSlots.length; i++) {
-                        const s = sortedSlots[i];
-                        let isOverlap = false;
-                        const keys = Object.keys(sched);
-                        for (let k = 0; k < keys.length; k++) {
-                            const pName = keys[k];
-                            if (overlap(s, dur, sched[pName], durations[pName])) {
-                                isOverlap = true;
-                                break;
-                            }
-                        }
-                        if (isOverlap) continue;
-                        
-                        let precedenceOk = true;
-                        const keysSched = Object.keys(sched);
-                        for (let k = 0; k < keysSched.length; k++) {
-                            const pName = keysSched[k];
-                            const pStart = sched[pName];
-                            const pDur = durations[pName];
-                            
-                            if (target.schedule_before && target.schedule_before.includes(pName)) {
-                                if (!(s + dur <= pStart)) {
-                                    precedenceOk = false;
-                                    break;
-                                }
-                            }
-                            
-                            const pObj = targetsList.find(tg => tg.name === pName);
-                            if (pObj && pObj.schedule_before && pObj.schedule_before.includes(name)) {
-                                if (!(pStart + pDur <= s)) {
-                                    precedenceOk = false;
-                                    break;
-                                }
-                            }
-                        }
-                        
-                        if (!precedenceOk) continue;
-                        
-                        sched[name] = s;
-                        search(idx + 1, sched, cost + airmassCosts[name][s]);
-                        delete sched[name];
-                    }
-                    
-                    // If target is new, we can skip it (with a large penalty)
-                    if (new_active_names.has(name)) {
-                        search(idx + 1, sched, cost + 100000.0);
-                    }
-                }
-                search(0, initialSchedule, 0);
-            }
-            
-            if (bestSchedule !== null) {
-                currentSchedule = bestSchedule;
-                previouslyScheduled = new Set(Object.keys(currentSchedule));
-                new_active.forEach(t => {
-                    if (currentSchedule[t.name] === undefined && !conflicts.includes(t.name)) {
-                        conflicts.push(t.name);
-                    }
-                });
-            } else {
-                new_active.forEach(t => {
-                    if (!conflicts.includes(t.name)) {
-                        conflicts.push(t.name);
-                    }
-                });
-            }
-        });
-        
-        const blocksList = [];
-        Object.keys(currentSchedule).forEach(name => {
-            const target = targetsList.find(t => t.name === name);
-            const startIdx = currentSchedule[name];
-            const durChunks = durations[name];
-            
-            const airmasses = [];
-            for (let c = startIdx; c < startIdx + durChunks; c++) {
-                airmasses.push(getAirmassForTarget(target, chunkTimes[c]));
-            }
-            
-            const startAir = airmasses[0];
-            const endAir = airmasses[airmasses.length - 1];
-            const sortedAir = [...airmasses].sort((a,b)=>a-b);
-            const mid = Math.floor(sortedAir.length / 2);
-            const medianAir = sortedAir.length % 2 !== 0 ? sortedAir[mid] : (sortedAir[mid-1] + sortedAir[mid]) / 2.0;
-            
-            const expInfo = targetExpsInfo[name];
-            let commentPrefix = `Slew: 7m. Blue: ${expInfo.blue_num}x${expInfo.blue_exp.toFixed(0)}s, Red: ${expInfo.red_num}x${expInfo.red_exp.toFixed(0)}s.`;
-            let blockComment = target.comment ? `${commentPrefix} ${target.comment}` : commentPrefix;
-            blocksList.push({
-                target_name: name,
-                start_time: chunkTimes[startIdx].toISOString(),
-                end_time: (startIdx + durChunks < numChunks) ? chunkTimes[startIdx + durChunks].toISOString() : sunrise.toISOString(),
-                duration_minutes: durChunks,
-                airmass_start: startAir,
-                airmass_end: endAir,
-                airmass_median: medianAir,
-                priority: target.priority,
-                comment: blockComment
-            });
-        });
-        
-        return {
-            blocks: blocksList,
-            conflicts,
-            unobservable
-        };
-    }
 }
 
 // Cache for the polar sky map mask to avoid expensive pixel-loop calculations on every draw
