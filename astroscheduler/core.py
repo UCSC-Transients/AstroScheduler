@@ -627,7 +627,9 @@ class Target:
                  red_exptime: Optional[float] = None,
                  red_num: Optional[int] = None,
                  blue_exptime: Optional[float] = None,
-                 blue_num: Optional[int] = None):
+                 blue_num: Optional[int] = None,
+                 external_id: Optional[str] = None,
+                 kind: str = "science"):
         self.name = name
         self.ra = parse_coordinate(ra, is_ra=True)  # Right Ascension in decimal hours (0 to 24)
         self.dec = parse_coordinate(dec, is_ra=False)  # Declination in decimal degrees (-90 to 90)
@@ -645,6 +647,9 @@ class Target:
         self.red_num = red_num
         self.blue_exptime = blue_exptime
         self.blue_num = blue_num
+        # Opaque id from the caller (e.g. a YSE_PZ follow-up id), echoed on result blocks.
+        self.external_id = None if external_id in (None, "") else str(external_id)
+        self.kind = kind  # "science" or "standard"
         
     def calculate_exposure_time(self, moon_phase: float, moon_separation: float, extinction: float = 0.0, latitude: float = 37.3414) -> float:
         """
@@ -717,7 +722,9 @@ class ObservationBlock:
             'airmass_end': round(self.airmass_end, 3),
             'airmass_median': round(self.airmass_median, 3),
             'priority': prio,
-            'comment': comm
+            'comment': comm,
+            'external_id': getattr(self.target, 'external_id', None),
+            'kind': getattr(self.target, 'kind', 'science'),
         }
 
 
@@ -1228,8 +1235,10 @@ class Scheduler:
                 
         previous_start_chunks = {}
         if previous_schedule:
+            # Match on external_id first, so a renamed target keeps its slot.
+            name_by_external_id = {t.external_id: t.name for t in targets if getattr(t, 'external_id', None)}
             for item in previous_schedule:
-                t_name = item.get('target_name')
+                t_name = name_by_external_id.get(item.get('external_id')) or item.get('target_name')
                 start_time_str = item.get('start_time')
                 if t_name and start_time_str:
                     c_idx = self.get_chunk_idx_from_time_str(start_time_str)
@@ -1293,7 +1302,8 @@ class Scheduler:
                     dec=s_data['dec'],
                     magnitude=s_data['magnitude'],
                     priority=0.0,
-                    allow_twilight=True
+                    allow_twilight=True,
+                    kind="standard"
                 ),
                 'color': s_data['color'],
                 'quality': s_data['quality'],
@@ -1778,7 +1788,9 @@ class Scheduler:
             'moon_info': self.moon,
             'moon_plot': moon_plot,
             'airmass_plots': airmass_plots,
-            'solar_times': {k: v.isoformat() for k, v in self.solar_times.items()}
+            'solar_times': {k: v.isoformat() for k, v in self.solar_times.items()},
+            # Conflicts and unobservable entries are names; this maps them back to caller ids.
+            'external_ids': {t.name: t.external_id for t in targets if getattr(t, 'external_id', None)},
         }
 
     def _solve_internal(self, targets: List[Target], reserved_chunks: Set[int], previous_start_chunks: Optional[Dict[str, int]] = None, instrument: str = 'kast') -> Dict[str, Any]:

@@ -61,6 +61,27 @@ pip install "astroscheduler @ git+https://github.com/UCSC-Transients/AstroSchedu
 
 Add the `server` extra (`astroscheduler[server]`) for the standalone web app.
 
+### Using the solver as a library
+
+```python
+import datetime
+from astroscheduler.api import SolveRequest, SiteSpec, TargetSpec, solve
+
+result = solve(SolveRequest(
+    date=datetime.date(2026, 10, 15),          # local evening date of the night
+    site=SiteSpec(id="lick"),                   # or "keck1" / "keck2"; fields override
+    targets=[TargetSpec(name="SN 2026abc", ra="01:02:03", dec="+20:00:00",
+                        magnitude=17.5, priority=1, external_id="followup-123")],
+))
+for block in result.blocks:                     # kind is "science" or "standard"
+    print(block.kind, block.target_name, block.start_time, block.external_id)
+```
+
+`external_id` is an opaque id of the caller's (for example a YSE_PZ follow-up id). It comes
+back on every block, `result.external_ids` maps conflict and unobservable names to it, and
+`previous_schedule` entries may match on it. `SolveRequest.from_dict` accepts the
+`POST /api/schedule` JSON payload, and `SolveResult.to_dict()` is that endpoint's response.
+
 ### 3. Running the Server
 
 Start the web application server:
