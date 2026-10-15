@@ -4,6 +4,14 @@ Versions follow [semantic versioning](https://semver.org). Each release is a git
 (`v1.0.0`, ...) that other apps can pin, for example
 `astroscheduler @ git+https://github.com/UCSC-Transients/AstroScheduler@v1.0.0`.
 
+## 1.0.1 (2026-10)
+
+- Importing `astroscheduler` no longer changes astropy's process-wide IERS settings. The
+  offline options (no downloads, degraded accuracy accepted) now apply only inside each solve
+  (`fast_astrometry`), and options the installed astropy lacks are skipped. On astropy 5.0 the
+  old import left a stray `iers_degraded_accuracy` attribute that broke a host app's own
+  `iers.conf.set_temp` calls (seen in YSE_PZ). The standalone app still sets them globally (#101).
+
 ## 1.0.0 (2026-10)
 
 First tagged release: AstroScheduler as an installable library that also runs standalone.

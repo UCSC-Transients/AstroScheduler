@@ -10,12 +10,7 @@ import datetime
 from typing import List, Dict, Tuple, Optional, Any, Set
 
 try:
-    import astropy
     from astropy.utils.iers import conf as iers_conf
-    iers_conf.auto_download = False
-    iers_conf.auto_max_age = None
-    iers_conf.iers_degraded_accuracy = 'ignore'
-    
     import astropy.units as u
     from astropy.time import Time
     from astropy.coordinates import EarthLocation, SkyCoord, get_body, AltAz
@@ -26,16 +21,49 @@ except ImportError:
     HAS_ASTRO_LIBS = False
 
 
-def fast_astrometry():
-    """Context that interpolates astropy's observer astrometry over 5-minute steps.
+# Offline IERS: never download Earth-orientation tables, and accept degraded accuracy for
+# dates past the bundled ones (arcsecond-level, irrelevant for scheduling). Options a given
+# astropy does not have (iers_degraded_accuracy before 5.1) are skipped.
+_OFFLINE_IERS = (("auto_download", False), ("auto_max_age", None), ("iers_degraded_accuracy", "ignore"))
 
-    The solver evaluates hundreds of 1-minute times per target; the interpolation error is far
-    below a milliarcsecond. Scoped to a ``with`` block so an embedding app's own astropy calls
-    are unaffected.
+
+def _iers_options():
+    return [(name, value) for name, value in _OFFLINE_IERS if name in type(iers_conf).__dict__]
+
+
+def offline_iers():
+    """Context with the offline IERS options; astropy's own settings come back on exit."""
+    stack = contextlib.ExitStack()
+    if HAS_ASTRO_LIBS:
+        for name, value in _iers_options():
+            stack.enter_context(iers_conf.set_temp(name, value))
+    return stack
+
+
+def use_offline_iers_globally():
+    """Set the offline IERS options for the whole process (the standalone app and tests).
+
+    A library caller should not need this: every solve already runs inside ``offline_iers``.
     """
     if HAS_ASTRO_LIBS:
-        return erfa_astrom.set(ErfaAstromInterpolator(5 * u.min))
-    return contextlib.nullcontext()
+        for name, value in _iers_options():
+            setattr(iers_conf, name, value)
+
+
+@contextlib.contextmanager
+def fast_astrometry():
+    """Context for the solver's astropy work: offline IERS, and observer astrometry
+    interpolated over 5-minute steps (error far below a milliarcsecond on a 1-minute grid).
+
+    Both are scoped to the ``with`` block, so an embedding app's own astropy calls and
+    settings are unaffected. Importing this module changes no astropy setting.
+    """
+    with offline_iers():
+        if HAS_ASTRO_LIBS:
+            with erfa_astrom.set(ErfaAstromInterpolator(5 * u.min)):
+                yield
+        else:
+            yield
 
 
 # Kast Spectrograph Constants
