@@ -1,0 +1,27 @@
+# Changelog
+
+Versions follow [semantic versioning](https://semver.org). Each release is a git tag
+(`v1.0.0`, ...) that other apps can pin, for example
+`astroscheduler @ git+https://github.com/UCSC-Transients/AstroScheduler@v1.0.0`.
+
+## 1.0.0 (2026-10)
+
+First tagged release: AstroScheduler as an installable library that also runs standalone.
+
+- **Package:** `astroscheduler` installs on Python 3.8+ (astropy ≥5.0, astroplan ≥0.8,
+  numpy ≥1.22, pytz). The web app is the `server` extra. `python app.py` works as before (#91).
+- **Precision:** the precise astropy path runs again on astropy 5.0 through 7. Twilights, moon
+  and airmass previously fell back silently to low-precision formulas, so schedules can shift by
+  a few minutes. Solves stay fast (#90).
+- **Library API:** `astroscheduler.api.solve(SolveRequest) -> SolveResult`, with optional
+  per-target `external_id`, block `kind`, and `solver_version`/`schema_version` (#92).
+- **Sites and limits:** `telescopes.json` holds site coordinates and telescope limits; callers
+  can override any limit per solve or define a new site. Airmass limits can be overridden (#88).
+- **Exposure plan:** blocks carry structured `exposures`, `overhead` and `exposure_source`;
+  targets accept `overhead_minutes` (#89).
+- **One solver:** the client-side JavaScript solver is removed; a failed solve shows an error
+  and keeps the schedule (#93).
+- **Real-time actions:** Start, Completed, Failed and Punted work and fill the observing log;
+  Failed and Punted need a reason (#94).
+- **Embedding:** `window.ASTROSCHEDULER_CONFIG` and `window.AstroScheduler.hooks` let a host
+  app (YSE_PZ) run the planner inside its own pages (#95).
