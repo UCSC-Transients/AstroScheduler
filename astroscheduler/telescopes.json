@@ -1,0 +1,60 @@
+{
+  "_comment": "Default sites and telescope pointing limits. Angles in degrees, hour angles in hours (east negative), times in minutes. A caller may override any telescope field per solve (SiteSpec.telescope or observatory.telescope in /api/schedule).",
+  "lick": {
+    "name": "Lick Observatory",
+    "lat": 37.3414,
+    "lon": -121.6429,
+    "elevation": 1283,
+    "timezone": "America/Los_Angeles",
+    "telescope": {
+      "name": "Lick Shane 3m",
+      "dec_min": -35.0,
+      "dec_max": 72.0,
+      "ha_limit_east": -5.6667,
+      "ha_limit_west": 3.75,
+      "airmass_limit": 1.7,
+      "high_airmass_limit": 2.2,
+      "slew_minutes": 7
+    }
+  },
+  "keck1": {
+    "name": "Keck I",
+    "lat": 19.8267,
+    "lon": -155.4733,
+    "elevation": 4123,
+    "timezone": "Pacific/Honolulu",
+    "telescope": {
+      "name": "Keck I",
+      "dec_min": -90.0,
+      "dec_max": 90.0,
+      "alt_min": 18.0,
+      "alt_max": 88.9,
+      "guiding_alt_max": 85.0,
+      "keepout_zones": [{"az_min": 5.3, "az_max": 146.2, "alt_min": 33.3, "alt_max": 88.9}],
+      "airmass_limit": 1.7,
+      "high_airmass_limit": 2.2,
+      "slew_minutes": 7,
+      "equator_crossing_slew_minutes": 15
+    }
+  },
+  "keck2": {
+    "name": "Keck II",
+    "lat": 19.8267,
+    "lon": -155.4733,
+    "elevation": 4123,
+    "timezone": "Pacific/Honolulu",
+    "telescope": {
+      "name": "Keck II",
+      "dec_min": -90.0,
+      "dec_max": 90.0,
+      "alt_min": 18.0,
+      "alt_max": 89.5,
+      "guiding_alt_max": 85.0,
+      "keepout_zones": [{"az_min": 185.3, "az_max": 332.8, "alt_min": 36.8, "alt_max": 89.5}],
+      "airmass_limit": 1.7,
+      "high_airmass_limit": 2.2,
+      "slew_minutes": 7,
+      "equator_crossing_slew_minutes": 15
+    }
+  }
+}
