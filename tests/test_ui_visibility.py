@@ -122,13 +122,17 @@ def test_exposure_linkage_bugs():
             page.wait_for_timeout(2000)
             page.check("#auto-update-toggle")
             
-            # Set fixed observing date to ensure deterministic scheduling
-            page.locator("#obs-date").fill("2026-07-14")
-            page.locator("#obs-date").dispatch_event("change")
-            page.wait_for_timeout(1000)
+            # Set fixed observing date to ensure deterministic scheduling.
+            # Wait for each solve to return: rows from the previous render are already on
+            # the page, so waiting for a row alone races the new schedule.
+            with page.expect_response("**/api/schedule", timeout=60000):
+                page.locator("#obs-date").fill("2026-07-14")
+                page.locator("#obs-date").dispatch_event("change")
             
             # Load sample targets
-            page.locator("button#load-sample-btn").click()
+            with page.expect_response("**/api/schedule", timeout=60000):
+                page.locator("button#load-sample-btn").click()
+            page.wait_for_timeout(500)
             
             # Wait dynamically for the schedule table to render
             page.wait_for_selector("#schedule-table tr[id^='sched-row-']", timeout=25000)
