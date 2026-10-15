@@ -5,4 +5,4 @@ The web app (``astroscheduler.server``) needs the ``server`` extra:
 ``pip install "astroscheduler[server]"``.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"

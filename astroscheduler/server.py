@@ -9,6 +9,10 @@ import json
 import mimetypes
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from . import api
+from .core import use_offline_iers_globally
+
+# The standalone app owns its process, so it may set astropy's IERS options globally.
+use_offline_iers_globally()
 
 # Front-end files ship inside the package, so the server works from any working directory.
 PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
