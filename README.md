@@ -14,17 +14,21 @@ UCSC AstroScheduler is a modern, real-time observation scheduling and planning d
 ## Repository Layout
 
 ```
-├── app.py                # Web server application (FastAPI & HTTP server fallback)
-├── scheduler.py          # Core Python observation scheduling constraint solver
-├── static/
-│   ├── app.js            # Frontend application logic and JS solver fallback
-│   ├── style.css         # Glassmorphism dark-mode responsive layout styling
-│   └── standards.json    # Standard calibration stars database
-├── templates/
-│   └── index.html        # Main dashboard user interface
+├── astroscheduler/       # The installable package
+│   ├── core.py           # Observation scheduling constraint solver (no web dependencies)
+│   ├── server.py         # Web server application (FastAPI & HTTP server fallback)
+│   ├── static/
+│   │   ├── app.js        # Frontend application logic and JS solver fallback
+│   │   ├── style.css     # Glassmorphism dark-mode responsive layout styling
+│   │   └── standards.json # Standard calibration stars database
+│   └── templates/
+│       └── index.html    # Main dashboard user interface
+├── app.py                # `python app.py` entry point (runs astroscheduler.server)
+├── scheduler.py          # Compatibility alias for astroscheduler.core
 ├── tests/
 │   └── test_scheduler.py # Backend solver unit tests
-├── requirements.txt      # Python dependencies list
+├── pyproject.toml        # Package metadata and dependencies
+├── requirements.txt      # Development install (package + server + test tools)
 └── .github/
     └── workflows/        # GitHub Actions continuous integration workflow
 ```
@@ -33,7 +37,7 @@ UCSC AstroScheduler is a modern, real-time observation scheduling and planning d
 
 ### 1. Prerequisites
 
-- Python 3.10+
+- Python 3.8+ for the solver library; the web app and browser tests are tested on 3.10 and 3.11
 - Modern Web Browser (Chrome, Firefox, Safari)
 
 ### 2. Installation
@@ -46,6 +50,17 @@ cd AstroScheduler
 pip install -r requirements.txt
 ```
 
+`requirements.txt` installs the package in editable mode with the `server` and `test` extras.
+
+To use only the solver as a library (for example from another web app), install the package
+without extras. It needs only astropy, astroplan, numpy and pytz:
+
+```bash
+pip install "astroscheduler @ git+https://github.com/UCSC-Transients/AstroScheduler@<tag>"
+```
+
+Add the `server` extra (`astroscheduler[server]`) for the standalone web app.
+
 ### 3. Running the Server
 
 Start the web application server:
@@ -54,15 +69,18 @@ Start the web application server:
 python app.py
 ```
 
-The application will start on `http://127.0.0.1:8000`. If FastAPI/Uvicorn is not present, it automatically falls back to serving via Python's built-in `http.server`.
+The application will start on `http://127.0.0.1:8055` (set `PORT` to change it). If FastAPI/Uvicorn is not present, it automatically falls back to serving via Python's built-in `http.server`.
 
 ### 4. Running Tests
 
 Run the automated Python backend unit tests:
 
 ```bash
-python -m unittest tests/test_scheduler.py
+PYTHONPATH=. pytest tests/test_scheduler.py tests/test_kast_exposures.py
 ```
+
+`PYTHONPATH=. pytest` runs everything, including the Playwright browser tests
+(`python -m playwright install chromium` first).
 
 ---
 

@@ -25,3 +25,4 @@ browser/
 !assets/
 push_and_pr.sh
 
+*.egg-info/
