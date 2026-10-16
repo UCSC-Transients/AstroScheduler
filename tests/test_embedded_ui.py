@@ -99,6 +99,10 @@ def test_embedded_mode_uses_host_config(host):
     assert page.locator("#obs-date").is_disabled()
     assert page.locator("#obs-select").is_disabled()
     assert not page.locator("#auto-update-toggle").is_visible()
+    # The host page supplies the title and the targets.
+    assert not page.locator(".app-header").is_visible()
+    assert not page.locator("#load-sample-btn").is_visible()
+    assert not page.locator("#yse-import-btn").is_visible()
     assert page.evaluate("window.AstroScheduler.config.mode") == "embedded"
     names = page.evaluate("window.AstroScheduler.getResult().blocks.map(b => b.external_id)")
     assert "fu-101" in names
@@ -170,4 +174,47 @@ def test_standalone_actions_work_without_a_hook(server):
         assert page.locator("#rt-active-target option").count() > 0
         page.get_by_role("button", name="Completed", exact=True).click()
         page.wait_for_selector('#rt-log-table tr.rt-log-row[data-action="complete"]')
+        browser.close()
+
+
+def test_standalone_import_from_yse_pz(server):
+    """The import dialog with the server's YSE_PZ proxy routed: no network, no stored token."""
+    nights = {"base_url": "https://yse.example.org/yse/", "nights": [
+        {"id": 12, "date": NIGHT, "telescope": "Shane", "night_type": "Full", "site": "lick", "instrument": "kast"}]}
+    targets = [dict(t, ra="01:00:00.00" if t["name"].endswith("aaa") else "03:00:00.00",
+                    dec="+20:00:00.0" if t["name"].endswith("aaa") else "+30:00:00.0",
+                    url="https://yse.example.org/yse/transient_detail/%s/" % t["name"].replace(" ", ""))
+               for t in TARGETS]
+    imported = {"night": {"id": 12, "date": NIGHT}, "observatory": {"id": "lick", "lat": 37.3414, "lon": -121.6429,
+                "elevation": 1283.0, "timezone": "America/Los_Angeles"}, "instrument": "kast",
+                "targets": targets, "warnings": ["SN 2026bbb: last detection 9 days before the night"]}
+    bodies = []
+
+    def proxy(route, request):
+        bodies.append(request.post_data_json)
+        data = nights if request.url.endswith("/nights") else imported
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(data))
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.route("**/api/yse_pz/*", proxy)
+        page.goto(server)
+        page.wait_for_timeout(1000)
+        page.locator("#yse-import-btn").click()
+        page.fill("#yse-token", "synthetic-token")
+        page.locator("#yse-list-btn").click()
+        page.wait_for_selector("#yse-night-select option[value='12']", state="attached")
+        page.locator("#yse-import-go").click()
+        page.wait_for_selector("#targets-table a[href*='transient_detail/SN2026aaa']")
+
+        assert bodies[0] == {"token": "synthetic-token"}
+        assert bodies[1] == {"token": "synthetic-token", "night_id": "12"}
+        assert page.locator("#obs-date").input_value() == NIGHT
+        assert "Imported 2 target(s)" in page.locator("#yse-import-status").inner_text()
+        assert "last detection" in page.locator("#rt-log-terminal").input_value()
+        ids = page.evaluate("window.AstroScheduler.getTargets().map(t => t.external_id)")
+        assert sorted(ids) == ["fu-101", "fu-102"]
+        stored = page.evaluate("Object.values(window.localStorage).join(' ')")
+        assert "synthetic-token" not in stored
         browser.close()
