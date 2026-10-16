@@ -96,10 +96,18 @@ count), `overhead` (slew + acquisition minutes, readout and erase seconds) and
 
 ### Embedding the planner in another web app
 
-The front end can run inside a host page (YSE_PZ does this). Serve
-`astroscheduler/templates/index.html`'s markup and `astroscheduler/static/` from the host,
-provide a same-origin endpoint that accepts the `/api/schedule` payload (for example by
-calling `astroscheduler.api.solve_dict`), and set a config before loading `app.js`:
+The front end can run inside a host page (YSE_PZ does this):
+
+1. Serve `astroscheduler.frontend.STATIC_DIR` from the host, for example through Django's
+   `STATICFILES_DIRS`.
+2. Return `astroscheduler.frontend.render_page(static_url, config)` from a view. It is the
+   full planner page, with its assets under `static_url` and `config` injected safely as
+   `window.ASTROSCHEDULER_CONFIG`. Show it in a same-origin frame: the planner's stylesheet
+   resets global selectors (`body`, `.card`, `.btn`) that a host's own CSS also uses.
+3. Provide a same-origin endpoint at `apiBase + "/api/schedule"` that accepts the
+   `/api/schedule` payload, for example by calling `astroscheduler.api.solve_dict`.
+
+The config looks like this:
 
 ```html
 <script>
@@ -122,6 +130,19 @@ when the user presses Recalculate. The host can listen through `window.AstroSche
 cancel the action) and `onScheduleResult(result, request)` after each solve.
 `window.AstroScheduler.getResult()` and `getTargets()` read the current state, for example to
 save a plan. With no config, the app behaves as the standalone app.
+
+### Importing a night from YSE_PZ
+
+In the standalone app, **Import from YSE_PZ** (next to the file upload) asks for your
+YSE_PZ API token, lists the classical nights you can plan, and imports one: its date, site,
+instrument and targets (each keeps its YSE_PZ follow-up id, and its name links to the
+YSE_PZ page). The server makes the calls to YSE_PZ on the page's behalf, because a browser
+page cannot call YSE_PZ directly. The token is used for those calls only; it is never
+stored or logged.
+
+The YSE_PZ address defaults to the production site; set `ASTROSCHEDULER_YSE_PZ_URL` (for
+example `https://ziggy.ucolick.org/yse_experimental/`) to use another one. The planner
+endpoints must be turned on in that YSE_PZ (`ASTROSCHEDULER_ENABLED`).
 
 ### 3. Running the Server
 

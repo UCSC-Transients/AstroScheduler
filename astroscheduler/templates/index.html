@@ -5,9 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>UCSC AstroScheduler</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="../static/style.css">
-    <!-- Chart.js CDN for interactive airmass graphing -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="{{STATIC_URL}}/style.css">
+    <!-- Chart.js for interactive airmass graphing: pinned version, integrity-checked -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js"
+            integrity="sha384-jb8JQMbMoBUzgWatfe6COACi2ljcDdZQ2OxczGA3bGNeWe+6DChMTBJemed7ZnvJ"
+            crossorigin="anonymous"></script>
 </head>
 <body>
     <div class="glass-bg"></div>
@@ -380,6 +382,8 @@
                             <button id="reset-constraints-btn" class="btn btn-outline" onclick="resetCustomConstraints()">Reset Reordering</button>
                             <button id="clear-targets-btn" class="btn btn-danger">Clear All</button>
                             
+                            <button id="yse-import-btn" class="btn btn-outline" onclick="yseImportToggle()">Import from YSE_PZ</button>
+
                             <div class="file-upload-wrapper" style="display: flex; align-items: center; gap: 8px;">
                                 <label for="target-file-input" style="font-size: 0.8rem; color: var(--text-secondary);">Upload Targets:</label>
                                 <input type="file" id="target-file-input" accept=".txt,.data" style="font-size: 0.75rem; color: var(--text-muted);" onchange="handleFileUpload(event)">
@@ -398,6 +402,22 @@
                             </div>
                         </div>
                         
+                        <div id="yse-import-panel" style="display: none; margin: 10px 0; padding: 10px; border: 1px solid var(--border-color); border-radius: 6px;">
+                            <div style="display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end;">
+                                <div class="form-group" style="margin-bottom: 0; min-width: 220px;">
+                                    <label for="yse-token">YSE_PZ API token</label>
+                                    <input type="password" id="yse-token" autocomplete="off" placeholder="Token from your YSE_PZ profile">
+                                </div>
+                                <button class="btn btn-outline" id="yse-list-btn" onclick="yseListNights()">List my nights</button>
+                                <div class="form-group" style="margin-bottom: 0; min-width: 240px;">
+                                    <label for="yse-night-select">Night</label>
+                                    <select id="yse-night-select" disabled></select>
+                                </div>
+                                <button class="btn btn-accent" id="yse-import-go" onclick="yseImportNight()" disabled>Import</button>
+                            </div>
+                            <div id="yse-import-status" style="margin-top: 6px; font-size: 0.8rem; color: var(--text-secondary);">The token is used for this import only and is not stored.</div>
+                        </div>
+
                         <div class="drag-drop-zone" id="target-drag-drop" style="border: 2px dashed rgba(255,255,255,0.1); border-radius: 6px; padding: 12px; text-align: center; color: var(--text-muted); font-size: 0.8rem; margin: 10px 0;">
                             Or drag & drop targets .txt file here
                         </div>
@@ -527,6 +547,7 @@
     </div>
     
     <div id="timeline-tooltip" class="timeline-tooltip"></div>
-    <script src="../static/app.js"></script>
+    {{ASTROSCHEDULER_CONFIG}}
+    <script src="{{STATIC_URL}}/app.js"></script>
 </body>
 </html>

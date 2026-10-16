@@ -4,6 +4,23 @@ Versions follow [semantic versioning](https://semver.org). Each release is a git
 (`v1.0.0`, ...) that other apps can pin, for example
 `astroscheduler @ git+https://github.com/UCSC-Transients/AstroScheduler@v1.0.0`.
 
+## 1.1.0 (2026-10)
+
+- **Host page renderer:** `astroscheduler.frontend.render_page(static_url, config)` returns
+  the planner page with its assets under any URL and the config injected safely;
+  `frontend.STATIC_DIR` is the package's static files. The standalone server uses the same
+  renderer, and no longer serves package files outside `/static/` (#103).
+- **Embedded chrome:** embedded mode hides the app title, the telescope badge, "Load Samples"
+  and the import button; the Planning / Real-Time buttons stay (#103).
+- **Chart.js** is pinned to 4.5.1 with a subresource-integrity hash (#103).
+- **Import from YSE_PZ** (standalone): the "Import from YSE_PZ" panel lists your classical
+  nights and imports one night's targets, site, instrument and date, through two server proxy
+  endpoints (`POST /api/yse_pz/nights`, `POST /api/yse_pz/import`). The YSE_PZ address comes
+  from `ASTROSCHEDULER_YSE_PZ_URL`, never from the request. The API token is never stored or
+  logged (#104).
+- **Links:** target names link to their page when the target has a `url`, for example YSE_PZ's
+  transient page (#83).
+
 ## 1.0.1 (2026-10)
 
 - Importing `astroscheduler` no longer changes astropy's process-wide IERS settings. The

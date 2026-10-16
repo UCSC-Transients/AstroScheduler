@@ -8,7 +8,7 @@ import os
 import json
 import mimetypes
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from . import api
+from . import api, frontend, yse_pz
 from .core import use_offline_iers_globally
 
 # The standalone app owns its process, so it may set astropy's IERS options globally.
@@ -21,7 +21,7 @@ TEMPLATES_DIR = os.path.join(PACKAGE_DIR, "templates")
 
 try:
     from fastapi import FastAPI, Request, HTTPException
-    from fastapi.responses import JSONResponse, FileResponse
+    from fastapi.responses import HTMLResponse, JSONResponse
     from fastapi.staticfiles import StaticFiles
     import uvicorn
     HAS_FASTAPI = True
@@ -55,17 +55,23 @@ if HAS_FASTAPI:
         except Exception as e:
             raise HTTPException(status_code=400, detail=str(e))
             
+    @app.post("/api/yse_pz/{action}")
+    async def api_yse_pz(action: str, request: Request):
+        # The body carries the user's YSE_PZ token: never log it.
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        status, body = yse_pz.handle(action, payload)
+        return JSONResponse(content=body, status_code=status)
+
     @app.get("/")
     async def get_index():
-        return FileResponse(os.path.join(TEMPLATES_DIR, "index.html"))
-        
+        return HTMLResponse(frontend.render_page("/static"))
+
     # Serve static assets
     if os.path.exists(STATIC_DIR):
         app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-        
-    # Serve templates directly if needed
-    if os.path.exists(TEMPLATES_DIR):
-        app.mount("/templates", StaticFiles(directory=TEMPLATES_DIR), name="templates")
 
 
 # ==============================================================================
@@ -82,8 +88,18 @@ class FallbackHTTPServerHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path
         if path == "/":
-            path = "/templates/index.html"
-            
+            page = frontend.render_page("/static").encode("utf-8")
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(page)
+            return
+        if not path.startswith("/static/"):
+            self.send_response(404)
+            self.end_headers()
+            self.wfile.write(b"Not Found")
+            return
+
         # Clean path to prevent arbitrary directory traversal
         clean_path = path.lstrip('/')
         if '..' in clean_path or clean_path.startswith('/'):
@@ -108,7 +124,22 @@ class FallbackHTTPServerHandler(BaseHTTPRequestHandler):
         with open(clean_path, 'rb') as f:
             self.wfile.write(f.read())
             
+    def _send_json(self, status, body):
+        self.send_response(status)
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        self.wfile.write(json.dumps(body).encode('utf-8'))
+
     def do_POST(self):
+        if self.path.startswith("/api/yse_pz/"):
+            # The body carries the user's YSE_PZ token: never log it.
+            try:
+                length = int(self.headers.get('Content-Length') or 0)
+                payload = json.loads(self.rfile.read(length).decode('utf-8') or "{}")
+            except (ValueError, UnicodeDecodeError):
+                payload = {}
+            self._send_json(*yse_pz.handle(self.path[len("/api/yse_pz/"):], payload))
+            return
         if self.path == "/api/schedule":
             try:
                 content_length = int(self.headers['Content-Length'])

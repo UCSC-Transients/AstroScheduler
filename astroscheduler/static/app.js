@@ -99,6 +99,107 @@ function asObservatoryPayload(obs) {
     return payload;
 }
 
+function asEscape(value) {
+    return String(value === null || value === undefined ? '' : value)
+        .replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// A target name, linked to its page (e.g. YSE_PZ's transient page) when it has an http(s) URL.
+function asTargetNameHtml(name, url) {
+    if (typeof url === 'string' && /^https?:\/\//i.test(url)) {
+        return `<a href="${asEscape(url)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation();" style="color: inherit; text-decoration: underline dotted;">${asEscape(name)}</a>`;
+    }
+    return asEscape(name);
+}
+
+// ==============================================================================
+// IMPORT FROM YSE_PZ (standalone; the server proxies the calls, see astroscheduler/yse_pz.py)
+// ==============================================================================
+// The API token lives only in the password field: never stored, never logged.
+
+function yseImportToggle() {
+    const panel = document.getElementById("yse-import-panel");
+    if (panel) panel.style.display = panel.style.display === "none" ? "" : "none";
+}
+
+function yseStatus(msg, isError = false) {
+    const el = document.getElementById("yse-import-status");
+    if (el) {
+        el.textContent = msg;
+        el.style.color = isError ? "#fca5a5" : "var(--text-secondary)";
+    }
+}
+
+async function ysePost(action, body) {
+    const response = await fetch(`${AS_CONFIG.apiBase}/api/yse_pz/${action}`, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json", ...AS_CONFIG.headers },
+        body: JSON.stringify(body)
+    });
+    let data = {};
+    try { data = await response.json(); } catch (e) { /* not JSON */ }
+    if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+    return data;
+}
+
+async function yseListNights() {
+    const token = document.getElementById("yse-token").value.trim();
+    const select = document.getElementById("yse-night-select");
+    yseStatus("Asking YSE_PZ for your nights…");
+    try {
+        const data = await ysePost("nights", { token });
+        select.innerHTML = '';
+        data.nights.forEach(n => {
+            select.add(new Option(`${n.date} · ${n.telescope}${n.night_type ? ` (${n.night_type})` : ''}`, n.id));
+        });
+        select.disabled = data.nights.length === 0;
+        document.getElementById("yse-import-go").disabled = data.nights.length === 0;
+        yseStatus(data.nights.length ? `${data.nights.length} night(s) from ${data.base_url}` : "No nights in the window.");
+    } catch (e) {
+        yseStatus(e.message, true);
+    }
+}
+
+async function yseImportNight() {
+    const token = document.getElementById("yse-token").value.trim();
+    const nightId = document.getElementById("yse-night-select").value;
+    yseStatus("Importing…");
+    try {
+        const data = await ysePost("import", { token, night_id: nightId });
+        asApplyImportedNight(data);
+        const warnings = data.warnings || [];
+        warnings.forEach(w => logToTerminal(`YSE_PZ: ${w}`));
+        yseStatus(`Imported ${data.targets.length} target(s)` + (warnings.length ? `, ${warnings.length} warning(s) in the log.` : ".") + " Press Recalculate to plan.");
+    } catch (e) {
+        yseStatus(e.message, true);
+    }
+}
+
+// Date, site, instrument and targets from YSE_PZ's planner_targets response.
+function asApplyImportedNight(data) {
+    const night = data.night || {};
+    const dateEl = document.getElementById("obs-date");
+    if (night.date && dateEl) {
+        dateEl.value = night.date;
+        lastObsDate = night.date;
+        asStorage.setItem("obsDate", night.date);
+    }
+    const obsSelect = document.getElementById("obs-select");
+    const site = data.observatory || null;
+    if (obsSelect && site && OBSERVATORIES[site.id]) {
+        obsSelect.value = site.id;
+        obsSelect.dispatchEvent(new Event('change'));
+    }
+    AS_CONFIG.site = site;
+    const instSelect = document.getElementById("inst-select");
+    if (instSelect && data.instrument && Array.from(instSelect.options).some(o => o.value === data.instrument)) {
+        instSelect.value = data.instrument;
+    }
+    asApplyInitialData({ targets: data.targets });
+    saveAndRefresh(true);
+}
+
 // Public handle for host pages: hooks plus read access to the current state.
 window.AstroScheduler = {
     config: AS_CONFIG,
@@ -476,6 +577,9 @@ document.addEventListener("DOMContentLoaded", async () => {
         }
         document.getElementById("obs-date").disabled = true;
         document.body.classList.add("as-embedded");
+        // The host page provides the title, telescope and targets; the mode buttons stay.
+        document.querySelectorAll(".header-logo, .telescope-status, #load-sample-btn, #yse-import-btn, #yse-import-panel")
+            .forEach(el => { el.style.display = "none"; });
     }
     
     // Restore timezone from localStorage if present
@@ -636,8 +740,10 @@ document.addEventListener("DOMContentLoaded", async () => {
             if (haWestEl) haWestEl.value = obs.haLimits ? obs.haLimits[1].toFixed(2) : "12.00";
         };
 
-        obsSelectElem.addEventListener("change", () => {
+        obsSelectElem.addEventListener("change", (event) => {
             asStorage.setItem("obsId", obsSelectElem.value);
+            // A user's own site choice replaces a site imported from YSE_PZ (standalone only).
+            if (!AS_EMBEDDED && event.isTrusted) AS_CONFIG.site = null;
             if (instSelectElem) {
                 instSelectElem.innerHTML = '';
                 const obsId = obsSelectElem.value;
@@ -765,6 +871,7 @@ document.addEventListener("DOMContentLoaded", async () => {
                         blue_exptime: t.blue_exptime !== undefined ? t.blue_exptime : null,
                         blue_num: t.blue_num !== undefined ? t.blue_num : null,
                         external_id: t.external_id || null,
+                        url: t.url || null,
                         status: t.status || null,
                         overhead_minutes: t.overhead_minutes !== undefined ? t.overhead_minutes : null
                     };
@@ -1210,7 +1317,7 @@ function renderTargetsTable() {
                 onclick="stickyHighlightTarget('${t.name}')"
                 style="cursor: pointer;">
                 <td style="text-align:center;">${statusCircle}</td>
-                <td><strong>${t.name}</strong></td>
+                <td><strong>${asTargetNameHtml(t.name, t.url)}</strong></td>
                 <td style="font-family: monospace; font-size: 0.85rem; color: var(--text-primary);">${formatRA(t.ra)}</td>
                 <td style="font-family: monospace; font-size: 0.85rem; color: var(--text-primary);">${formatDec(t.dec)}</td>
                 <td>
@@ -3391,7 +3498,7 @@ function updateScheduleUI(result) {
                     style="cursor: pointer; transition: background 0.2s ease; ${isLocked ? 'background: rgba(245,158,11,0.05);' : ''}">
                     ${lockCell}
                     <td>${timeCell}</td>
-                    <td><strong>${b.target_name}</strong></td>
+                    <td><strong>${asTargetNameHtml(b.target_name, (targetPool.find(t => t.name === b.target_name) || {}).url)}</strong></td>
                     <!-- Issue #33: priority as plain number -->
                     <td>${b.priority}</td>
                     <td>${durationCell}</td>
