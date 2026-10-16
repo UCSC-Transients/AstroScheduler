@@ -10,6 +10,13 @@ Versions follow [semantic versioning](https://semver.org). Each release is a git
   single dropdown); the comment box stays the note. The `onObservationEvent` event carries
   `reasons` (a list of codes) and still carries `reason`, the first code. The observing log
   shows all the reasons. Adds the `wrong_object` code (#108).
+- **Faster solver:** each branch-and-bound step is cheaper (occupancy counts instead of an
+  overlap scan, precedence lookups built once, slot order computed once). The search is
+  unchanged, so schedules are identical: 179 old-versus-new comparisons on random nights matched
+  exactly. A 40-target night solves in about 7 s instead of 21 s (Python 3.8, astropy 5.0, one
+  laptop); `tests/test_performance.py` guards it (#110).
+- **README:** a section on using AstroScheduler with YSE_PZ (the two modes, who owns what,
+  the release steps and pin format) and a performance table (#111).
 
 ## 1.2.0 (2026-10)
 
