@@ -577,8 +577,8 @@ document.addEventListener("DOMContentLoaded", async () => {
         }
         document.getElementById("obs-date").disabled = true;
         document.body.classList.add("as-embedded");
-        // The host page provides the title and the targets.
-        document.querySelectorAll(".app-header, #load-sample-btn, #yse-import-btn, #yse-import-panel")
+        // The host page provides the title, telescope and targets; the mode buttons stay.
+        document.querySelectorAll(".header-logo, .telescope-status, #load-sample-btn, #yse-import-btn, #yse-import-panel")
             .forEach(el => { el.style.display = "none"; });
     }
     

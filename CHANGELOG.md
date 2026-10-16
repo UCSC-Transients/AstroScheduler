@@ -10,8 +10,8 @@ Versions follow [semantic versioning](https://semver.org). Each release is a git
   the planner page with its assets under any URL and the config injected safely;
   `frontend.STATIC_DIR` is the package's static files. The standalone server uses the same
   renderer, and no longer serves package files outside `/static/` (#103).
-- **Embedded chrome:** embedded mode hides the app header, "Load Samples" and the import
-  button (#103).
+- **Embedded chrome:** embedded mode hides the app title, the telescope badge, "Load Samples"
+  and the import button; the Planning / Real-Time buttons stay (#103).
 - **Chart.js** is pinned to 4.5.1 with a subresource-integrity hash (#103).
 - **Import from YSE_PZ** (standalone): the "Import from YSE_PZ" panel lists your classical
   nights and imports one night's targets, site, instrument and date, through two server proxy

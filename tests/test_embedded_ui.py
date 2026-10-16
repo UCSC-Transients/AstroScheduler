@@ -100,7 +100,8 @@ def test_embedded_mode_uses_host_config(host):
     assert page.locator("#obs-select").is_disabled()
     assert not page.locator("#auto-update-toggle").is_visible()
     # The host page supplies the title and the targets.
-    assert not page.locator(".app-header").is_visible()
+    assert not page.locator(".header-logo").is_visible()
+    assert page.locator("#mode-realtime-btn").is_visible()
     assert not page.locator("#load-sample-btn").is_visible()
     assert not page.locator("#yse-import-btn").is_visible()
     assert page.evaluate("window.AstroScheduler.config.mode") == "embedded"
