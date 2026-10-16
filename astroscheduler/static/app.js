@@ -2747,13 +2747,13 @@ async function recordObservationEvent(action) {
         logToTerminal("Select a scheduled target first.");
         return null;
     }
-    const reasonEl = document.getElementById("rt-reason");
+    const reasonBoxes = Array.from(document.querySelectorAll('#rt-reasons input[name="rt-reason"]'));
     const noteEl = document.getElementById("rt-comment");
-    const reason = spec.needsReason && reasonEl ? reasonEl.value : null;
+    const reasons = spec.needsReason ? reasonBoxes.filter(b => b.checked).map(b => b.value) : [];
     const note = noteEl ? noteEl.value.trim() : '';
-    if (spec.needsReason && !reason) {
-        logToTerminal(`Choose a reason before marking ${name} as ${spec.label.toLowerCase()}.`);
-        if (reasonEl) reasonEl.focus();
+    if (spec.needsReason && !reasons.length) {
+        logToTerminal(`Tick at least one reason before marking ${name} as ${spec.label.toLowerCase()}.`);
+        if (reasonBoxes.length) reasonBoxes[0].focus();
         return null;
     }
     const block = currentBlocksList.find(b => b.target_name === name) || null;
@@ -2762,7 +2762,8 @@ async function recordObservationEvent(action) {
         status: spec.status,
         target_name: name,
         external_id: target.external_id || null,
-        reason,
+        reasons,
+        reason: reasons[0] || null,  // the first reason, for hosts that read only one
         note,
         time_utc: new Date().toISOString(),
         planned_start: block ? block.start_time : null,
@@ -2793,9 +2794,10 @@ async function recordObservationEvent(action) {
     asStorage.setItem("targetPool", JSON.stringify(targetPool));
     asStorage.setItem("observationLog", JSON.stringify(rtLogEntries));
     if (noteEl) noteEl.value = '';
-    if (reasonEl) reasonEl.value = '';
+    reasonBoxes.forEach(b => { b.checked = false; });
 
-    const why = reason ? ` (${reason}${note ? `: ${note}` : ''})` : (note ? ` (${note})` : '');
+    const reasonText = reasons.join(', ');
+    const why = reasonText ? ` (${reasonText}${note ? `: ${note}` : ''})` : (note ? ` (${note})` : '');
     logToTerminal(`${spec.label.toUpperCase()}: ${name}${why}`);
     if (spec.status !== 'InProgress') {
         logToTerminal("Press 'Recalculate from now' to re-plan the rest of the night.");
@@ -2822,7 +2824,9 @@ function renderObservationLog() {
     const fmt = v => (typeof v === 'number' && v < 100 ? v.toFixed(2) : '-');
     tbody.innerHTML = rtLogEntries.map((e, i) => {
         const label = RT_ACTIONS[e.action] ? RT_ACTIONS[e.action].label : e.action;
-        const comment = [label, e.reason, e.note].filter(Boolean).join(' · ');
+        // Entries saved before 1.3.0 carry only `reason`.
+        const reasons = Array.isArray(e.reasons) && e.reasons.length ? e.reasons : (e.reason ? [e.reason] : []);
+        const comment = [label, reasons.join(', '), e.note].filter(Boolean).join(' · ');
         return `<tr class="rt-log-row" data-action="${esc(e.action)}" data-target="${esc(e.target_name)}">
             <td style="text-align: center;">${i + 1}</td>
             <td>${esc(formatTimeForTimezone(e.time_utc, currentTimezone))}</td>

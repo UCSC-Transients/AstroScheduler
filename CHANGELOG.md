@@ -4,6 +4,13 @@ Versions follow [semantic versioning](https://semver.org). Each release is a git
 (`v1.0.0`, ...) that other apps can pin, for example
 `astroscheduler @ git+https://github.com/UCSC-Transients/AstroScheduler@v1.0.0`.
 
+## 1.3.0 (2026-10)
+
+- **Several reasons:** Failed and Punted take one or more reasons from a checklist (it was a
+  single dropdown); the comment box stays the note. The `onObservationEvent` event carries
+  `reasons` (a list of codes) and still carries `reason`, the first code. The observing log
+  shows all the reasons. Adds the `wrong_object` code (#108).
+
 ## 1.2.0 (2026-10)
 
 - **Re-opened plans:** `initial.previous_schedule` in `window.ASTROSCHEDULER_CONFIG` is sent
