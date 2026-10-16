@@ -118,6 +118,22 @@ def test_embedded_saved_result_is_shown_without_solving(host):
     assert host.requests == []
 
 
+def test_reopened_plan_seeds_the_first_solve(host):
+    """initial.previous_schedule goes out with the first solve only (#106)."""
+    seed = [{"target_name": "SN 2026aaa", "external_id": "fu-101", "start_time": "2026-10-16T05:00:00+00:00"}]
+    initial = {"date": NIGHT, "instrument": "kast", "targets": TARGETS, "previous_schedule": seed}
+    page = _open(host, _config(initial=initial))
+    page.wait_for_selector('tr[id="sched-row-SN 2026aaa"]', timeout=60000)
+    assert host.requests[0]["body"]["previous_schedule"] == seed
+
+    page.locator("#run-schedule-btn").click()
+    page.wait_for_timeout(3000)
+    assert len(host.requests) >= 2
+    second = host.requests[-1]["body"]["previous_schedule"]
+    assert second and second != seed  # now the blocks on screen
+    assert {"fu-101", "fu-102"} <= {b["external_id"] for b in second}
+
+
 def test_realtime_actions_and_hook(host):
     page = _open(host, _config())
     page.wait_for_selector('tr[id="sched-row-SN 2026aaa"]', timeout=60000)

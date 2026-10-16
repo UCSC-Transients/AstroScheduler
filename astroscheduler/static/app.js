@@ -11,7 +11,9 @@
 //     headers: {"X-CSRFToken": "..."},  // added to every POST
 //     persistLocal: false,         // default: true standalone, false embedded
 //     site: {id, name, lat, lon, elevation, timezone, telescope: {...limit overrides}},
-//     initial: {date, instrument, targets: [...], result: <saved SolveResult or null>}
+//     initial: {date, instrument, targets: [...], result: <saved SolveResult or null>,
+//               previous_schedule: [{target_name, external_id, start_time}]  // first solve only
+//     }
 //   }
 // With no config the app behaves exactly as the standalone app always has.
 const AS_CONFIG = (function () {
@@ -84,6 +86,20 @@ function asShowSolveError(error) {
 function asClearSolveError() {
     const el = document.getElementById("solve-error");
     if (el) el.style.display = "none";
+}
+
+// A host re-opening a saved plan passes its blocks as initial.previous_schedule; the first
+// solve sends them so blocks keep their places. Later solves use the blocks on screen.
+let asSeedSchedule = (AS_CONFIG.initial && Array.isArray(AS_CONFIG.initial.previous_schedule))
+    ? AS_CONFIG.initial.previous_schedule : null;
+
+// Site and night of the last solve request: the blocks on screen seed only a solve of the same.
+let lastSolveKey = null;
+
+function asTakeSeedSchedule() {
+    const seed = asSeedSchedule || [];
+    asSeedSchedule = null;
+    return seed;
 }
 
 function asObservatoryPayload(obs) {
@@ -3309,7 +3325,11 @@ async function _doSchedule() {
     const instId = instSelect ? instSelect.value : "kast";
 
     const obs = getSelectedObservatory();
-    const isSameObs = (lastScheduleResult && lastScheduleResult.observatory && (lastScheduleResult.observatory.id === obs.id || lastScheduleResult.observatory.name === obs.name));
+    // The blocks on screen seed the solve only for the same site and night. (Solve results
+    // carry no observatory, so this compares what the last request used.)
+    const solveKey = `${obs.id}|${obs.name}|${date}`;
+    const isSameObs = lastSolveKey === solveKey;
+    lastSolveKey = solveKey;
 
     const requestPayload = {
         date,
@@ -3321,7 +3341,9 @@ async function _doSchedule() {
         selected_standards: Array.from(selectedStandards),
         standards_overrides,
         realtime_constraints,
-        previous_schedule: (isSameObs && currentBlocksList && currentBlocksList.length > 0) ? currentBlocksList.map(b => ({ target_name: b.target_name, external_id: b.external_id || null, start_time: b.start_time })) : []
+        previous_schedule: (isSameObs && currentBlocksList && currentBlocksList.length > 0)
+            ? currentBlocksList.map(b => ({ target_name: b.target_name, external_id: b.external_id || null, start_time: b.start_time }))
+            : asTakeSeedSchedule()
     };
     
     try {

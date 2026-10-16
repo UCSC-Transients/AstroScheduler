@@ -119,7 +119,9 @@ window.ASTROSCHEDULER_CONFIG = {
   site: {id: "lick", telescope: {ha_limit_west: 5.6667}},
   initial: {date: "2026-10-15", instrument: "kast",
             targets: [/* TargetSpec dicts with external_id */],
-            result: null}                 // a saved SolveResult is shown without solving
+            result: null,                 // a saved SolveResult is shown without solving
+            previous_schedule: []}        // re-opened plan: [{target_name, external_id, start_time}],
+                                          // sent with the first solve so blocks keep their places
 };
 </script>
 ```
