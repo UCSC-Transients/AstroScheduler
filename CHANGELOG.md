@@ -4,6 +4,12 @@ Versions follow [semantic versioning](https://semver.org). Each release is a git
 (`v1.0.0`, ...) that other apps can pin, for example
 `astroscheduler @ git+https://github.com/UCSC-Transients/AstroScheduler@v1.0.0`.
 
+## 1.2.0 (2026-10)
+
+- **Re-opened plans:** `initial.previous_schedule` in `window.ASTROSCHEDULER_CONFIG` is sent
+  with the first solve, so a host re-opening a saved plan gets a stable re-solve. Later solves
+  use the blocks on screen, as before (#106).
+
 ## 1.1.0 (2026-10)
 
 - **Host page renderer:** `astroscheduler.frontend.render_page(static_url, config)` returns
