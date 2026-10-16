@@ -155,13 +155,19 @@ def test_realtime_actions_and_hook(host):
     page.get_by_role("button", name="Failed", exact=True).click()
     assert len(page.evaluate("window.__events")) == 1
 
-    page.select_option("#rt-reason", "weather")
+    # Several reasons can be ticked; `reason` is the first, for hosts that read only one.
+    page.check('#rt-reasons input[value="weather"]')
+    page.check('#rt-reasons input[value="ran_out_of_time"]')
     page.fill("#rt-comment", "clouds")
     page.select_option("#rt-active-target", "SN 2026aaa")
     page.get_by_role("button", name="Failed", exact=True).click()
     page.wait_for_selector('#rt-log-table tr.rt-log-row[data-action="fail"]')
     fail = page.evaluate("window.__events")[1]
-    assert (fail["action"], fail["reason"], fail["note"]) == ("fail", "weather", "clouds")
+    assert (fail["action"], fail["reasons"], fail["reason"], fail["note"]) == (
+        "fail", ["weather", "ran_out_of_time"], "weather", "clouds")
+    row = page.locator('#rt-log-table tr.rt-log-row[data-action="fail"]').inner_text()
+    assert "weather, ran_out_of_time" in row and "clouds" in row
+    assert page.locator('#rt-reasons input:checked').count() == 0
     status = page.evaluate("window.AstroScheduler.getTargets().find(t => t.name === 'SN 2026aaa').status")
     assert status == "Failed"
 
@@ -170,7 +176,7 @@ def test_realtime_actions_and_hook(host):
         window.AstroScheduler.hooks.onObservationEvent = () => Promise.reject(new Error('host said no'));
     }""")
     page.select_option("#rt-active-target", "SN 2026bbb")
-    page.select_option("#rt-reason", "deprioritized")
+    page.check('#rt-reasons input[value="deprioritized"]')
     page.get_by_role("button", name="Punted", exact=True).click()
     page.wait_for_timeout(500)
     status = page.evaluate("window.AstroScheduler.getTargets().find(t => t.name === 'SN 2026bbb').status")

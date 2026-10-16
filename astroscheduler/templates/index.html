@@ -247,22 +247,22 @@
                             </div>
                         </div>
 
-                        <!-- Comment Row: the reason is required for Failed and Punted; the comment is the note -->
+                        <!-- Comment Row: Failed and Punted need at least one reason; the comment is the note -->
                         <div style="display: flex; flex-wrap: wrap; gap: 15px; margin-bottom: 15px; align-items: flex-end;">
-                            <div class="form-group" style="flex: 1; min-width: 160px; margin-bottom: 0;">
-                                <label for="rt-reason">Reason (Failed / Punted)</label>
-                                <select id="rt-reason" style="width: 100%; padding: 6px 12px; font-size: 0.9rem; border-radius: 4px; background: rgba(255, 255, 255, 0.05); color: #fff; border: 1px solid var(--border-color);">
-                                    <option value="">Choose…</option>
-                                    <option value="weather">Weather</option>
-                                    <option value="instrument">Instrument problem</option>
-                                    <option value="telescope">Telescope problem</option>
-                                    <option value="ran_out_of_time">Ran out of time</option>
-                                    <option value="deprioritized">Deprioritized</option>
-                                    <option value="low_sn">Low S/N</option>
-                                    <option value="not_visible">Not visible / not found</option>
-                                    <option value="too_faint">Too faint</option>
-                                    <option value="other">Other</option>
-                                </select>
+                            <div class="form-group" style="flex: 2; min-width: 260px; margin-bottom: 0;">
+                                <label id="rt-reasons-label">Reasons (Failed / Punted)</label>
+                                <div id="rt-reasons" role="group" aria-labelledby="rt-reasons-label" style="display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 0.85rem;">
+                                    <label style="display: inline-flex; align-items: center; gap: 4px; margin: 0; font-weight: normal;"><input type="checkbox" name="rt-reason" value="weather"> Weather</label>
+                                    <label style="display: inline-flex; align-items: center; gap: 4px; margin: 0; font-weight: normal;"><input type="checkbox" name="rt-reason" value="instrument"> Instrument problem</label>
+                                    <label style="display: inline-flex; align-items: center; gap: 4px; margin: 0; font-weight: normal;"><input type="checkbox" name="rt-reason" value="telescope"> Telescope problem</label>
+                                    <label style="display: inline-flex; align-items: center; gap: 4px; margin: 0; font-weight: normal;"><input type="checkbox" name="rt-reason" value="ran_out_of_time"> Ran out of time</label>
+                                    <label style="display: inline-flex; align-items: center; gap: 4px; margin: 0; font-weight: normal;"><input type="checkbox" name="rt-reason" value="deprioritized"> Deprioritized</label>
+                                    <label style="display: inline-flex; align-items: center; gap: 4px; margin: 0; font-weight: normal;"><input type="checkbox" name="rt-reason" value="low_sn"> Low S/N</label>
+                                    <label style="display: inline-flex; align-items: center; gap: 4px; margin: 0; font-weight: normal;"><input type="checkbox" name="rt-reason" value="wrong_object"> Wrong object</label>
+                                    <label style="display: inline-flex; align-items: center; gap: 4px; margin: 0; font-weight: normal;"><input type="checkbox" name="rt-reason" value="not_visible"> Not visible / not found</label>
+                                    <label style="display: inline-flex; align-items: center; gap: 4px; margin: 0; font-weight: normal;"><input type="checkbox" name="rt-reason" value="too_faint"> Too faint</label>
+                                    <label style="display: inline-flex; align-items: center; gap: 4px; margin: 0; font-weight: normal;"><input type="checkbox" name="rt-reason" value="other"> Other</label>
+                                </div>
                             </div>
                             <div class="form-group" style="flex: 3; min-width: 250px; margin-bottom: 0;">
                                 <label for="rt-comment">Observation Log Comment</label>

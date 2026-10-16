@@ -10,7 +10,7 @@ UCSC AstroScheduler is a modern, real-time observation scheduling and planning d
 - **Standard Stars Calibration**: Automatically selects and schedules optimal blue and red standard stars (constrained to at least 30 minutes after sunset / before sunrise) to match the science target requirements.
 - **Real-Time Observing Mode**: Reschedule blocks on the fly "starting from now" with active pointing checks, HA limits (East: -05:40, West: +03:45), and live electronic log comments.
 - **One Solver**: the Python solver behind `POST /api/schedule` is the only solver. If a solve fails, the page shows the error and keeps the current schedule.
-- **Real-Time Observing Log**: Start, Completed, Failed and Punted actions record what happened (Failed and Punted take a reason), and finished targets are skipped on the next re-solve.
+- **Real-Time Observing Log**: Start, Completed, Failed and Punted actions record what happened (Failed and Punted take one or more reasons), and finished targets are skipped on the next re-solve.
 
 ## Repository Layout
 
@@ -128,8 +128,8 @@ window.ASTROSCHEDULER_CONFIG = {
 
 In embedded mode nothing is written to browser storage, and a full re-solve happens only
 when the user presses Recalculate. The host can listen through `window.AstroScheduler.hooks`:
-`onObservationEvent(event)` for Start/Completed/Failed/Punted (return a rejected Promise to
-cancel the action) and `onScheduleResult(result, request)` after each solve.
+`onObservationEvent(event)` for Start/Completed/Failed/Punted (the event's `reasons` lists
+the reason codes and `reason` is the first; return a rejected Promise to cancel the action) and `onScheduleResult(result, request)` after each solve.
 `window.AstroScheduler.getResult()` and `getTargets()` read the current state, for example to
 save a plan. With no config, the app behaves as the standalone app.
 
