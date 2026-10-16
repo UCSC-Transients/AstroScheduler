@@ -93,6 +93,9 @@ function asClearSolveError() {
 let asSeedSchedule = (AS_CONFIG.initial && Array.isArray(AS_CONFIG.initial.previous_schedule))
     ? AS_CONFIG.initial.previous_schedule : null;
 
+// Site and night of the last solve request: the blocks on screen seed only a solve of the same.
+let lastSolveKey = null;
+
 function asTakeSeedSchedule() {
     const seed = asSeedSchedule || [];
     asSeedSchedule = null;
@@ -3322,7 +3325,11 @@ async function _doSchedule() {
     const instId = instSelect ? instSelect.value : "kast";
 
     const obs = getSelectedObservatory();
-    const isSameObs = (lastScheduleResult && lastScheduleResult.observatory && (lastScheduleResult.observatory.id === obs.id || lastScheduleResult.observatory.name === obs.name));
+    // The blocks on screen seed the solve only for the same site and night. (Solve results
+    // carry no observatory, so this compares what the last request used.)
+    const solveKey = `${obs.id}|${obs.name}|${date}`;
+    const isSameObs = lastSolveKey === solveKey;
+    lastSolveKey = solveKey;
 
     const requestPayload = {
         date,

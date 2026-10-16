@@ -8,7 +8,10 @@ Versions follow [semantic versioning](https://semver.org). Each release is a git
 
 - **Re-opened plans:** `initial.previous_schedule` in `window.ASTROSCHEDULER_CONFIG` is sent
   with the first solve, so a host re-opening a saved plan gets a stable re-solve. Later solves
-  use the blocks on screen, as before (#106).
+  use the blocks on screen (#106).
+- **Fix:** Recalculate never sent the blocks on screen as `previous_schedule`. The page compared
+  the site with `result.observatory`, which solve results don't carry, so every re-solve started
+  from scratch. It now compares the site and night of the last request.
 
 ## 1.1.0 (2026-10)
 
