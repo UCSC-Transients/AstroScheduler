@@ -146,6 +146,57 @@ The YSE_PZ address defaults to the production site; set `ASTROSCHEDULER_YSE_PZ_U
 example `https://ziggy.ucolick.org/yse_experimental/`) to use another one. The planner
 endpoints must be turned on in that YSE_PZ (`ASTROSCHEDULER_ENABLED`).
 
+### Using AstroScheduler with YSE_PZ
+
+AstroScheduler works on its own, and inside [YSE_PZ](https://github.com/Young-Supernova-Experiment/YSE_PZ)
+with the same code. There are two modes:
+
+- **Standalone:** run `python app.py`. **Import from YSE_PZ** (see above) brings in one
+  classical night's targets with your API token. Plans live in your browser.
+- **Embedded in YSE_PZ:** YSE_PZ installs this package, solves on its server with
+  `astroscheduler.api.solve`, and shows this front end in a frame on its "Plan this night"
+  page (`frontend.render_page` and `window.ASTROSCHEDULER_CONFIG`). YSE_PZ is then the system
+  of record: it supplies the targets, and stores the saved plan versions and what happened at
+  the telescope (through `window.AstroScheduler.hooks.onObservationEvent`). Its observer guide
+  is `docs/astroscheduler.md` in the YSE_PZ repository.
+
+Who owns what: solving, scheduling, standard stars, site limits and exposure models live here;
+targets, plans, approvals, outcomes and exports live in YSE_PZ.
+
+**Releases.** YSE_PZ pins a tagged release, never a branch:
+
+```
+astroscheduler @ https://github.com/UCSC-Transients/AstroScheduler/archive/refs/tags/vX.Y.Z.tar.gz
+```
+
+To release:
+1. Bump `astroscheduler/__init__.py` (`__version__`, semver).
+2. Add a `CHANGELOG.md` entry, and merge the PR.
+3. Tag the merge commit on `main` and push the tag:
+
+   ```bash
+   git fetch origin
+   git tag -a vX.Y.Z -m "AstroScheduler X.Y.Z" origin/main
+   git push origin vX.Y.Z
+   ```
+
+4. Then a YSE_PZ PR moves its pin to the new tag.
+
+The package must keep working with YSE_PZ's dependencies: Python 3.8, astropy 5.0/5.2.2,
+astroplan 0.8, numpy 1.22.4 and pytz 2018.3. CI's `py38-pins` job checks this.
+
+### Performance
+
+A solve takes a few seconds for a typical night. Measured on Python 3.8 with YSE_PZ's pins,
+at Lick, with random synthetic targets, on one laptop:
+
+| Targets | 10 | 20 | 40 | 60 | 100 |
+| --- | --- | --- | --- | --- | --- |
+| Solve, s | 3.2 | 3.6 | 7.2 | 13 | 23 |
+
+About 1 s of that is the night's twilight calculation, which is cached for later solves of the
+same night. `tests/test_performance.py` guards the 40-target case.
+
 ### 3. Running the Server
 
 Start the web application server:
